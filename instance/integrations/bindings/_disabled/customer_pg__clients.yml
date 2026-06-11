@@ -1,0 +1,19 @@
+# customer_pg × clients — client master binding.
+#
+# Snapshot binding: every push is a full replacement of the client master.
+# Reads `projects.clients` with no period filter; dbt transform keeps one
+# row per client_id via `snapshot_latest_by`.
+
+id: customer_pg__clients
+source: customer_pg
+dataset: clients
+kind: snapshot
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+extract:
+  source_table: "projects.clients"
+scenario: ACTUALS
+natural_key: client_id

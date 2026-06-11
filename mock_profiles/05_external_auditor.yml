@@ -1,0 +1,47 @@
+# Profile: External auditor — read-only, scoped to finance + GL only.
+#
+# Rules exercised:
+#   - Three literal scenario entries (no wildcards) — no category tokens,
+#     no fallback to `*`.
+#   - Analyst role only — manager/planner tools denied across the board.
+#   - Domain allow-list (gl + payroll for reconciliation) with explicit
+#     deny of project_economics and timesheets.
+#   - Cost-centre allow-list narrows the universe further.
+#
+# Expect:
+#   (ACTUALS,    analyst-tool) → domains ∈ {gl, payroll}, cost_centre ∈ {CC-FINC-01, CC-GADM-01}
+#   (BUD-2026,   analyst-tool) → same scope
+#   (FC-2026-Q1, analyst-tool) → same scope
+#   (ACTUALS,    manager-tool) → denied
+#   (any shifted/computed scenario, analyst-tool) → denied (no match)
+profile_id: external-auditor
+name: External Auditor — Read Only
+description: Read-only access to the three named scenarios, finance cost centres only.
+
+scenarios:
+  "ACTUALS":
+    analyst:
+      domains:
+        allow: [gl, payroll]
+        deny:  [project_economics, timesheets]
+      dimensions:
+        allow:
+          cost_centre: [CC-FINC-01, CC-GADM-01]
+
+  "BUD-2026":
+    analyst:
+      domains:
+        allow: [gl, payroll]
+        deny:  [project_economics, timesheets]
+      dimensions:
+        allow:
+          cost_centre: [CC-FINC-01, CC-GADM-01]
+
+  "FC-2026-Q1":
+    analyst:
+      domains:
+        allow: [gl, payroll]
+        deny:  [project_economics, timesheets]
+      dimensions:
+        allow:
+          cost_centre: [CC-FINC-01, CC-GADM-01]

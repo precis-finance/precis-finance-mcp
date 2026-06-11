@@ -1,0 +1,27 @@
+# customer_pg × dim_client — client master snapshot.
+#
+# Reads `projects.clients` on the customer's Postgres. Snapshot binding —
+# `EXCHANGE TABLES` replaces `live.dim_client` atomically on each load.
+
+id: customer_pg__dim_client
+source: customer_pg
+target: live.dim_client
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+
+extract:
+  query: |
+    SELECT
+        client_id,
+        client_name,
+        industry,
+        tier,
+        country,
+        created_date
+    FROM projects.clients

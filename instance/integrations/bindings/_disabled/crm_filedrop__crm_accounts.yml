@@ -1,0 +1,20 @@
+# crm_filedrop × crm_accounts — CRM customer master binding.
+#
+# Snapshot binding: every push is a full replacement of the account master
+# list. No period dimension; the dbt transform keeps one row per
+# account_id via `snapshot_latest_by`. Live landing table is unpartitioned;
+# swap stage is `EXCHANGE TABLES`.
+
+id: crm_filedrop__crm_accounts
+source: crm_filedrop
+dataset: crm_accounts
+kind: snapshot
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: crm_filedrop_token
+extract:
+  file_glob: "accounts.csv"
+scenario: ACTUALS
+natural_key: account_id

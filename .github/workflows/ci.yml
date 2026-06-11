@@ -1,0 +1,42 @@
+# ci.yml — CI for the open `precis-mcp` repository.
+#
+# STAGED here at deploy/ci/ci.yml; the R4 repo cut moves it to
+# .github/workflows/ci.yml (GitHub Actions only runs workflows under
+# .github/workflows/). It is inert in the monorepo, which has no Actions runner.
+#
+# Two jobs:
+#   - boundary: the open-core import check (no `precis` import) — replaces the
+#     monorepo's `lint-imports`, which degenerates once `precis` is absent. Pure
+#     stdlib AST scan, so it runs before any install.
+#   - tests: the open suite (unit + component). Both run entirely on in-process
+#     fakes (tests/fakes/), so no real ClickHouse/Postgres/Redis is needed. The
+#     e2e tier (real services, marked `slow`) is excluded here.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: No commercial (precis) imports
+        run: python scripts/check_no_commercial_imports.py
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (open package + dev extras)
+        run: pip install ".[dev]"
+      - name: Unit + component suite (fakes, no real services)
+        run: pytest tests/unit tests/component -m "not slow" -q

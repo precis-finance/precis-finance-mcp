@@ -1,0 +1,13 @@
+plan_datasets:
+
+  gl_plan:
+    label: General Ledger Plan
+    domain: gl
+    table: planning.entries
+    value_column: delta_amount
+    value_type: "Decimal(18,2)"
+    dimensions:
+      - key: account
+        source: account
+      - key: cost_centre
+        source: cost_centre

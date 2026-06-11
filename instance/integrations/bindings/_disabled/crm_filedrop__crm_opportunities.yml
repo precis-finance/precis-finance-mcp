@@ -1,0 +1,19 @@
+# crm_filedrop × crm_opportunities — sales pipeline binding.
+#
+# Snapshot binding: each push is a full snapshot of the pipeline at the
+# time of the push. Users query current-state opportunities; the dbt
+# transform keeps one row per opportunity_id via `snapshot_latest_by`.
+
+id: crm_filedrop__crm_opportunities
+source: crm_filedrop
+dataset: crm_opportunities
+kind: snapshot
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: crm_filedrop_token
+extract:
+  file_glob: "opportunities.csv"
+scenario: ACTUALS
+natural_key: opportunity_id

@@ -1,0 +1,83 @@
+# Précis-MCP — local / single-user bundle (the Quickstart stack).
+#
+# ClickHouse + the dev-key MCP server. No Keycloak, no Postgres, no Redis:
+# the read path needs only ClickHouse, and one static key replaces per-user
+# OAuth. For a multi-user server real users sign in to, use the Keycloak
+# bundle in docker-compose.yml instead.
+#
+# Run from the repo root:
+#   MCP_DEV_KEY=$(openssl rand -hex 32) \
+#     docker compose -f deploy/docker-compose.local.yml up -d --build
+#
+# Then point an MCP client at  http://127.0.0.1:8768/sse  with header
+#   Authorization: Bearer $MCP_DEV_KEY
+#
+# Bring your own model + data:
+#   - set PRECIS_INSTANCE_DIR to a directory holding catalogue/, semantic/,
+#     integrations/ (defaults to the repo's bundled demo instance);
+#   - point CH* at a ClickHouse you already populate, or load into this one
+#     (see open_docs/configuration/ingestion.md).
+#
+# Note: this single-user trial always STARTS the bundled ClickHouse (there is no
+# profile to suppress it — its value is zero-config). You can point CH* at your
+# own instance, but the bundled service still runs. For a true bring-your-own
+# deployment that does not start a bundled ClickHouse, use the multi-user bundle
+# (docker-compose.yml) with `scripts/deploy-mcp.sh --data-mode byo`.
+
+name: precis-mcp-local
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3
+    restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      CLICKHOUSE_DB: ${CHDATABASE:-precis}
+      CLICKHOUSE_USER: ${CHUSER:-precis}
+      CLICKHOUSE_PASSWORD: ${CHPASSWORD:-precis}
+    ports:
+      - "127.0.0.1:8123:8123"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  precis-mcp:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # Override the image's commercial agui CMD: run the dev-key MCP server,
+    # which boots only the open read surface (engine + read tools over SSE).
+    command: ["python", "-m", "precis_mcp.server"]
+    environment:
+      # Dev-server three-gate (precis_mcp/server.py): explicit enable + a
+      # 32+ char key + bind host. 0.0.0.0 inside the isolated container is
+      # safe — the published port below is bound to 127.0.0.1 on the host,
+      # so the localhost-only guarantee holds at the network edge.
+      ENABLE_MCP_DEV_SERVER: "1"
+      MCP_DEV_KEY: ${MCP_DEV_KEY:?set MCP_DEV_KEY to a 32+ char random string — openssl rand -hex 32}
+      MCP_BIND_HOST: "0.0.0.0"
+      MCP_BIND_PORT: "8768"
+      # ClickHouse read layer (precis_mcp/db.py:get_clickhouse_client).
+      CHHOST: clickhouse
+      CHPORT: "8123"
+      CHUSER: ${CHUSER:-precis}
+      CHPASSWORD: ${CHPASSWORD:-precis}
+    ports:
+      - "127.0.0.1:8768:8768"
+    volumes:
+      # The instance model (catalogue/semantic/integrations). Mounted over the
+      # image's bundled demo instance so a deployer supplies their own without
+      # rebuilding. server.py reads instance/catalogue relative to /app.
+      - ${PRECIS_INSTANCE_DIR:-../instance}:/app/instance:ro
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+volumes:
+  clickhouse_data:

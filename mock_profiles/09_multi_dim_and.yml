@@ -1,0 +1,31 @@
+# Profile: AND across dimension keys, OR within a key's values.
+#
+# Rules exercised:
+#   - Multiple dimension keys in a single `allow` block combine as AND.
+#   - Multiple values under one key combine as OR.
+#   - Deny subtracts specific members from the AND result.
+#
+# Effective scope:
+#   department ∈ {Software Engineering}
+#     AND cost_centre ∈ {CC-SENG-01, CC-SENG-02, CC-SENG-03, CC-SENG-04}
+#     AND cost_centre NOT ∈ {CC-SENG-04}
+#   → cost_centre ∈ {CC-SENG-01, CC-SENG-02, CC-SENG-03}
+#
+# Expect:
+#   (ACTUALS, analyst, cost_centre=CC-SENG-01) → allowed
+#   (ACTUALS, analyst, cost_centre=CC-SENG-04) → denied (deny wins)
+#   (ACTUALS, analyst, cost_centre=CC-SENG-06) → denied (not in allow list)
+#   (ACTUALS, analyst, cost_centre=CC-CLOUD-01)→ denied (wrong department)
+profile_id: multi-dim-and
+name: Software Engineering QA-Free Analyst
+description: Exercises AND-across-keys and deny-wins combinator semantics.
+
+scenarios:
+  "ACTUAL":
+    analyst:
+      dimensions:
+        allow:
+          department:  [Software Engineering]
+          cost_centre: [CC-SENG-01, CC-SENG-02, CC-SENG-03, CC-SENG-04]
+        deny:
+          cost_centre: [CC-SENG-04]

@@ -1,0 +1,37 @@
+# .gitignore.open — staged for the open `precis-mcp` repo (renamed to
+# .gitignore at the R4 cut). Trimmed from the monorepo .gitignore to the open
+# tree, with one deliberate inversion (see instance/ below).
+
+# Virtual environment
+.venv/
+
+# Environment + secrets (runtime only, never committed)
+.env
+.env.*
+secrets/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Packaging build artefacts
+build/
+dist/
+*.egg-info/
+
+# Test / tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# IDE
+.idea/
+.vscode/
+
+# Office lock files
+~$*
+
+# NOTE: instance/ IS tracked here. The open repo ships a bundled demo fixture
+# (the quickstart works from one clone). This inverts the monorepo, where
+# instance/ is a separate repo and is gitignored.

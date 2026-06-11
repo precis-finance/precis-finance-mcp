@@ -1,0 +1,32 @@
+# customer_pg × dim_cost_centre — cost-centre hierarchy snapshot.
+#
+# Reads `master.cost_centres` from the customer's Postgres warehouse.
+# Snapshot binding — each load replaces `live.dim_cost_centre` via
+# `EXCHANGE TABLES`.
+#
+# Source column `cost_centre_id` is renamed to `cost_centre` at the
+# binding boundary so the internal datamodel uses `cost_centre`
+# uniformly everywhere downstream.
+
+id: customer_pg__dim_cost_centre
+source: customer_pg
+target: live.dim_cost_centre
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+
+extract:
+  query: |
+    SELECT
+        cost_centre_id    AS cost_centre,
+        cost_centre_name,
+        department,
+        division,
+        entity_id,
+        is_billable::int  AS is_billable
+    FROM master.cost_centres

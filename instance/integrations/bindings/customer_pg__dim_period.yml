@@ -1,0 +1,27 @@
+# customer_pg × dim_period — fiscal calendar snapshot.
+#
+# Reads `gl.dim_period` from the customer's Postgres warehouse. Snapshot
+# binding — each load replaces the full `live.dim_period` content via
+# `EXCHANGE TABLES`. The ragged calendar hierarchy (fiscal_year →
+# quarter → period) is derived in `semantic.dim_period_calendar`, not
+# here — keeps `live.dim_period` as a flat audit projection.
+
+id: customer_pg__dim_period
+source: customer_pg
+target: live.dim_period
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+
+extract:
+  query: |
+    SELECT
+        period,
+        quarter,
+        fiscal_year
+    FROM gl.dim_period

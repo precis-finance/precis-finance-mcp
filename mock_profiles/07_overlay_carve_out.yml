@@ -1,0 +1,27 @@
+# Profile: Allow universe minus a carve-out.
+#
+# Rules exercised:
+#   - No `allow` on domains or on the cost_centre dimension → scope starts
+#     from the universe (§5.5 step 1).
+#   - Deny-only clauses subtract specific members.
+#   - Tests that "deny without allow" is legal and means "everything except".
+#
+# Expect:
+#   (BUD-2026,  manager-tool, cost_centre=CC-GADM-01) → denied
+#   (BUD-2026,  manager-tool, cost_centre=CC-GADM-02) → denied
+#   (BUD-2026,  manager-tool, cost_centre=CC-SENG-01) → allowed
+#   (ACTUALS,   manager-tool, domain=payroll)         → denied
+#   (ACTUALS,   manager-tool, domain=gl)              → allowed
+#   (FC-2026-Q1, manager-tool, cost_centre=CC-FINC-01) → allowed
+profile_id: overlay-carve-out
+name: Enterprise Manager — Exec Carve-Out
+description: Manager on everything except General Administration cost centres and payroll.
+
+scenarios:
+  "*":
+    manager:
+      domains:
+        deny: [payroll]
+      dimensions:
+        deny:
+          cost_centre: [CC-GADM-01, CC-GADM-02]

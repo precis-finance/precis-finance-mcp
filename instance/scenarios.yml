@@ -1,0 +1,51 @@
+# scenarios.yml — scenario registry seed (EXAMPLE INSTANCE)
+#
+# Declares the rows seeded into `semantic.scenarios`, the canonical scenario
+# registry the engine loads at startup. The file *schema* (the fields below)
+# is fixed and package-owned; the *content* is deployment-specific — a real
+# deployment authors its own scenarios here. This example carries the demo
+# actuals/budget/forecast set.
+#
+# Applied by `precis_mcp.ingestion.scenario_runner.apply()` (seed-if-absent:
+# rows already present in the registry are left untouched).
+#
+# Required per scenario: scenario_id, alias, name, kind.
+# Optional (defaults shown where omitted): base_scenario(null), status(DRAFT),
+#   description(""), created_by("system"), created_at(now), locked_at(null),
+#   horizon_start(""), horizon_end(""), actuals_cutoff(null),
+#   granularity("monthly"), owner_user_id(""), updated_at(now),
+#   variant_of(null), locks("[]").
+
+scenarios:
+  - scenario_id: ACTUALS
+    alias: actuals
+    name: Actuals
+    kind: ACTUAL
+    status: LOCKED
+    base_scenario: null
+    description: "ACTUALS|base_year=0"
+    created_by: system
+    created_at: 2022-12-01 00:00:00
+    locked_at: 2022-12-31 00:00:00
+
+  - scenario_id: BUD-2026
+    alias: budget
+    name: Budget 2026
+    kind: BUDGET
+    status: APPROVED
+    base_scenario: ACTUALS
+    description: "BUDGET|base_year=2026"
+    created_by: system
+    created_at: 2025-11-01 00:00:00
+    locked_at: 2025-12-31 00:00:00
+
+  - scenario_id: FC-2026-Q1
+    alias: forecast_q1
+    name: Forecast 2026 Q1 Reforecast
+    kind: FORECAST
+    status: DRAFT
+    base_scenario: BUD-2026
+    description: "FORECAST|base_year=2026"
+    created_by: system
+    created_at: 2026-01-15 00:00:00
+    locked_at: null

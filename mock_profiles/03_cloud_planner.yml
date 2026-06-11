@@ -1,0 +1,30 @@
+# Profile: Cloud & Infrastructure department planner.
+#
+# Rules exercised:
+#   - Planner role declared without manager → planner tools work, manager
+#     tools are denied (hierarchy fallback is downward only).
+#   - Department dimension allow-list; other dimensions unrestricted.
+#   - Separate analyst block on ACTUALS with the same dimension scope.
+#
+# Expect:
+#   (BUD-2026,   planner-tool) → scoped to Cloud & Infrastructure department
+#   (BUD-2026,   manager-tool) → denied (no manager block; no upward fallback)
+#   (BUD-2026,   analyst-tool) → scoped to Cloud & Infrastructure (falls back to planner)
+#   (ACTUALS,    analyst-tool) → scoped to Cloud & Infrastructure
+#   (FC-2026-Q1, planner-tool) → denied (pattern matches only BUD-2026 literal)
+profile_id: cloud-planner
+name: Cloud & Infrastructure — Planner
+description: Planner on BUD-2026 and read access on actuals, restricted to Cloud & Infrastructure.
+
+scenarios:
+  "BUD-2026":
+    planner:
+      dimensions:
+        allow:
+          department: [Cloud & Infrastructure]
+
+  "ACTUALS":
+    analyst:
+      dimensions:
+        allow:
+          department: [Cloud & Infrastructure]

@@ -1,0 +1,383 @@
+# Précis-MCP — remote / multi-user bundle (OAuth2 + Keycloak).
+#
+# A shared server real users sign in to. MCP clients authenticate with
+# OAuth 2.1 + PKCE and discover the sign-in endpoint via RFC 9728, so the
+# stack bundles Keycloak as a ready-to-run authorization server. For a
+# single-user local trial, use docker-compose.local.yml instead.
+#
+# One command brings the whole flow up:
+#   cp deploy/.env.example deploy/.env      # then edit passwords + PRECIS_BASE_URL
+#   docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
+#
+# Modular by COMPOSE_PROFILES — two independent axes, set as a combined list in
+# deploy/.env (default: COMPOSE_PROFILES=bundled-clickhouse,bundled-keycloak):
+#
+#   DATA AXIS — bundled vs. your own ClickHouse:
+#   - Bundled (default): include `bundled-clickhouse`. This stack runs ClickHouse.
+#   - External: drop `bundled-clickhouse` and set CHHOST=<your host>. The
+#     clickhouse service is not started; precis-mcp connects to yours (lazy
+#     connection, no other change). Populating it (ingestion) is a separate step
+#     — see open_docs/configuration/ingestion.md.
+#
+#   AUTH AXIS — bundled Keycloak (mode B) vs. external OIDC IdP (mode C):
+#   - Bundled Keycloak (default): include `bundled-keycloak`, PRECIS_AUTH_MODE=keycloak.
+#     The keycloak + realm-apply services run.
+#   - External OIDC: drop `bundled-keycloak`, set PRECIS_AUTH_MODE=oidc and the
+#     OIDC_* vars (issuer/JWKS/audience/client). Keycloak does not start;
+#     precis-mcp verifies the customer IdP. See docs/identity_modes_spec.md.
+#
+#   BACKUP (optional, additive): include `backup` to run the scheduler sidecar
+#   that executes the backup config in instance/backup.yml on its cron. Configure
+#   first with `precis-mcp-admin backup init` — see
+#   docs/operations/backup-configuration.md.
+#
+#   INGESTION (optional, additive): include `ingestion` to run the scheduler
+#   daemon for cron-triggered bindings; additionally include `ingestion-watch`
+#   for the file-drop watcher (only useful with a drop store configured —
+#   local upload volume, PRECIS_S3_*, or PRECIS_SFTP_*). Both read
+#   instance/integrations/ at process start: restart the daemon after editing
+#   bindings or sources. No Redis — the per-binding ingestion lock is a
+#   Postgres advisory lock on the platform DB (ADR-0006).
+#
+#   (If your Compose version doesn't read COMPOSE_PROFILES from --env-file, prefix
+#   it on the command: `COMPOSE_PROFILES=... docker compose ... up`.)
+#
+# Boot order (compose dependencies): postgres → migrate (one-shot) and
+# keycloak-db-init → keycloak → keycloak-realm-apply (one-shot) → precis-mcp.
+# The realm-apply step is mandatory: --import-realm alone leaves a realm that
+# 403/401s every /mcp call (no precis_user_id attribute, no aud mapper, DCR
+# blocked). See deploy/keycloak/reconcile.sh.
+#
+# TLS: like the commercial stack, a reverse proxy in front terminates TLS and
+# routes ${PRECIS_BASE_URL}/auth → keycloak and ${PRECIS_BASE_URL}/mcp (+ the
+# /.well-known/* + /authorize /register /token paths) → precis-mcp. Both are
+# published on 127.0.0.1 for the proxy to reach.
+#
+# NOTE: the `migrate` one-shot runs `migrate.py --scope open`, so this bundle
+# applies scripts/migrations/open/ only and gets the open schema with no
+# commercial tables (the migration history is split open/ + commercial/).
+
+name: precis-mcp
+
+# Shared spine connectivity — one definition consumed by precis-mcp and the
+# ingestion daemons, so a per-source credential (e.g. CUSTOMER_PG_HOST /
+# CUSTOMER_PG_USER / CUSTOMER_PG_PASSWORD, the `<SECRET_REF>_*` convention
+# from instance/integrations/sources/) is added in ONE place and reaches every
+# process that runs the ingestion pipeline. The platform Postgres also backs
+# the per-binding ingestion advisory lock (ADR-0006) — no Redis in this stack.
+x-precis-env: &precis-env
+  PGHOST: postgres
+  PGPORT: "5432"
+  PGUSER: ${PGUSER:-precis}
+  PGPASSWORD: ${PGPASSWORD:?set PGPASSWORD in deploy/.env}
+  PLATFORM_DB_NAME: ${PLATFORM_DB_NAME:-precis_platform}
+  CHHOST: ${CHHOST:-clickhouse}
+  CHPORT: ${CHPORT:-8123}
+  CHUSER: ${CHUSER:-precis}
+  CHPASSWORD: ${CHPASSWORD:?set CHPASSWORD in deploy/.env}
+  # Local-FS drop store: written by the precis-mcp upload endpoint, read by
+  # the ingestion watcher — both mount the `ingest_dropbox` volume here.
+  PRECIS_INGEST_UPLOAD_DIR: ${PRECIS_INGEST_UPLOAD_DIR:-/data/ingest}
+  # Add per-source credentials below, e.g.:
+  # CUSTOMER_PG_HOST: ${CUSTOMER_PG_HOST:-}
+  # CUSTOMER_PG_DATABASE: ${CUSTOMER_PG_DATABASE:-}
+  # CUSTOMER_PG_USER: ${CUSTOMER_PG_USER:-}
+  # CUSTOMER_PG_PASSWORD: ${CUSTOMER_PG_PASSWORD:-}
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: precis
+      POSTGRES_USER: ${PGUSER:-precis}
+      POSTGRES_PASSWORD: ${PGPASSWORD:?set PGPASSWORD in deploy/.env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-precis}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Data axis: bundled ClickHouse. Omit the `bundled-clickhouse` profile and
+  # point CHHOST/CH* at your own ClickHouse to run external instead.
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3
+    profiles: ["bundled-clickhouse"]
+    restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      CLICKHOUSE_DB: ${CHDATABASE:-precis}
+      CLICKHOUSE_USER: ${CHUSER:-precis}
+      CLICKHOUSE_PASSWORD: ${CHPASSWORD:?set CHPASSWORD in deploy/.env}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      # Backup surface — inert until backups are configured. The single-file
+      # config.d mount (never the whole directory: the stock image ships its
+      # own files there) defaults to a committed `<clickhouse/>` placeholder;
+      # after `backup init`, set PRECIS_BACKUP_CH_CONFIG to the rendered XML
+      # and restart this service. The `backups` volume is the shared local
+      # destination, mounted at the same path in backup-scheduler.
+      - backups:/backups
+      - ${PRECIS_BACKUP_CH_CONFIG:-./backup/precis_backup_disk.xml}:/etc/clickhouse-server/config.d/precis_backup_disk.xml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Create the Keycloak role + database inside the shared Postgres. Idempotent.
+  keycloak-db-init:
+    image: postgres:16
+    profiles: ["bundled-keycloak"]
+    restart: "no"
+    environment:
+      PGPASSWORD: ${PGPASSWORD:?set PGPASSWORD in deploy/.env}
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD:?set KC_DB_PASSWORD in deploy/.env}
+      PGUSER: ${PGUSER:-precis}
+    command:
+      - bash
+      - -c
+      - |
+        set -euo pipefail
+        psql -h postgres -U "$$PGUSER" -d precis -tAc \
+          "SELECT 1 FROM pg_roles WHERE rolname='keycloak'" | grep -q 1 || \
+          psql -h postgres -U "$$PGUSER" -d precis -c \
+            "CREATE ROLE keycloak LOGIN PASSWORD '$$KC_DB_PASSWORD'"
+        psql -h postgres -U "$$PGUSER" -d precis -c \
+          "ALTER ROLE keycloak WITH PASSWORD '$$KC_DB_PASSWORD'"
+        psql -h postgres -U "$$PGUSER" -d precis -tAc \
+          "SELECT 1 FROM pg_database WHERE datname='keycloak'" | grep -q 1 || \
+          psql -h postgres -U "$$PGUSER" -d precis -c \
+            "CREATE DATABASE keycloak OWNER keycloak"
+        echo "keycloak db bootstrap ok"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    profiles: ["bundled-keycloak"]
+    restart: unless-stopped
+    command: ["start", "--import-realm"]
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD in deploy/.env}
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres
+      KC_DB_URL_PORT: "5432"
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KC_DB_PASSWORD:?set KC_DB_PASSWORD in deploy/.env}
+      # External issuer = ${PRECIS_BASE_URL}/auth; the reverse proxy forwards
+      # X-Forwarded-Proto so Keycloak builds https URLs behind TLS termination.
+      KC_HOSTNAME: ${PRECIS_BASE_URL}/auth
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_STRICT: "true"
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./../keycloak/realm-export.json:/opt/keycloak/data/import/precis-realm.json:ro
+      - ./../keycloak/themes/precis:/opt/keycloak/themes/precis:ro
+    depends_on:
+      keycloak-db-init:
+        condition: service_completed_successfully
+
+  # One-shot: make the imported realm functional for /mcp (precis_user_id user
+  # attribute, redirect URIs, anonymous-DCR hardening, the RFC 8707 aud mapper).
+  # Runs a stdlib Python reconcile against the Keycloak Admin REST API in the
+  # precis-mcp image (the Keycloak 26 image is ubi-micro — no package manager —
+  # so the reconcile can't live there). No docker socket, no kcadm.
+  keycloak-realm-apply:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    profiles: ["bundled-keycloak"]
+    restart: "no"
+    command: ["python", "deploy/keycloak/reconcile.py"]
+    environment:
+      KC_BASE_URL_INTERNAL: http://keycloak:8080/auth
+      PRECIS_BASE_URL: ${PRECIS_BASE_URL:-}
+      KC_MCP_AUDIENCE: ${KC_MCP_AUDIENCE:-}
+      KC_REALM: ${KC_REALM:-precis}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD in deploy/.env}
+    depends_on:
+      keycloak:
+        condition: service_started
+
+  # One-shot: apply the OPEN platform DB migrations, then exit. --scope open
+  # applies scripts/migrations/open/ only, so the open bundle gets the open
+  # schema (auth, profiles, validation, load_history, audit) and none of the
+  # commercial tables.
+  migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: "no"
+    command: ["python", "scripts/migrate.py", "--scope", "open"]
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${PGUSER:-precis}
+      PGPASSWORD: ${PGPASSWORD:?set PGPASSWORD in deploy/.env}
+      PLATFORM_DB_NAME: ${PLATFORM_DB_NAME:-precis_platform}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  precis-mcp:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # The open ASGI entrypoint: /mcp + discovery + OAuth proxy shims, no
+    # commercial routers, no LangGraph agent (precis_mcp/app_open.py).
+    command: ["uvicorn", "precis_mcp.app_open:app", "--host", "0.0.0.0", "--port", "8769"]
+    ports:
+      - "127.0.0.1:8769:8769"
+    environment:
+      # Public origin — derives the OAuth URLs and the RFC 8707 /mcp audience.
+      PRECIS_BASE_URL: ${PRECIS_BASE_URL:-}
+      # Identity mode: keycloak (bundled, default) or oidc (external IdP). In
+      # oidc mode set the OIDC_* vars below and drop bundled-keycloak from
+      # COMPOSE_PROFILES; the app_open resolver fail-fasts on a bad combo (e.g.
+      # oidc without OIDC_ISSUER, or devkey on this multi-user entrypoint).
+      PRECIS_AUTH_MODE: ${PRECIS_AUTH_MODE:-keycloak}
+      # Keycloak (mode B) — internal URL for JWKS/token (container DNS) + realm.
+      KC_BASE_URL_INTERNAL: http://keycloak:8080/auth
+      KC_REALM: ${KC_REALM:-precis}
+      KC_CLIENT_ID: ${KC_CLIENT_ID:-precis-spa}
+      KC_MCP_AUDIENCE: ${KC_MCP_AUDIENCE:-}
+      # External OIDC (mode C) — the customer issuer the verifier points at.
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      PRECIS_IDENTITY_CLAIM: ${PRECIS_IDENTITY_CLAIM:-}
+      PRECIS_IDENTITY_COLUMN: ${PRECIS_IDENTITY_COLUMN:-}
+      # Platform DB (load_permissions) + ClickHouse read layer + source
+      # credentials — the shared x-precis-env block at the top of this file.
+      # Point CHHOST at your own ClickHouse when running without
+      # bundled-clickhouse.
+      <<: *precis-env
+    volumes:
+      - ${PRECIS_INSTANCE_DIR:-../instance}:/app/instance:ro
+      - ingest_dropbox:/data/ingest
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8769/health').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      # required: false — in mode C (external OIDC) the bundled-keycloak profile
+      # is inactive, so this one-shot never runs; precis-mcp must not wait on it.
+      keycloak-realm-apply:
+        condition: service_completed_successfully
+        required: false
+
+  # Ingestion scheduler (COMPOSE_PROFILES+=ingestion) — fires cron-triggered
+  # bindings (`trigger: scheduled` in instance/integrations/bindings/). Reads
+  # the registry at process start; after editing instance/integrations/,
+  # `docker compose restart ingestion-scheduler` picks up the change.
+  ingestion-scheduler:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    profiles: ["ingestion"]
+    restart: unless-stopped
+    command: ["python", "-m", "precis_mcp.ingestion.scheduler_daemon"]
+    environment:
+      <<: *precis-env
+      PRECIS_SCHEDULER_INTERVAL_SECONDS: ${PRECIS_SCHEDULER_INTERVAL_SECONDS:-60}
+    volumes:
+      - ${PRECIS_INSTANCE_DIR:-../instance}:/app/instance:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Ingestion watcher (COMPOSE_PROFILES+=ingestion-watch) — polls the drop
+  # stores for `trigger: watch` file-drop bindings. Separate profile from the
+  # scheduler: it is only useful when a drop store is configured (without one
+  # it idles, warning `ingest.watcher_daemon.no_stores` every start). The
+  # local-FS store is the shared `ingest_dropbox` volume the precis-mcp upload
+  # endpoint writes into; S3/SFTP stores are env-configured pass-throughs.
+  ingestion-watcher:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    profiles: ["ingestion-watch"]
+    restart: unless-stopped
+    command: ["python", "-m", "precis_mcp.ingestion.watcher_daemon"]
+    environment:
+      <<: *precis-env
+      PRECIS_WATCHER_INTERVAL_SECONDS: ${PRECIS_WATCHER_INTERVAL_SECONDS:-30}
+      PRECIS_S3_BUCKET: ${PRECIS_S3_BUCKET:-}
+      PRECIS_S3_PREFIX: ${PRECIS_S3_PREFIX:-}
+      PRECIS_S3_REGION: ${PRECIS_S3_REGION:-}
+      PRECIS_S3_ENDPOINT_URL: ${PRECIS_S3_ENDPOINT_URL:-}
+      PRECIS_S3_ACCESS_KEY_ID: ${PRECIS_S3_ACCESS_KEY_ID:-}
+      PRECIS_S3_SECRET_ACCESS_KEY: ${PRECIS_S3_SECRET_ACCESS_KEY:-}
+      PRECIS_SFTP_HOST: ${PRECIS_SFTP_HOST:-}
+      PRECIS_SFTP_USER: ${PRECIS_SFTP_USER:-}
+      PRECIS_SFTP_PASSWORD: ${PRECIS_SFTP_PASSWORD:-}
+      PRECIS_SFTP_PORT: ${PRECIS_SFTP_PORT:-22}
+      PRECIS_SFTP_KEY_PATH: ${PRECIS_SFTP_KEY_PATH:-}
+      PRECIS_SFTP_PREFIX: ${PRECIS_SFTP_PREFIX:-}
+    volumes:
+      - ${PRECIS_INSTANCE_DIR:-../instance}:/app/instance:ro
+      - ingest_dropbox:/data/ingest
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Backup sidecar (COMPOSE_PROFILES+=backup) — fires `backup run` on the cron
+  # in instance/backup.yml, in-process via precis_mcp.backup.ops. Stateless:
+  # a missed fire is not back-filled; backup_history records actual runs.
+  # See docs/operations/backup-configuration.md.
+  backup-scheduler:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    profiles: ["backup"]
+    restart: unless-stopped
+    command: ["python", "-m", "precis_mcp.backup.scheduler_daemon"]
+    environment:
+      <<: *precis-env
+      USER_DATA_DIR: ${USER_DATA_DIR:-/data/users}
+      # s3 destination credentials — env-var-prefix refs from backup.yml
+      # (credentials.writer/reader). The *_FILE variants work too.
+      BACKUP_WRITER_ACCESS_KEY_ID: ${BACKUP_WRITER_ACCESS_KEY_ID:-}
+      BACKUP_WRITER_SECRET_ACCESS_KEY: ${BACKUP_WRITER_SECRET_ACCESS_KEY:-}
+      BACKUP_READER_ACCESS_KEY_ID: ${BACKUP_READER_ACCESS_KEY_ID:-}
+      BACKUP_READER_SECRET_ACCESS_KEY: ${BACKUP_READER_SECRET_ACCESS_KEY:-}
+      BACKUP_ALERT_WEBHOOK_URL: ${BACKUP_ALERT_WEBHOOK_URL:-}
+      PRECIS_BACKUP_CH_TIMEOUT: ${PRECIS_BACKUP_CH_TIMEOUT:-3600}
+    volumes:
+      - ${PRECIS_INSTANCE_DIR:-../instance}:/app/instance:ro
+      - backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  backups:
+  ingest_dropbox:

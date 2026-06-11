@@ -1,0 +1,28 @@
+# Profile: FP&A lead — manages plan scenarios, reads actuals without payroll.
+#
+# Rules exercised:
+#   - Category token `PLAN` (matches BUDGET + FORECAST kinds).
+#   - Literal scenario id `ACTUALS`.
+#   - Allow + deny on the domains axis (allow all non-payroll via deny list
+#     on a scenario that otherwise has no explicit allow — universe minus
+#     deny, see §5.5).
+#   - Analyst-level tools on ACTUALS fall back to no higher role, so the
+#     analyst block is used directly.
+#
+# Expect:
+#   (BUD-2026,   manager-tool) → full access
+#   (FC-2026-Q1, planner-tool) → full access (falls back to manager)
+#   (ACTUALS,    analyst-tool) → all domains except payroll
+#   (ACTUALS,    manager-tool) → denied (no manager block on ACTUALS)
+profile_id: fpa-lead
+name: FP&A Lead
+description: Manager on plan scenarios, read-only (analyst) on actuals with payroll carve-out.
+
+scenarios:
+  "PLAN":
+    manager: {}
+
+  "ACTUALS":
+    analyst:
+      domains:
+        deny: [payroll]

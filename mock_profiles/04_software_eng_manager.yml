@@ -1,0 +1,37 @@
+# Profile: Software Engineering dept manager — different scope per role level.
+#
+# Rules exercised:
+#   - `PLAN` category token carries two role blocks (manager and planner)
+#     with *different* dimension scope. Evaluator must pick the block whose
+#     level matches the tool's required role — manager tools use the
+#     manager block's scope, planner tools use the planner block's scope.
+#     This mirrors the current row 19 + row 20 pattern in role_assignments.
+#   - Analyst block on ACTUAL, distinct scope.
+#
+# Expect:
+#   (BUD-2026,   manager-tool) → department ∈ {Software Engineering} AND NOT cost_centre ∈ {CC-SENG-06}
+#   (BUD-2026,   planner-tool) → cost_centre ∈ {CC-SENG-01, CC-SENG-02, CC-SENG-03} (narrower)
+#   (FC-2026-Q1, manager-tool) → same as BUD-2026 manager (PLAN category)
+#   (ACTUALS,    analyst-tool) → department ∈ {Software Engineering}
+profile_id: software-eng-manager
+name: Software Engineering — Manager
+description: Manager/planner on plan scenarios with per-level scope; read on actuals.
+
+scenarios:
+  "PLAN":
+    manager:
+      dimensions:
+        allow:
+          department: [Software Engineering]
+        deny:
+          cost_centre: [CC-SENG-06]   # ML/AI team carved out from manager scope
+    planner:
+      dimensions:
+        allow:
+          cost_centre: [CC-SENG-01, CC-SENG-02, CC-SENG-03]
+
+  "ACTUAL":
+    analyst:
+      dimensions:
+        allow:
+          department: [Software Engineering]

@@ -1,0 +1,310 @@
+domain: pnl
+source_view: semantic.v_pnl
+
+dimensions:
+  - key: cost_centre
+    label: Cost Centre
+    source: cost_centre
+  - key: period
+    label: Period
+    source: period
+
+metrics:
+  # --- Base metrics ---
+  - key: revenue
+    label: Revenue
+    description: "Total recognised project revenue for the period."
+    calculation_note: "Sum of credit-side journal entries on revenue accounts (fs_line = 'Revenue') from gl.actuals. Stored as negative in the ledger; sign: abs converts to positive for display."
+    where:
+      - column: fs_line
+        op: eq
+        value: Revenue
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: abs
+    format: currency
+    fs_group: Revenue
+    style: header
+    indent: 0
+
+  - key: direct_cost
+    label: Direct Costs
+    description: "Direct project delivery costs — primarily billable staff payroll and subcontractors charged to client projects."
+    calculation_note: "Sum of debit-side journal entries on direct cost accounts (fs_line = 'DirectCost') from gl.actuals. Stored positive in the ledger."
+    where:
+      - column: fs_line
+        op: eq
+        value: DirectCost
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: DirectCost
+    style: default
+    indent: 0
+    variance_effect: inverse
+
+  - key: indirect_cost
+    label: Indirect Costs
+    description: "Indirect costs attributable to delivery but not directly charged to a project — e.g. bench time, internal tooling, delivery management."
+    calculation_note: "Sum of debit-side journal entries on indirect cost accounts (fs_line = 'Indirect') from gl.actuals."
+    where:
+      - column: fs_line
+        op: eq
+        value: Indirect
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: Indirect
+    style: default
+    indent: 0
+    variance_effect: inverse
+
+  - key: sga
+    label: "SG&A"
+    description: "Selling, General & Administrative costs — overhead functions not related to delivery: finance, HR, marketing, office management."
+    calculation_note: "Sum of debit-side journal entries on SG&A accounts (fs_line = 'SGA') from gl.actuals."
+    where:
+      - column: fs_line
+        op: eq
+        value: SGA
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: SGA
+    style: default
+    indent: 0
+    variance_effect: inverse
+
+  - key: billable_hours
+    label: Billable Hours
+    description: "Total hours logged by billable staff against client projects in the period."
+    calculation_note: "Sum of hours_billable from gl.timesheets (account 9100), grouped by cost_centre and period."
+    where:
+      - column: account
+        op: eq
+        value: "9100"
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: number
+    fs_group: Statistical
+    scale_exempt: true
+    variance_effect: neutral
+    style: default
+    indent: 1
+
+  - key: total_hours
+    label: Total Hours
+    description: "Total hours worked by billable staff in the period, including non-billable time (internal, bench, training)."
+    calculation_note: "Sum of hours_worked from gl.timesheets (account 9110), grouped by cost_centre and period."
+    where:
+      - column: account
+        op: eq
+        value: "9110"
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: number
+    fs_group: Statistical
+    scale_exempt: true
+    variance_effect: neutral
+    style: default
+    indent: 1
+
+  - key: avg_fte_billable
+    label: Avg FTEs - Billable
+    description: "Average number of billable headcount (employees assigned to client-facing cost centres) over the selected period range."
+    calculation_note: "COUNT(DISTINCT employee_id) from gl.payroll for is_billable cost centres (account 9200), averaged across periods: SUM / COUNT(DISTINCT period)."
+    where:
+      - column: account
+        op: eq
+        value: "9200"
+    source_column: amount
+    aggregation: sum
+    rollup_method: avg
+    sign: raw
+    format: number
+    fs_group: Statistical
+    scale_exempt: true
+    variance_effect: neutral
+    style: default
+    indent: 1
+
+  - key: avg_fte_overhead
+    label: Avg FTEs - Overhead
+    description: "Average number of overhead headcount (employees in non-billable support functions) over the selected period range."
+    calculation_note: "COUNT(DISTINCT employee_id) from gl.payroll for is_billable=false cost centres (account 9210), averaged across periods: SUM / COUNT(DISTINCT period)."
+    where:
+      - column: account
+        op: eq
+        value: "9210"
+    source_column: amount
+    aggregation: sum
+    rollup_method: avg
+    sign: raw
+    format: number
+    fs_group: Statistical
+    scale_exempt: true
+    variance_effect: neutral
+    style: default
+    indent: 1
+
+  - key: closing_fte_billable
+    label: Closing FTEs - Billable
+    description: "Billable headcount at the end of the selected period (closing snapshot, not an average)."
+    calculation_note: "COUNT(DISTINCT employee_id) from gl.payroll for is_billable cost centres (account 9200) in the last period of the selected range only."
+    where:
+      - column: account
+        op: eq
+        value: "9200"
+    source_column: amount
+    aggregation: sum
+    rollup_method: closing
+    sign: raw
+    format: number
+    fs_group: Statistical
+    scale_exempt: true
+    variance_effect: neutral
+    style: default
+    indent: 1
+
+  - key: closing_fte_overhead
+    label: Closing FTEs - Overhead
+    description: "Overhead headcount at the end of the selected period (closing snapshot, not an average)."
+    calculation_note: "COUNT(DISTINCT employee_id) from gl.payroll for is_billable=false cost centres (account 9210) in the last period of the selected range only."
+    where:
+      - column: account
+        op: eq
+        value: "9210"
+    source_column: amount
+    aggregation: sum
+    rollup_method: closing
+    sign: raw
+    format: number
+    fs_group: Statistical
+    scale_exempt: true
+    variance_effect: neutral
+    style: default
+    indent: 1
+
+  # --- Derived metrics ---
+  - key: gross_margin
+    label: Gross Margin
+    description: "Revenue after direct project delivery costs. Measures how much value is created by delivery before overhead is considered."
+    calculation_note: "revenue - direct_cost. Both inputs are aggregated independently before subtraction."
+    formula: "revenue - direct_cost"
+    format: currency
+    fs_group: GrossMargin
+    style: subtotal
+    indent: 0
+    separator_above: true
+
+  - key: gross_margin_pct
+    label: "Gross Margin %"
+    description: "Gross margin expressed as a percentage of revenue. Key indicator of delivery efficiency and pricing quality."
+    calculation_note: "gross_margin / revenue * 100."
+    formula: "gross_margin / revenue * 100"
+    format: percent
+    scale_exempt: true
+    fs_group: GrossMargin
+    style: ratio
+    indent: 1
+
+  - key: contribution_margin
+    label: Contribution Margin
+    description: "Gross margin after indirect delivery costs. Represents the contribution to covering overhead and generating profit."
+    calculation_note: "gross_margin - indirect_cost."
+    formula: "gross_margin - indirect_cost"
+    format: currency
+    fs_group: ContributionMargin
+    style: subtotal
+    indent: 0
+    separator_above: true
+
+  - key: ebitda
+    label: EBITDA
+    description: "Earnings before interest, taxes, depreciation and amortisation. Operating profit after all operating costs."
+    calculation_note: "contribution_margin - sga. For a services business with no D&A, this equals operating profit."
+    formula: "contribution_margin - sga"
+    format: currency
+    fs_group: EBITDA
+    style: total
+    indent: 0
+    separator_above: true
+
+  - key: ebitda_margin_pct
+    label: "EBITDA Margin %"
+    description: "EBITDA as a percentage of revenue. Primary profitability KPI for the business."
+    calculation_note: "ebitda / revenue * 100."
+    formula: "ebitda / revenue * 100"
+    format: percent
+    scale_exempt: true
+    fs_group: EBITDA
+    style: ratio
+    indent: 1
+
+  - key: avg_fte_total
+    label: Avg FTEs - Total
+    description: "Total average headcount across billable and overhead functions."
+    calculation_note: "avg_fte_billable + avg_fte_overhead."
+    formula: "avg_fte_billable + avg_fte_overhead"
+    format: number
+    scale_exempt: true
+    variance_effect: neutral
+    fs_group: Statistical
+    style: subtotal
+    indent: 0
+
+  - key: utilisation_rate
+    label: "Utilisation Rate %"
+    description: "Percentage of total available hours that were billed to clients. Core efficiency metric for a professional services business."
+    calculation_note: "billable_hours / total_hours * 100. Both inputs are summed over the period range before division."
+    formula: "billable_hours / total_hours * 100"
+    format: percent
+    scale_exempt: true
+    fs_group: Statistical
+    style: ratio
+    indent: 1
+
+  - key: realised_rate
+    label: Realised Rate
+    description: "GL revenue per billable hour — the firmwide blended rate achieved. Core pricing KPI in professional services; compare against standard rate card to measure rate leakage."
+    calculation_note: "revenue / billable_hours."
+    formula: "revenue / billable_hours"
+    format: currency
+    scale_exempt: true
+    fs_group: Ratios
+    style: ratio
+    indent: 1
+
+  - key: revenue_per_fte
+    label: Revenue per FTE
+    description: "Revenue generated per average billable FTE. Measures productivity and rate realisation of the billable workforce."
+    calculation_note: "revenue / avg_fte_billable. Revenue is summed over the period; avg_fte_billable is the period average."
+    formula: "revenue / avg_fte_billable"
+    format: currency
+    scale_exempt: true
+    fs_group: Ratios
+    style: ratio
+    indent: 1
+
+  - key: payroll_cost_per_fte
+    label: Payroll Cost per FTE
+    description: "Direct payroll cost per average billable FTE. Measures the cost base of the billable workforce."
+    calculation_note: "direct_cost / avg_fte_billable. Direct cost is summed over the period; avg_fte_billable is the period average."
+    formula: "direct_cost / avg_fte_billable"
+    format: currency
+    scale_exempt: true
+    variance_effect: inverse
+    fs_group: Ratios
+    style: ratio
+    indent: 1

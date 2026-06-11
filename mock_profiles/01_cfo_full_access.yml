@@ -1,0 +1,19 @@
+# Profile: CFO — full access across all scenarios.
+#
+# Rules exercised:
+#   - Wildcard scenario pattern (*).
+#   - Role hierarchy fallback: only `manager` is declared; analyst- and
+#     planner-level tools must resolve using the manager scope.
+#   - Empty role block (no domains, no dimensions) → full access at that level.
+#
+# Expect:
+#   (ACTUALS,    manager-tool) → full access
+#   (BUD-2026,   planner-tool) → full access (falls back to manager)
+#   (FC-2026-Q1, analyst-tool) → full access (falls back to manager)
+profile_id: cfo-full-access
+name: CFO — Full Access
+description: Unrestricted access across every scenario and domain.
+
+scenarios:
+  "*":
+    manager: {}

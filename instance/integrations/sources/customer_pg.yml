@@ -1,0 +1,30 @@
+# Customer Postgres warehouse — serves BOTH federated reads (catalogue
+# domains reference `backend: customer_pg`) AND ingestion (bindings declare
+# `source: customer_pg`).
+#
+# One Source object, one credential resolution path. The Ibis-backed
+# federated read engine (`precis_mcp/engine/ibis_registry.py`) and the
+# warehouse-direct ingestion driver (`precis_mcp/ingestion/drivers/
+# warehouse_postgres.py`) both look up this Source by id, resolve its
+# `secret_ref` to `CUSTOMER_PG_*` env vars, and build their respective
+# connections.
+#
+# Credentials expected in env (resolved via precis_mcp.secrets at startup
+# for `*_FILE` indirection):
+#     CUSTOMER_PG_HOST
+#     CUSTOMER_PG_PORT       (optional, default 5432)
+#     CUSTOMER_PG_USER
+#     CUSTOMER_PG_PASSWORD
+#     CUSTOMER_PG_DATABASE
+#     CUSTOMER_PG_SCHEMA     (optional, default 'public')
+
+id: customer_pg
+display_name: "Customer Postgres (federated reads + ingestion)"
+kind: postgres
+secret_ref: customer_pg
+network:
+  egress_required: true
+  endpoints: []
+backend: {}
+metadata:
+  usage: "federated_reads + warehouse_ingestion"

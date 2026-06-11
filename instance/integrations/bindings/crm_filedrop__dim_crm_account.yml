@@ -1,0 +1,28 @@
+# crm_filedrop × dim_crm_account — CRM account master from CSV.
+#
+# Reads `accounts.csv` from the `crm/` prefix of the file-drop upload
+# root. Snapshot binding — `EXCHANGE TABLES` replaces
+# `live.dim_crm_account` atomically on each load.
+
+id: crm_filedrop__dim_crm_account
+source: crm_filedrop
+target: live.dim_crm_account
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: crm_filedrop_token
+
+extract:
+  query: |
+    SELECT
+        account_id,
+        account_name,
+        industry,
+        region,
+        segment,
+        created_date
+    FROM read_csv_auto('${source_path}/accounts.csv')

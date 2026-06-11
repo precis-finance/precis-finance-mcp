@@ -1,0 +1,5 @@
+<!-- Inert placeholder so the clickhouse config.d mount exists before backups
+     are configured. `precis-mcp-admin backup init` renders the real disk
+     definition (default: deploy/secrets/precis_backup_disk.xml); point
+     PRECIS_BACKUP_CH_CONFIG at the rendered file and restart clickhouse. -->
+<clickhouse/>

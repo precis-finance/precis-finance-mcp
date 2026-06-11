@@ -1,0 +1,61 @@
+# Profile: Catalogue of invalid constructs.
+#
+# This file does NOT validate. Each marked block is an expected validator
+# failure — keep them together so the validator test suite can consume this
+# fixture and assert specific error codes per block.
+#
+# Expect (validator must reject with these error kinds):
+#   [E01] unknown dimension key      → `region`
+#   [E02] unknown dimension member   → `department: [Atlantis]`
+#   [E03] unknown domain             → `marketing_spend`
+#   [E04] unknown scenario literal   → `BUD-9999`
+#   [E05] malformed scenario pattern → `PLAN_*`
+#   [E06] unknown role name          → `superuser`
+#   [E07] unknown category token     → `SHIFTED`
+#
+# NOTE: valid YAML on disk (the parser must read it) but semantically
+# invalid. The validator runs AFTER YAML parsing, against the catalogue.
+profile_id: invalid-examples
+name: Invalid Profile Fixtures
+description: Deliberately invalid entries for validator test coverage. DO NOT ASSIGN.
+
+scenarios:
+  # [E01] `region` is not a known dimension key (valid keys: cost_centre,
+  # account, period, employee, project, client, client_portfolio, department).
+  "ACTUALS":
+    analyst:
+      dimensions:
+        allow:
+          region: [EMEA]
+
+  # [E02] `Atlantis` is not a member of the `department` dimension.
+  "BUD-2026":
+    planner:
+      dimensions:
+        allow:
+          department: [Atlantis]
+
+  # [E03] `marketing_spend` is not a registered domain (valid: gl, payroll,
+  # pnl, project_economics, timesheets).
+  "FC-2026-Q1":
+    manager:
+      domains:
+        allow: [marketing_spend]
+
+  # [E04] Literal scenario id does not exist in the scenarios table.
+  "BUD-9999":
+    analyst: {}
+
+  # [E05] Pattern is neither a literal id, a known category token, nor `*`.
+  #       Wildcards are not supported beyond bare `*`.
+  "PLAN_*":
+    analyst: {}
+
+  # [E06] `superuser` is not a role; hierarchy is analyst < planner < manager.
+  "ACTUAL":
+    superuser: {}
+
+  # [E07] `SHIFTED` is not a category token. `prior_year` etc. are shifted
+  #       scenarios derived from a base — they are not directly assignable.
+  "SHIFTED":
+    analyst: {}

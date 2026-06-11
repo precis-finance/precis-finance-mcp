@@ -1,0 +1,197 @@
+domain: project_economics
+source_view: semantic.v_revenue_subledger
+versioned: false
+inspect_enabled: true
+inspect_columns:
+  - scenario
+  - period
+  - project
+  - cost_centre
+  - client
+  - revenue_recognised
+  - cost_recognised
+  - amount_billed
+  - hours_billable
+  - hours_worked
+
+dimensions:
+  - key: project
+    label: Project
+    source: project
+  - key: cost_centre
+    label: Cost Centre
+    source: cost_centre
+  - key: client
+    label: Client
+    source: client
+  - key: period
+    label: Period
+    source: period
+
+metrics:
+  # ── Period flow metrics ──────────────────────────────────────────
+  - key: project_revenue
+    label: Project Revenue
+    description: "Recognised revenue by project in the period. Source of truth for project-level revenue analytics; reconciles to GL revenue total per period."
+    calculation_note: "SUM(revenue_recognised) from semantic.v_revenue_subledger. Reconciles 1:1 to fs_line='Revenue' on the GL at the period grain."
+    source_column: revenue_recognised
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: ProjectRevenue
+    style: header
+    indent: 0
+
+  - key: project_cost
+    label: Project Cost
+    description: "Billable effort cost recognised against the project (hours × loaded rate). Captures only project-tagged delivery effort — bench, indirect, and SG&A stay in the GL."
+    calculation_note: "SUM(cost_recognised) from semantic.v_revenue_subledger. Memo subledger — does NOT match GL direct cost line-for-line; the difference is bench / indirect."
+    source_column: cost_recognised
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: ProjectCost
+    style: default
+    indent: 0
+    variance_effect: inverse
+
+  - key: project_margin
+    label: Project Margin
+    description: "Recognised revenue minus recognised cost on the project."
+    calculation_note: "project_revenue - project_cost."
+    formula: "project_revenue - project_cost"
+    format: currency
+    fs_group: ProjectMargin
+    style: subtotal
+    indent: 0
+    separator_above: true
+
+  - key: project_margin_pct
+    label: "Project Margin %"
+    description: "Project margin as a percentage of project revenue. Core delivery profitability KPI."
+    calculation_note: "project_margin / project_revenue * 100."
+    formula: "project_margin / project_revenue * 100"
+    format: percent
+    scale_exempt: true
+    fs_group: ProjectMargin
+    style: ratio
+    indent: 1
+
+  - key: project_billings
+    label: Billings
+    description: "Invoices raised against the project in the period. T&M bills monthly with a one-period lag; fixed-fee bills 30/40/30 across the engagement; milestone bills on the milestone delivery period."
+    calculation_note: "SUM(amount_billed) from semantic.v_revenue_subledger."
+    source_column: amount_billed
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: ProjectBillings
+    style: default
+
+  - key: project_billable_hours
+    label: Project Billable Hours
+    description: "Billable hours logged against the project in the period."
+    calculation_note: "SUM(hours_billable) from semantic.v_revenue_subledger."
+    source_column: hours_billable
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: number
+    scale_exempt: true
+    fs_group: ProjectStatistical
+    variance_effect: neutral
+    style: default
+    indent: 1
+
+  - key: project_worked_hours
+    label: Project Worked Hours
+    description: "Total hours (billable + non-billable) logged against the project in the period."
+    calculation_note: "SUM(hours_worked) from semantic.v_revenue_subledger."
+    source_column: hours_worked
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: number
+    scale_exempt: true
+    fs_group: ProjectStatistical
+    variance_effect: neutral
+    style: default
+    indent: 1
+
+  - key: realised_bill_rate
+    label: Realised Bill Rate
+    description: "Revenue per billable hour — the blended rate actually achieved across the project portfolio. Core pricing KPI in professional services."
+    calculation_note: "project_revenue / project_billable_hours."
+    formula: "project_revenue / project_billable_hours"
+    format: currency
+    scale_exempt: true
+    fs_group: ProjectMargin
+    style: ratio
+    indent: 1
+    variance_effect: natural
+
+  # ── Stock metrics (period-end balances) ──────────────────────────
+  - key: project_wip
+    label: WIP / Deferred
+    description: "Closing unbilled WIP balance: positive = unbilled revenue (asset), negative = deferred revenue (liability collected ahead of delivery). Use closing rollup when aggregating across periods."
+    calculation_note: "wip_balance = cum_revenue_recognised - cum_billed. Already cumulative at row level; aggregate with rollup_method=closing across periods."
+    source_column: wip_balance
+    aggregation: sum
+    rollup_method: closing
+    sign: raw
+    format: currency
+    fs_group: ProjectStock
+    style: default
+
+  - key: project_percent_complete
+    label: "% Complete"
+    description: "Project progress as a percentage. Cost-to-cost POC for fixed-fee, billed-to-contract for milestone, not meaningful for T&M (always 0)."
+    calculation_note: "Average percent_complete from semantic.v_revenue_subledger across selected projects, closing rollup across periods."
+    source_column: percent_complete
+    aggregation: avg
+    rollup_method: closing
+    sign: raw
+    format: percent
+    scale_exempt: true
+    fs_group: ProjectStock
+    style: ratio
+
+  - key: project_cum_revenue
+    label: Cumulative Revenue
+    description: "Lifetime revenue recognised on the project as of period end."
+    calculation_note: "SUM(cum_revenue_recognised) closing rollup."
+    source_column: cum_revenue_recognised
+    aggregation: sum
+    rollup_method: closing
+    sign: raw
+    format: currency
+    fs_group: ProjectStock
+    style: default
+
+  - key: project_cum_cost
+    label: Cumulative Cost
+    description: "Lifetime recognised cost on the project as of period end."
+    calculation_note: "SUM(cum_cost_recognised) closing rollup."
+    source_column: cum_cost_recognised
+    aggregation: sum
+    rollup_method: closing
+    sign: raw
+    format: currency
+    fs_group: ProjectStock
+    style: default
+    variance_effect: inverse
+
+  - key: project_cum_billed
+    label: Cumulative Billed
+    description: "Lifetime billings on the project as of period end."
+    calculation_note: "SUM(cum_billed) closing rollup."
+    source_column: cum_billed
+    aggregation: sum
+    rollup_method: closing
+    sign: raw
+    format: currency
+    fs_group: ProjectStock
+    style: default

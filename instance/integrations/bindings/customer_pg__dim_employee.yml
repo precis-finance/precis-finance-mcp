@@ -1,0 +1,41 @@
+# customer_pg × dim_employee — employee master snapshot.
+#
+# Reads `hr.employees` on the customer's Postgres. Snapshot binding —
+# `EXCHANGE TABLES` replaces `live.dim_employee` atomically on each load.
+#
+# Source column `cost_centre_id` is renamed to `cost_centre` at the
+# binding boundary. `is_active` is coerced from PG boolean to int so it
+# lands cleanly into CH `UInt8`.
+
+id: customer_pg__dim_employee
+source: customer_pg
+target: live.dim_employee
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+
+extract:
+  query: |
+    SELECT
+        employee_id,
+        employee_code,
+        first_name,
+        last_name,
+        email,
+        grade,
+        employee_type,
+        role_title,
+        cost_centre_id     AS cost_centre,
+        annual_cost,
+        daily_bill_rate,
+        fte,
+        start_date,
+        end_date,
+        is_active::int     AS is_active,
+        currency
+    FROM hr.employees

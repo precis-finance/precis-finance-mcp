@@ -1,0 +1,45 @@
+planning_context:
+
+  data_model: |
+    Plan writes target the GL dataset (planning.entries), dimensioned by
+    period, scenario, account, and cost_centre. The signage is consistent
+    with the general ledger dataset: negative credits, positive debits.
+
+    Changes to the GL dataset are available directly in the P&L domain
+    because the P&L is derived from the GL. Statistical accounts (FTE,
+    utilisation hours) do not flow to the financial P&L.
+
+  sign_convention: |
+    The GL uses accounting sign convention:
+    - Revenue / income accounts: stored as NEGATIVE (credit). €400k revenue = -400000.
+    - Cost / expense accounts: stored as POSITIVE (debit). €200k cost = 200000.
+    - Statistical accounts (hours, FTEs): stored as positive raw quantities.
+
+    When the user says "set revenue to €400k", translate to new_value: -400000.
+    When the user says "add €10k revenue", translate to delta: -10000.
+    When the user says "add €5k to costs", translate to delta: 5000.
+
+    Always present business amounts to the user (positive revenue, positive
+    costs) but send GL-signed values to the write tools.
+
+  plannable_accounts:
+    - range: "4100-4300"
+      type: REVENUE
+      label: Revenue
+      sign: negative
+    - range: "5100-5400"
+      type: DIRECT_COST
+      label: Direct Costs
+      sign: positive
+    - range: "6100-6400"
+      type: INDIRECT_COST
+      label: Indirect Costs
+      sign: positive
+    - range: "7100-7900"
+      type: SGA
+      label: "SG&A"
+      sign: positive
+    - range: "9100-9210"
+      type: STATISTICAL
+      label: Statistical
+      sign: any

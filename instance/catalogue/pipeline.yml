@@ -1,0 +1,152 @@
+domain: pipeline
+source_view: semantic.v_pipeline
+versioned: false
+inspect_enabled: true
+inspect_columns:
+  - scenario
+  - period
+  - account_id
+  - account_name
+  - stage
+  - stage_category
+  - service_line
+  - engagement_type
+  - owner
+  - amount
+  - probability
+  - weighted_amount
+
+dimensions:
+  - key: crm_account
+    label: CRM Account
+    source: crm_account
+  - key: period
+    label: Close Period
+    source: period
+
+metrics:
+  # ── Forward-looking pipeline (Open opportunities only) ────────────
+  - key: pipeline_value
+    label: Pipeline Value
+    description: "Total contract value of open opportunities — forward revenue exposure at face value, before probability weighting."
+    calculation_note: "SUM(amount) WHERE stage_category = 'Open'."
+    where:
+      - column: stage_category
+        op: eq
+        value: Open
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: Pipeline
+    style: header
+    indent: 0
+
+  - key: weighted_pipeline
+    label: Weighted Pipeline
+    description: "Probability-weighted contract value of open opportunities. Primary forward revenue signal for forecast comparison."
+    calculation_note: "SUM(weighted_amount) WHERE stage_category = 'Open'. weighted_amount = amount × probability."
+    where:
+      - column: stage_category
+        op: eq
+        value: Open
+    source_column: weighted_amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: Pipeline
+    style: default
+    indent: 0
+
+  - key: open_count
+    label: Open Deals
+    description: "Count of open opportunities."
+    where:
+      - column: stage_category
+        op: eq
+        value: Open
+    source_column: opportunity_id
+    aggregation: count_distinct
+    rollup_method: sum
+    sign: raw
+    format: number
+    scale_exempt: true
+    fs_group: Pipeline
+    style: default
+    indent: 1
+
+  - key: avg_deal_size
+    label: Avg Open Deal Size
+    description: "Average TCV across open opportunities."
+    calculation_note: "pipeline_value / open_count."
+    formula: "pipeline_value / open_count"
+    format: currency
+    scale_exempt: true
+    fs_group: Pipeline
+    style: ratio
+    indent: 1
+
+  # ── Closed flow ───────────────────────────────────────────────────
+  - key: bookings
+    label: Bookings
+    description: "Closed-won contract value in the period. Source for translating won deals into forward revenue smearing."
+    calculation_note: "SUM(amount) WHERE stage_category = 'Won', grouped by close period."
+    where:
+      - column: stage_category
+        op: eq
+        value: Won
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: Bookings
+    style: header
+    indent: 0
+
+  - key: won_count
+    label: Won Deals
+    description: "Count of closed-won opportunities."
+    where:
+      - column: stage_category
+        op: eq
+        value: Won
+    source_column: opportunity_id
+    aggregation: count_distinct
+    rollup_method: sum
+    sign: raw
+    format: number
+    scale_exempt: true
+    fs_group: Bookings
+    style: default
+    indent: 1
+
+  - key: lost_count
+    label: Lost Deals
+    description: "Count of closed-lost opportunities."
+    where:
+      - column: stage_category
+        op: eq
+        value: Lost
+    source_column: opportunity_id
+    aggregation: count_distinct
+    rollup_method: sum
+    sign: raw
+    format: number
+    scale_exempt: true
+    fs_group: Bookings
+    style: default
+    indent: 1
+
+  - key: win_rate
+    label: Win Rate
+    description: "Won deals as a percentage of closed deals (won + lost)."
+    calculation_note: "won_count / (won_count + lost_count) * 100."
+    formula: "won_count / (won_count + lost_count) * 100"
+    format: percent
+    scale_exempt: true
+    fs_group: Bookings
+    style: ratio
+    indent: 1

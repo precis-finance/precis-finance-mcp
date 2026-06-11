@@ -1,0 +1,19 @@
+# customer_pg × projects — project master binding.
+#
+# Snapshot binding: every push is a full replacement of the project master.
+# Reads `projects.projects` with no period filter; dbt transform keeps one
+# row per project_id via `snapshot_latest_by`.
+
+id: customer_pg__projects
+source: customer_pg
+dataset: projects
+kind: snapshot
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+extract:
+  source_table: "projects.projects"
+scenario: ACTUALS
+natural_key: project_id

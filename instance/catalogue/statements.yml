@@ -1,0 +1,67 @@
+statements:
+  pnl:
+    label: "P&L Statement"
+    description: "Standard P&L with revenue, costs, gross margin, contribution margin, and EBITDA."
+    lines:
+      - revenue
+      - direct_cost
+      - gross_margin
+      - gross_margin_pct
+      - separator
+      - indirect_cost
+      - contribution_margin
+      - separator
+      - sga
+      - ebitda
+      - ebitda_margin_pct
+
+  statistical:
+    label: Statistical KPIs
+    description: "Operational metrics: billable/total hours, utilisation rate, and FTE counts (average and closing)."
+    lines:
+      - billable_hours
+      - realised_rate
+      - utilisation_rate
+      - separator
+      - avg_fte_billable
+      - avg_fte_overhead
+      - avg_fte_total
+      - closing_fte_billable
+      - closing_fte_overhead
+
+  ratios:
+    label: Ratios
+    description: "Realised rate, revenue per FTE, and payroll cost per FTE — pricing, productivity, and cost efficiency indicators."
+    lines:
+      - revenue_per_fte
+      - payroll_cost_per_fte
+
+  full_pnl:
+    label: Full P&L with KPIs
+    description: "Complete view: P&L financials followed by statistical KPIs (hours, FTEs, utilisation) and per-FTE ratios. Use when the user asks for 'the full picture', 'metrics at the bottom', 'FTEs and hours', or a comprehensive report."
+    concat:
+      - pnl
+      - separator
+      - statistical
+      - separator
+      - ratios
+
+  executive_summary:
+    label: Executive Summary
+    description: "Compact board-level view: revenue, margins, EBITDA, total FTEs, utilisation, and revenue per FTE on a single page."
+    lines:
+      - revenue
+      - gross_margin
+      - gross_margin_pct
+      - ebitda
+      - ebitda_margin_pct
+      - separator
+      - avg_fte_total
+      - utilisation_rate
+      - revenue_per_fte
+
+  # payroll_summary and project_pnl statements are temporarily removed
+  # while the payroll, timesheets, and projects catalogue domains are
+  # parked behind the *.yml.disabled extension during the
+  # partition_expression migration. Reinstate when those domains come
+  # back online.

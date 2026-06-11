@@ -1,0 +1,35 @@
+# customer_pg × fact_payroll — per-period payroll postings.
+#
+# Reads `hr.payroll` on the customer's Postgres. One row per
+# (employee, pay_date); pay_date is monthly. Identity projection +
+# period filter.
+
+id: customer_pg__fact_payroll
+source: customer_pg
+target: live.fact_payroll
+scenario: ACTUALS
+kind: period
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+  period_selection:
+    strategy: lookback
+    lookback_periods: 12
+
+extract:
+  query: |
+    SELECT
+        to_char(pay_date, 'YYYY-MM') AS period,
+        pay_date,
+        employee_id,
+        cost_centre_id AS cost_centre,
+        gross_salary,
+        employer_contributions,
+        bonus,
+        total_cost,
+        currency
+    FROM hr.payroll
+    WHERE to_char(pay_date, 'YYYY-MM') = :period
