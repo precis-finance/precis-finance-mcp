@@ -191,8 +191,12 @@ dimensions:                     # which columns of the view you may slice by
   - { key: period,      label: Period,       source: period }
 ```
 
-`source:` is the view column; `key:` is the name clients use. They match here, and
-they must resolve to a real column in `v_pnl`.
+`key:` is the **view column** — the name clients group by (`dimensions:
+["cost_centre"]`); `source:` names the **master dimension** the engine resolves
+filters through (`filters: {"cost_centre": …}`). They're equal here only because
+the view column is named like the master — they diverge when the column is a raw
+key (`key: cost_centre_id, source: cost_centre`). `key` must be a real column in
+`v_pnl`; `source` must be a dimension defined in the registry below.
 
 ### A base metric
 
@@ -202,6 +206,8 @@ aggregates and formats. Here is `revenue`:
 ```yaml
   - key: revenue
     label: Revenue
+    description: "Total recognised project revenue for the period."
+    calculation_note: "Sum of credit-side journal entries on revenue accounts (fs_line = 'Revenue') from gl.actuals. Stored as negative in the ledger; sign: abs converts to positive for display."
     where:                         # restrict to revenue accounts…
       - column: fs_line
         op: eq
@@ -234,6 +240,14 @@ Every field traces somewhere: `where` and `source_column` reference columns in
 `v_pnl`; `sign` and `format` shape the output; `key` becomes the field name the
 client receives.
 
+`description` and `calculation_note` carry no engine logic — but they are not
+optional polish. `list_kpis` surfaces both to the client, and an AI agent reads
+them to choose which metric answers a question and to interpret the number it
+gets back. `description` is the one-line *what this is*; `calculation_note` is
+the *how it's derived, and any sign or scale gotcha* — here, that revenue is
+stored negative and flipped by `sign: abs`. Write them for a reader who can't
+see the SQL, because that is exactly the agent's situation.
+
 #### The `where` predicate
 
 `where` is a **portable filter** — a list of structured predicates, ANDed
@@ -256,8 +270,7 @@ The engine compiles the predicates to whichever backend the source view uses.
 
 Supported `op`s: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `not_in`,
 `is_null`, `is_not_null`. The last two take neither `value` nor `values`.
-`where` is the only filter grammar — the loader rejects a catalogue that uses
-a raw `source_filter` string.
+`where` is the only filter grammar — raw SQL filter strings are rejected at load.
 
 ### A derived metric
 
@@ -267,6 +280,8 @@ keys. Each input is aggregated independently first, then combined:
 ```yaml
   - key: gross_margin
     label: Gross Margin
+    description: "Revenue net of direct delivery cost."
+    calculation_note: "revenue − direct_cost. Positive means revenue exceeds direct cost."
     formula: "revenue - direct_cost"       # references two other metric keys
     format: currency
     fs_group: Margins
@@ -312,29 +327,115 @@ each metric and stacks the results in this order.
 ## How you slice — the dimension registry
 
 `catalogue/dimensions.yml` defines each dimension once: its master-data view, its
-key column, its display attribute, and its place in any hierarchy. The `account`
-dimension, mapping onto the SQL view from earlier:
+key column, its display attribute, and its place in any hierarchy. Every dimension
+is one of three kinds: a **leaf** owns a master table; a **derived** dimension
+reads its members from a column on another dimension's table; a **ragged**
+hierarchy presents several levels as one browsable axis. The `account` dimension
+is a leaf, mapping onto the SQL view from earlier:
 
 ```yaml
 # catalogue/dimensions.yml
 account:
   label: Account
-  display_attribute: name
+  attributes:                       # the descriptive fields this dimension carries
+    name: { label: Account Name }
+  display_attribute: name           # which attribute is shown as the member label
   source:
     table: semantic.dim_account     # ← the dimension view from Layer 1
     key_column: account_code
-    attribute_mapping:
+    attribute_mapping:              # attribute → column on the source view
       name: account_name
   parents:                          # the hierarchy this dimension rolls up into
     fs_line:      { source_column: fs_line }
     account_type: { source_column: account_type }
 ```
 
+The first four fields are the dimension's **display contract**. `attributes`
+*declares* the descriptive fields a member carries (here just `name`);
+`attribute_mapping` *wires* each one to a real column on the source view. The
+names rarely match — attribute `name` ← column `account_name` — and keeping
+them separate means renaming a column never reaches a client.
+`display_attribute` picks which attribute is shown as the member label, so a
+client sees "Consulting Revenue", not the raw key `4000`. An optional
+`sort_attribute` (not shown) sets member order — e.g. sort employees by `code`
+while displaying `name`; omit it and members order by key. Every name in
+`attribute_mapping`, `display_attribute`, and `sort_attribute` must be one of
+the keys declared in `attributes`, or the catalogue refuses to load.
+
 `parents` declares hierarchy bottom-up: every account belongs to an `fs_line` and
 an `account_type`. Those become **derived dimensions** — dimensions whose members
 are attribute values of another. This is how the `revenue` metric can filter on
 `fs_line = 'Revenue'` even though `fs_line` isn't its own table: it's an attribute
 of `account`.
+
+**A parent can be derived or a leaf.** The parents above name derived dimensions —
+`fs_line` is just a column value on `dim_account`, with no master data of its own.
+But a parent can equally be a **first-class leaf**: a `project` dimension can
+declare `client` as a parent (`source_column: client_id`), where `client` is a
+leaf with its own `dim_client` table, attributes, and display name. Use a derived
+parent when the level is only a grouping label; use a leaf parent when it's an
+entity in its own right — one you also want to filter, give attributes, or roll up
+further. Either way the parent entry names the dimension *and* the column on *this*
+table that holds its key.
+
+**Multi-level hierarchies.** A parent can have its own parent. A cost centre
+rolls up to a department, and a department to a division:
+
+```yaml
+cost_centre:                        # the leaf — owns the master table
+  label: Cost Centre
+  source: { table: semantic.dim_cost_centre, key_column: cost_centre }
+  parents:
+    department: { source_column: department }
+
+department:
+  label: Department
+  derived_from: { dimension: cost_centre, source_column: department }
+  parents:
+    division: { source_column: division }   # the next level up
+
+division:
+  label: Division
+  derived_from: { dimension: cost_centre, source_column: division }
+```
+
+Note where `derived_from` points: **both** `department` and `division` derive
+from `cost_centre` — the leaf that owns the table — not from each other, because
+the `department` and `division` columns both live on `dim_cost_centre`.
+`derived_from` only says *where each level's members are read*; `parents` is what
+threads the levels into a chain. The loader walks that chain at load time, so a
+filter on `division` resolves all the way down to the cost-centre IDs it covers
+(`SELECT cost_centre FROM dim_cost_centre WHERE division = ?`). The same shape
+models SKU → subcategory → category, or point-of-sale → region → country.
+
+**Ragged hierarchies.** The derived dimensions above let a client group by *one*
+level — by `department`, or filter by `division`. A **ragged** dimension goes
+further: it presents the whole chain as a single sliceable axis, so one request
+returns the rollup at every level at once — All → Division → Department → Cost
+Centre — the way you drill an EPM hierarchy.
+
+```yaml
+org_structure:
+  label: Organisational Structure
+  ragged: true
+  root_label: "— All Cost Centres —"    # the synthetic top node
+  leaf_dimension: cost_centre           # where the tree bottoms out
+  levels:                               # ordered root → leaf
+    - { dimension: division,    display_prefix: "[D] " }
+    - { dimension: department,  display_prefix: "[BU] " }
+    - { dimension: cost_centre, display_prefix: "[CC] " }
+  source:
+    type: generated                     # built from the levels above, no extra table
+```
+
+A ragged dimension **reuses** dimensions you already declared (`division`,
+`department`, `cost_centre`) — it does not redefine them. `levels` lists them
+root-to-leaf; `display_prefix` tags each level in the output so a client can tell
+a department node from a cost-centre node; `source: { type: generated }` tells the
+platform to build the tree from those levels rather than from a parent-child
+table. The result is one dimension key, `org_structure`, that a client slices to
+see every level of the org at once. Model a SKU rollup (All → Category →
+Subcategory → SKU) or sales geography (All → Country → Region → POS) the same way.
 
 A domain's `dimensions:` block (in `pnl.yml`) is the subset of these you can slice
 *that view* by. The registry defines all dimensions; each domain opts into the

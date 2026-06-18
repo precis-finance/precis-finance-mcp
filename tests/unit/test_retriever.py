@@ -667,7 +667,7 @@ class TestVersionedFlag:
         assert "commit_id" not in sql
 
     def test_versioned_domain_has_commit_id(self, catalogue):
-        """pnl domain (versioned: true, default) should have commit_id in SQL."""
+        """pnl domain (versioned: true, explicit in pnl.yml) should have commit_id in SQL."""
         dq = _make_query(["revenue"], domain="pnl")
         results = generate_sql(dq, catalogue, [], None)
         sql, _ = results[0]

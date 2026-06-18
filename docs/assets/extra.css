@@ -1,0 +1,63 @@
+/*
+ * Précis brand theme for the docs site.
+ * Palette from cmo/precis-brand-identity-v3.jsx — Deep Ink #0C1F2C,
+ * Précis Teal #0D9488, Warm Gold #C8A97E, Paper #F7F5F0.
+ *
+ * Fonts are self-hosted (no third-party requests) — the same Fontsource
+ * faces the marketing site uses, copied into assets/fonts/. Material's
+ * Google Fonts loader is disabled via `theme.font: false` in mkdocs.yml.
+ */
+
+/* ── Self-hosted faces (woff2, latin) ─────────────────────────────── */
+@font-face { font-family: "DM Sans"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/dm-sans-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "DM Sans"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/dm-sans-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "DM Sans"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/dm-sans-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "DM Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/dm-mono-latin-400-normal.woff2") format("woff2"); }
+@font-face { font-family: "DM Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/dm-mono-latin-500-normal.woff2") format("woff2"); }
+@font-face { font-family: "Cormorant Garamond"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/cormorant-garamond-latin-600-normal.woff2") format("woff2"); }
+@font-face { font-family: "Cormorant Garamond"; font-style: normal; font-weight: 700; font-display: swap; src: url("fonts/cormorant-garamond-latin-700-normal.woff2") format("woff2"); }
+
+/* ── Fonts (Material reads these family vars) ──────────────────────── */
+:root {
+  --md-text-font: "DM Sans";
+  --md-code-font: "DM Mono";
+  --md-text-font-family: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --md-code-font-family: "DM Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* ── Palette: light scheme — Deep Ink header/nav, teal accent ──────── */
+[data-md-color-primary=custom] {
+  --md-primary-fg-color:        #0C1F2C;
+  --md-primary-fg-color--light: #1E3A4F;
+  --md-primary-fg-color--dark:  #0A1822;
+  --md-primary-bg-color:        #F7F5F0;
+}
+[data-md-color-accent=custom] {
+  --md-accent-fg-color: #0D9488;
+}
+[data-md-color-scheme=default] {
+  --md-default-bg-color: #F7F5F0;   /* Paper page surface */
+  --md-typeset-a-color:  #0D9488;   /* teal links */
+}
+
+/* ── Palette: dark scheme — Deep Ink family ───────────────────────── */
+[data-md-color-scheme=slate] {
+  --md-default-bg-color: #0C1F2C;
+  --md-primary-fg-color: #0C1F2C;
+  --md-accent-fg-color:  #14B8A6;   /* teal light reads better on dark */
+  --md-typeset-a-color:  #14B8A6;
+}
+
+/* ── Brand voice: Cormorant page titles, warm-gold accent rule ────── */
+.md-typeset h1 {
+  font-family: "Cormorant Garamond", Georgia, serif;
+  font-weight: 600;
+  font-size: 2.3rem;
+  letter-spacing: 0.2px;
+  border-bottom: 2px solid #C8A97E;
+  padding-bottom: 0.2em;
+}
+
+/* Header logo sizing */
+.md-header__button.md-logo img,
+.md-header__button.md-logo svg { height: 1.5rem; width: auto; }

@@ -276,7 +276,7 @@ class DomainCatalogue(BaseModel):
     source_view: str
     metrics: list[Metric]
     dimensions: list[CubeDimension] = Field(default_factory=list)
-    versioned: bool = True                  # False for actuals-only domains (no commit_id column)
+    versioned: bool = False                 # opt in with versioned: true for commit-aware plan domains (source view must carry commit_id)
     backend: str = "clickhouse_default"
     backend_kind: BackendKind = "clickhouse"
     inspect_enabled: bool = False
@@ -704,7 +704,7 @@ def load_catalogue(
                     source_view=source_view,
                     metrics=domain_metrics,
                     dimensions=cube_dims,
-                    versioned=data.get("versioned", True),
+                    versioned=data.get("versioned", False),
                     backend=data.get("backend", "clickhouse_default"),
                     backend_kind=data.get("backend_kind", "clickhouse"),
                     inspect_enabled=data.get("inspect_enabled", False),

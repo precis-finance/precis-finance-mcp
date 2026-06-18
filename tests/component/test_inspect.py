@@ -43,6 +43,7 @@ def _catalogue() -> Catalogue:
                 domain="gl",
                 source_view="semantic.v_gl",
                 metrics=[],
+                versioned=True,  # gl is commit-aware (matches instance/catalogue/gl.yml)
                 dimensions=[
                     CubeDimension(
                         key="cost_centre",

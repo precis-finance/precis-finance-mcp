@@ -183,7 +183,7 @@ support (unless separately agreed).
 
 ## Support and services
 
-precis-mcp is built to be self-serve, and the [documentation](docs/) aims to be
+precis-mcp is built to be self-serve, and the [documentation](https://docs.precis.finance/) aims to be
 enough. If you'd like help beyond it — configuring your data model, a guided
 deployment, ongoing support, or a demo environment to evaluate against realistic
 data — book a setup session at [precis.finance](https://precis.finance) or write

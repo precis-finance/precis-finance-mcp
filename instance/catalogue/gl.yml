@@ -1,5 +1,6 @@
 domain: gl
 source_view: v_gl
+versioned: true
 inspect_enabled: true
 inspect_columns:
   - scenario

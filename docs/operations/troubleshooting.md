@@ -101,9 +101,9 @@ backends ([contract](../configuration/adding-metrics-and-dimensions.md#invariant
 `load_catalogue()` validates references *inside* YAML; it cannot prove a
 `source_column` or `where.column` exists on the physical view — that
 surfaces at query time. Compare the metric's columns against the view's
-actual output. If the missing column is `commit_id`: domains default to
-`versioned: true`, which requires it — actuals-only domains must declare
-`versioned: false`
+actual output. If the missing column is `commit_id`: only `versioned: true`
+domains need it — either add the column (a commit-aware plan domain) or set
+`versioned: false` (the default; read-only/actuals)
 ([trap list](../configuration/adding-metrics-and-dimensions.md#failure-modes-and-traps)).
 
 ## Sign-in and permissions (`/mcp`)

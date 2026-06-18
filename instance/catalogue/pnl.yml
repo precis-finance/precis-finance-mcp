@@ -1,5 +1,6 @@
 domain: pnl
 source_view: v_pnl
+versioned: true
 
 dimensions:
   - key: cost_centre

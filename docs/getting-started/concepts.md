@@ -52,15 +52,18 @@ or bring your own cluster, empty or with demo data —
 [schema contract](../configuration/clickhouse-schema-contract.md) defines
 exactly what a ready cluster contains.
 
-## Semantic layer and catalogue — meaning, then exposure
+## Semantic layer and catalogue — meaning, then metrics
 
 Your model is described in two deliberate layers. The **semantic layer**
 (SQL views) says what the data *means* — what a P&L row is, which accounts
-are revenue. The **catalogue** (YAML) says what gets *exposed* — which
-metrics, statements, and dimensions exist and how each is computed and
-formatted. The same name must appear in both (view column → catalogue
-reference → field the client receives), and the engine validates the whole
-chain at startup, refusing to serve an inconsistent model. The walkthrough is
+are revenue. The **catalogue** (YAML) *defines* the metrics — and the
+statements and dimensions built on them — over those views: what each one
+is, how it's computed (aggregation, derived formulas), and how it's
+formatted. That definition is also the contract clients query against, so a
+metric exists for them only once it's catalogued. The same name must appear
+in both (view column → catalogue reference → field the client receives), and
+the engine validates the whole chain at startup, refusing to serve an
+inconsistent model. The walkthrough is
 [Catalogue & semantic model](../configuration/catalogue-and-semantic.md); the
 change contract is
 [Adding metrics & dimensions](../configuration/adding-metrics-and-dimensions.md).

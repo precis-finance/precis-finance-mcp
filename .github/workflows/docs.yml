@@ -10,8 +10,9 @@
 # The custom domain docs.precis.finance is carried by open_docs/CNAME, which
 # MkDocs copies into the built site (site/CNAME); GitHub Pages reads it.
 #
-# Builds on push and PR (strict — broken links/nav fail the run); deploys only
-# on push to main. Docs toolchain mirrors pyproject-open.toml's [dev] extra.
+# Builds on push and PR (strict — broken links/nav fail the run); deploys on
+# push to main and manual dispatch. Docs toolchain mirrors pyproject-open.toml's
+# [dev] extra.
 name: docs
 
 on:
@@ -34,31 +35,31 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # git-revision-date-localized reads commit history for page dates;
           # full history avoids the build-date fallback (the squashed mirror
           # still resolves to the sync commit's date).
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install docs toolchain
         run: pip install mkdocs-material mkdocs-git-revision-date-localized-plugin
       - name: Build site (strict)
         run: mkdocs build --strict
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
   deploy:
     needs: build
-    # Deploy only from main; PR runs are build-only validation.
-    if: github.event_name == 'push'
+    # Deploy on push to main and on manual dispatch; PR runs are build-only.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

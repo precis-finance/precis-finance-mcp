@@ -14,16 +14,19 @@ site_description: >-
 
 theme:
   name: material
+  logo: assets/logo.svg
+  favicon: assets/favicon.svg
+  font: false   # self-hosted faces via assets/extra.css (no Google Fonts)
   palette:
     - scheme: default
-      primary: black
-      accent: teal
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
     - scheme: slate
-      primary: black
-      accent: teal
+      primary: custom
+      accent: custom
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
@@ -32,6 +35,9 @@ theme:
     - navigation.top
     - content.code.copy
     - content.code.annotate
+
+extra_css:
+  - assets/extra.css
 
 plugins:
   - search

@@ -205,6 +205,44 @@ class TestBaseMetricParsing:
         with pytest.raises(CatalogueError, match="versioned=false"):
             load_catalogue(str(tmp_path))
 
+    def test_clickhouse_domain_defaults_versioned_false(self, tmp_path):
+        """versioned defaults to False — a ClickHouse domain that omits the flag
+        is unversioned (no commit_id filter). Commit-aware domains must opt in."""
+        write_yml(tmp_path, "test.yml", """
+            domain: actuals
+            source_view: semantic.v_actuals
+            metrics:
+              - key: amount
+                label: Amount
+                source_column: amount
+                aggregation: sum
+                rollup_method: sum
+                sign: raw
+                format: currency
+                fs_group: Test
+        """)
+        cat = load_catalogue(str(tmp_path))
+        assert cat.domains["actuals"].versioned is False
+
+    def test_clickhouse_domain_honours_explicit_versioned_true(self, tmp_path):
+        """A ClickHouse domain still opts into versioning explicitly."""
+        write_yml(tmp_path, "test.yml", """
+            domain: plan
+            source_view: semantic.v_plan
+            versioned: true
+            metrics:
+              - key: amount
+                label: Amount
+                source_column: amount
+                aggregation: sum
+                rollup_method: sum
+                sign: raw
+                format: currency
+                fs_group: Test
+        """)
+        cat = load_catalogue(str(tmp_path))
+        assert cat.domains["plan"].versioned is True
+
 
 class TestInspectionCatalogue:
     def test_inspection_fields_load(self, tmp_path):

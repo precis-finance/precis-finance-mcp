@@ -86,8 +86,7 @@ nothing else to register.
 
 - **`where:` is the only row-filter grammar.** It is a list of structured
   predicates, ANDed together, that compiles to both ClickHouse SQL and Ibis.
-  A raw-SQL `source_filter:` key is rejected at load time with a
-  `CatalogueError`.
+  A raw-SQL filter string is rejected at load time with a `CatalogueError`.
 
 - **Derived metrics reference metric keys, not columns.** A
   `DerivedMetric.formula` is evaluated after retrieval using already-computed
@@ -135,7 +134,7 @@ nothing else to register.
 | `backend_kind` | omitted or `clickhouse` | `ibis` |
 | `backend` | optional; defaults to `clickhouse_default` | required source id — a `Source` declared in `instance/integrations/sources/<id>.yml`, credentials from `<SECRET_REF>_*` env vars |
 | `source_view` | ClickHouse semantic view | foreign table/view visible to the federated source |
-| `versioned` | can be `true` | must be `false` |
+| `versioned` | defaults to `false`; set `true` for commit-aware plan domains (view needs `commit_id`) | must be `false` |
 | aggregation support | full engine support | currently only `aggregation: sum`, `rollup_method: sum` |
 | native dimension filters | resolved in ClickHouse and applied to source-view column | resolved in ClickHouse and applied as `IN (...)` in Ibis |
 | inline dimensions | not supported | `source_inline: true`, `filterable: false`, axis only |
@@ -253,17 +252,49 @@ dimensions:
       source_column: product_family
 ```
 
-`product` is a leaf dimension because it owns a source table.
-`product_family` is derived from a column on the product table. A filter on
-`product_family` resolves to product IDs, then maps to the domain source-view
-column for `product`.
+`product` is a **leaf** dimension because it owns a source table;
+`product_family` is **derived** from a column on that table. Every dimension is
+exactly one type — `source` (leaf), `derived_from` (derived), or `ragged: true`
+(see below) — and the loader rejects a dimension that sets none or more than one.
+
+A leaf's `attributes` block declares its descriptive fields; `attribute_mapping`
+wires each one to a source-view column, `display_attribute` selects the member
+label clients see, and an optional `sort_attribute` sets member order (omit it and
+members order by key). Every name used in `attribute_mapping`, `display_attribute`,
+or `sort_attribute` must be a key declared in `attributes`, or catalogue load
+fails.
+
+A filter on `product_family` resolves to product IDs, then maps to the domain
+source-view column for `product`.
+
+#### Choosing a dimension type
+
+| Use a… | When the level… | Declares | You get |
+|---|---|---|---|
+| **Leaf** | has its own master data (codes, names, attributes) | `source:` (`table`, `key_column`, `attribute_mapping`) | filtering, display labels, attributes, a base for hierarchy |
+| **Derived** | is only a column value on another dimension's table | `derived_from:` (`dimension`, `source_column`) | filtering and grouping by that value; no master data of its own |
+| **Ragged** | is one of several levels you want exposed as a single browsable axis | `ragged: true`, `leaf_dimension`, `levels` | one dimension that rolls up every level at once |
+
+A **ragged** dimension reuses dimensions you already declared as ordered `levels`
+(root → leaf); the platform derives its rollup views from the leaf's master table
+(`source: { type: generated }`) — you write no SQL. The loader enforces:
+
+- `leaf_dimension` names a **leaf** dimension (one with `source`);
+- `levels` is non-empty and its **last** entry equals `leaf_dimension`;
+- every level references an existing dimension.
+
+`root_label` and per-level `display_prefix` are optional presentation. A dimension
+expresses **one** rollup path: to roll the same leaf up a different way — cost
+centres by organisation *and* by geography, SKUs by category *and* by brand —
+declare a **separate** ragged dimension with its own `levels`; do not overload one
+dimension's `parents` chain to carry two trees.
 
 ### Step 3: Bind dimensions and metrics in a domain file
 
 ```yaml
 domain: sales
 source_view: semantic.v_sales
-versioned: true
+versioned: false
 
 dimensions:
   - key: product_id
@@ -316,11 +347,12 @@ A domain may also declare `inspect_enabled: true` plus an `inspect_columns:`
 list to expose row-level drill-through over its source view through the
 inspection tools.
 
-Mind the `versioned` flag: it **defaults to `true`**, which requires a
-`commit_id` column on the source view (each row tagged with the point-in-time
-commit it belongs to). A domain over actuals-only data — no commits, no
-`commit_id` column — must say `versioned: false` explicitly, and federated
-domains always must.
+Mind the `versioned` flag: it **defaults to `false`** — the read-only/actuals
+case, which needs no `commit_id` column. Set `versioned: true` **only** for
+commit-aware plan domains; their source view must then carry a `commit_id` column
+(each row tagged with the commit it belongs to) and the engine adds a commit
+filter to every query against them. Federated domains must always be
+`versioned: false`.
 
 ### Step 4: Add the metric to a statement
 
@@ -442,18 +474,18 @@ disk. Verify
 the SQL file's stem matches the bare identifier in `source_view`, and that the
 semantic views have been applied to ClickHouse (re-run the provisioner).
 
-### A metric with `source_filter:` fails to load
-
-This is intentional. The raw-SQL `source_filter:` string is not supported;
-catalogue load raises `CatalogueError`. Express the filter as a structured
-`where:` predicate list — same semantics, portable across both backends.
-
 ### A filter key is rejected even though a breakdown works
 
-The client-facing filter key is the master dimension key. The breakdown key is
-the domain source-view column. If the domain declares
-`key: product_id, source: product`, use `filters: {"product": "..."}` and
-`dimensions: ["product_id"]`.
+A domain dimension binding carries two independent names. `key` is the **physical
+view column**: it goes straight into `GROUP BY`, so it is the **breakdown** name
+(`dimensions: ["product_id"]`). `source` is the **master-dimension key**: the
+engine resolves it through that dimension's data and hierarchy to leaf IDs before
+building the `WHERE`, so it is the **filter** name (`filters: {"product": "..."}`).
+So with `key: product_id, source: product`, you break down on `product_id` and
+filter on `product` — never the reverse. The split is deliberate: a breakdown is a
+raw column slice, while filtering needs the master dimension's hierarchy and scope
+resolution — which is also what lets role-playing dimensions and cross-domain reuse
+work.
 
 ### A source-only inline dimension cannot be filtered
 
@@ -503,7 +535,7 @@ composes queries from it. Check:
 
 | Do | Don't |
 |---|---|
-| Express row filters as structured `where:` predicates. | Try to use a raw SQL `source_filter:` string — it is rejected at load. |
+| Express row filters as structured `where:` predicates. | Try to smuggle a raw SQL filter string — it is rejected at load. |
 | Put reusable row-shaping logic in the semantic view. | Encode complex `CASE`, regex, casts, or backend-specific functions in metric YAML. |
 | Use derived metrics for arithmetic over metrics. | Add duplicate base metrics just to calculate a margin or ratio. |
 | Set `scale_exempt: true` for ratios, hours, and counts that should not be currency-scaled (percent formats are always exempt). | Let operational counts be scaled as currency. |
@@ -533,7 +565,7 @@ composes queries from it. Check:
 
 - [ ] The domain `source_view` exists and exposes the required `scenario`, `period`, value, filter, and dimension columns.
 - [ ] Every base metric has `key`, `label`, `source_column`, `aggregation`, `rollup_method`, `sign`, `format`, and `fs_group`.
-- [ ] Every row filter is a structured `where:` predicate list — no `source_filter:` anywhere.
+- [ ] Every row filter is a structured `where:` predicate list — no raw SQL filter strings.
 - [ ] Every derived metric formula references existing metric keys and uses only supported arithmetic.
 - [ ] Every statement line references an existing metric key or `separator`.
 - [ ] Every native domain dimension has `key`, `label`, and `source`, and `source` exists in the first-class dimensions map.
