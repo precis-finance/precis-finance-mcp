@@ -1,0 +1,44 @@
+# Profile: Specificity ladder — `*`, `PLAN`, literal `BUD-2026` all present.
+#
+# Rules exercised:
+#   - Most-specific-wins with no merge. When a scenario matches
+#     multiple patterns in the same profile, only the most specific entry
+#     contributes; the others are ignored entirely.
+#   - Different role at each level to make the winner observable.
+#
+# Expect (given scenario kinds ACTUALS=ACTUAL, BUD-2026=BUDGET, FC-2026-Q1=FORECAST):
+#   (BUD-2026,   manager-tool) → ALLOWED, domain=gl only        (literal wins)
+#   (BUD-2026,   planner-tool) → ALLOWED (falls back to manager)(literal wins, planner block from PLAN is IGNORED)
+#   (FC-2026-Q1, planner-tool) → scope = dept ∈ {Data & Analytics} (PLAN wins over *)
+#   (FC-2026-Q1, manager-tool) → denied (PLAN has no manager; does NOT fall through to *)
+#   (ACTUALS,    analyst-tool) → domain=gl, cost_centre ∈ {CC-FINC-01} (only * matches ACTUAL)
+#
+# The key test: a user on FC-2026-Q1 calling a manager tool must be denied
+# even though `*.manager` exists. Merging would leak access; specificity
+# wins means the PLAN entry is authoritative and nothing else applies.
+profile_id: specificity-override
+name: Specificity Override Test
+description: Fixture exercising scenario pattern precedence (literal > category > wildcard).
+
+scenarios:
+  "*":
+    analyst:
+      domains:
+        allow: [gl]
+      dimensions:
+        allow:
+          cost_centre: [CC-FINC-01]
+    manager:
+      domains:
+        allow: [gl]
+
+  "PLAN":
+    planner:
+      dimensions:
+        allow:
+          department: [Data & Analytics]
+
+  "BUD-2026":
+    manager:
+      domains:
+        allow: [gl]

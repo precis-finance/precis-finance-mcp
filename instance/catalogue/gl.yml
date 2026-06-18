@@ -1,0 +1,35 @@
+domain: gl
+source_view: v_gl
+inspect_enabled: true
+inspect_columns:
+  - scenario
+  - period
+  - cost_centre
+  - account
+  - fs_line
+  - amount
+  - commit_id
+
+dimensions:
+  - key: cost_centre
+    label: Cost Centre
+    source: cost_centre
+
+  - key: account
+    label: Account
+    source: account
+  - key: period
+    label: Period
+    source: period
+
+metrics:
+  - key: gl_amount
+    label: Amount
+    description: "General ledger amount for any financial account (P&L or Balance Sheet). Use with account/cost_centre dimension filters for drill-down."
+    calculation_note: "SUM(amount) from semantic.v_gl, filtered by scenario and period. Sign is raw (debit-positive, credit-negative as stored in the ledger)."
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: GL

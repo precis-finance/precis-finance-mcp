@@ -1,0 +1,352 @@
+annotated-doc==0.0.4
+    # via fastapi
+annotated-types==0.7.0
+    # via pydantic
+anyio==4.14.0
+    # via
+    #   httpx
+    #   mcp
+    #   sse-starlette
+    #   starlette
+apscheduler==3.11.2
+    # via precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+asn1crypto==1.5.1
+    # via snowflake-connector-python
+atpublic==7.0.0
+    # via ibis-framework
+attrs==26.1.0
+    # via
+    #   jsonschema
+    #   referencing
+boto3==1.43.30
+    # via snowflake-connector-python
+botocore==1.43.30
+    # via
+    #   boto3
+    #   s3transfer
+    #   snowflake-connector-python
+certifi==2026.5.20
+    # via
+    #   clickhouse-connect
+    #   httpcore
+    #   httpx
+    #   requests
+    #   snowflake-connector-python
+cffi==2.0.0
+    # via cryptography
+charset-normalizer==3.4.7
+    # via
+    #   requests
+    #   snowflake-connector-python
+click==8.4.1
+    # via uvicorn
+clickhouse-connect==1.3.0
+    # via precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+cryptography==49.0.0
+    # via
+    #   google-auth
+    #   pyjwt
+    #   pyopenssl
+    #   snowflake-connector-python
+databricks-sql-connector==4.3.0
+    # via ibis-framework
+db-dtypes==1.7.0
+    # via
+    #   ibis-framework
+    #   pandas-gbq
+duckdb==1.5.3
+    # via ibis-framework
+et-xmlfile==2.0.0
+    # via openpyxl
+faker==40.15.0
+    # via precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+fastapi==0.136.3
+    # via precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+filelock==3.29.4
+    # via snowflake-connector-python
+google-api-core[grpc]==2.31.0
+    # via
+    #   google-cloud-bigquery
+    #   google-cloud-bigquery-storage
+    #   google-cloud-core
+    #   pandas-gbq
+google-auth[pyopenssl]==2.55.0
+    # via
+    #   google-api-core
+    #   google-auth-oauthlib
+    #   google-cloud-bigquery
+    #   google-cloud-bigquery-storage
+    #   google-cloud-core
+    #   pandas-gbq
+    #   pydata-google-auth
+google-auth-oauthlib==1.4.0
+    # via
+    #   pandas-gbq
+    #   pydata-google-auth
+google-cloud-bigquery==3.42.0
+    # via
+    #   ibis-framework
+    #   pandas-gbq
+google-cloud-bigquery-storage==2.39.0
+    # via ibis-framework
+google-cloud-core==2.6.0
+    # via google-cloud-bigquery
+google-crc32c==1.8.0
+    # via google-resumable-media
+google-resumable-media==2.10.0
+    # via google-cloud-bigquery
+googleapis-common-protos==1.75.0
+    # via
+    #   google-api-core
+    #   grpcio-status
+grpcio==1.81.1
+    # via
+    #   google-api-core
+    #   google-cloud-bigquery-storage
+    #   grpcio-status
+grpcio-status==1.81.1
+    # via google-api-core
+h11==0.16.0
+    # via
+    #   httpcore
+    #   uvicorn
+holidays==0.95
+    # via precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+httpcore==1.0.9
+    # via httpx
+httpx==0.28.1
+    # via
+    #   mcp
+    #   precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+httpx-sse==0.4.3
+    # via mcp
+ibis-framework[bigquery,databricks,duckdb,mssql,postgres,snowflake]==12.0.0
+    # via precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+idna==3.18
+    # via
+    #   anyio
+    #   httpx
+    #   requests
+    #   snowflake-connector-python
+jmespath==1.1.0
+    # via
+    #   boto3
+    #   botocore
+jsonschema==4.26.0
+    # via mcp
+jsonschema-specifications==2025.9.1
+    # via jsonschema
+lz4==4.4.5
+    # via
+    #   clickhouse-connect
+    #   databricks-sql-connector
+markdown-it-py==4.2.0
+    # via rich
+mcp==1.27.2
+    # via precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+mdurl==0.1.2
+    # via markdown-it-py
+numpy==2.4.6
+    # via
+    #   db-dtypes
+    #   ibis-framework
+    #   pandas
+    #   pandas-gbq
+    #   precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+oauthlib==3.3.1
+    # via
+    #   databricks-sql-connector
+    #   requests-oauthlib
+openpyxl==3.1.5
+    # via
+    #   databricks-sql-connector
+    #   precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+packaging==26.2
+    # via
+    #   db-dtypes
+    #   google-cloud-bigquery
+    #   ibis-framework
+    #   pandas-gbq
+    #   snowflake-connector-python
+pandas==3.0.3
+    # via
+    #   databricks-sql-connector
+    #   db-dtypes
+    #   ibis-framework
+    #   pandas-gbq
+    #   precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+pandas-gbq==0.35.0
+    # via ibis-framework
+parsy==2.2
+    # via ibis-framework
+platformdirs==4.10.0
+    # via snowflake-connector-python
+proto-plus==1.28.0
+    # via
+    #   google-api-core
+    #   google-cloud-bigquery-storage
+protobuf==7.35.1
+    # via
+    #   google-api-core
+    #   google-cloud-bigquery-storage
+    #   googleapis-common-protos
+    #   grpcio-status
+    #   proto-plus
+psutil==7.2.2
+    # via pandas-gbq
+psycopg[binary,pool]==3.3.4
+    # via
+    #   ibis-framework
+    #   precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+psycopg-binary==3.3.4
+    # via psycopg
+psycopg-pool==3.3.1
+    # via psycopg
+pyarrow==24.0.0
+    # via
+    #   db-dtypes
+    #   ibis-framework
+    #   pandas-gbq
+    #   precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+pyarrow-hotfix==0.7
+    # via ibis-framework
+pyasn1==0.6.3
+    # via pyasn1-modules
+pyasn1-modules==0.4.2
+    # via google-auth
+pybreaker==1.4.1
+    # via databricks-sql-connector
+pycparser==3.0
+    # via cffi
+pydantic==2.13.4
+    # via
+    #   fastapi
+    #   mcp
+    #   precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+    #   pydantic-settings
+pydantic-core==2.46.4
+    # via pydantic
+pydantic-settings==2.14.1
+    # via mcp
+pydata-google-auth==1.9.1
+    # via
+    #   ibis-framework
+    #   pandas-gbq
+pygments==2.20.0
+    # via rich
+pyjwt[crypto]==2.13.0
+    # via
+    #   databricks-sql-connector
+    #   mcp
+    #   precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+    #   snowflake-connector-python
+pyodbc==5.3.0
+    # via ibis-framework
+pyopenssl==26.3.0
+    # via
+    #   google-auth
+    #   snowflake-connector-python
+python-dateutil==2.9.0.post0
+    # via
+    #   botocore
+    #   databricks-sql-connector
+    #   google-cloud-bigquery
+    #   holidays
+    #   ibis-framework
+    #   pandas
+python-dotenv==1.2.2
+    # via
+    #   precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+    #   pydantic-settings
+python-multipart==0.0.32
+    # via mcp
+pytz==2026.2
+    # via snowflake-connector-python
+pyyaml==6.0.3
+    # via precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+referencing==0.37.0
+    # via
+    #   jsonschema
+    #   jsonschema-specifications
+requests==2.34.2
+    # via
+    #   databricks-sql-connector
+    #   google-api-core
+    #   google-cloud-bigquery
+    #   requests-oauthlib
+    #   snowflake-connector-python
+requests-oauthlib==2.0.0
+    # via google-auth-oauthlib
+rich==15.0.0
+    # via ibis-framework
+rpds-py==2026.5.1
+    # via
+    #   jsonschema
+    #   referencing
+s3transfer==0.18.0
+    # via boto3
+six==1.17.0
+    # via python-dateutil
+snowflake-connector-python==4.6.0
+    # via ibis-framework
+sortedcontainers==2.4.0
+    # via snowflake-connector-python
+sqlglot==30.11.0
+    # via ibis-framework
+sse-starlette==3.4.4
+    # via mcp
+starlette==1.3.1
+    # via
+    #   fastapi
+    #   mcp
+    #   precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+    #   sse-starlette
+structlog==26.1.0
+    # via precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+thrift==0.22.0
+    # via databricks-sql-connector
+tomlkit==0.15.0
+    # via snowflake-connector-python
+toolz==1.1.0
+    # via ibis-framework
+typing-extensions==4.15.0
+    # via
+    #   anyio
+    #   fastapi
+    #   grpcio
+    #   ibis-framework
+    #   mcp
+    #   psycopg
+    #   psycopg-pool
+    #   pydantic
+    #   pydantic-core
+    #   pyopenssl
+    #   referencing
+    #   snowflake-connector-python
+    #   starlette
+    #   typing-inspection
+typing-inspection==0.4.2
+    # via
+    #   fastapi
+    #   mcp
+    #   pydantic
+    #   pydantic-settings
+tzdata==2026.2
+    # via ibis-framework
+tzlocal==5.4
+    # via apscheduler
+urllib3==2.7.0
+    # via
+    #   botocore
+    #   clickhouse-connect
+    #   databricks-sql-connector
+    #   requests
+uvicorn==0.49.0
+    # via
+    #   mcp
+    #   precis-mcp (/tmp/tmp.U9Da2kWiq9/pyproject.toml)
+zstandard==0.25.0
+    # via clickhouse-connect
+
+# The following packages are considered to be unsafe in a requirements file:
+# setuptools

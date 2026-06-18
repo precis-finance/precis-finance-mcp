@@ -1,0 +1,14 @@
+Précis — Finance Intelligence Platform (open core: precis-mcp)
+
+Copyright (c) 2026 Sergio Naval Marimont
+
+This software is licensed under the Elastic License 2.0 (ELv2). See the LICENSE
+file for the full terms.
+
+ELv2 is source-available, not an OSI-approved open source license. You may use,
+copy, modify, self-host (including in production and for commercial purposes),
+and redistribute this software freely, subject to three limitations — the
+operative one being that you may not provide it to third parties as a hosted or
+managed service.
+
+SPDX-License-Identifier: Elastic-2.0

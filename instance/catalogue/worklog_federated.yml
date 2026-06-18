@@ -1,0 +1,117 @@
+domain: worklog_federated
+source_view: finance.worklog_metric_view
+backend: customer_pg
+backend_kind: ibis
+versioned: false
+inspect_enabled: true
+inspect_columns:
+  - worklog_id
+  - timesheet_id
+  - scenario
+  - period
+  - work_date
+  - employee_id
+  - employee_code
+  - employee_name
+  - grade
+  - project_id
+  - project_code
+  - project_name
+  - client_id
+  - client_name
+  - cost_centre
+  - activity_type
+  - task_code
+  - task_description
+  - hours_worked
+  - hours_billable
+  - daily_bill_rate_eur
+  - billable_amount_eur
+  - approval_status
+  - submitted_at
+  - approved_at
+  - approved_by
+  - source_system
+  - created_at
+
+dimensions:
+  - key: cost_centre
+    label: "Cost centre"
+    source: cost_centre
+  - key: employee_id
+    label: Employee
+    source: employee
+  - key: project_id
+    label: Project
+    source: project
+  - key: client_id
+    label: Client
+    source: client
+  - key: period
+    label: Period
+    source: period
+  - key: work_date
+    label: Work date
+    source_inline: true
+    filterable: false
+  - key: activity_type
+    label: Activity type
+    source_inline: true
+    filterable: false
+  - key: task_code
+    label: Task code
+    source_inline: true
+    filterable: false
+  - key: approval_status
+    label: Approval status
+    source_inline: true
+    filterable: false
+  - key: source_system
+    label: Source system
+    source_inline: true
+    filterable: false
+
+metrics:
+  - key: federated_hours_worked
+    label: "Federated hours worked"
+    description: "Worked hours aggregated live from a customer Postgres worklog view."
+    calculation_note: "SUM(hours_worked)."
+    source_column: hours_worked
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: number
+    fs_group: Operations
+    style: default
+
+  - key: federated_billable_hours
+    label: "Federated billable hours"
+    description: "Billable hours aggregated live from a customer Postgres worklog view."
+    calculation_note: "SUM(hours_billable)."
+    source_column: hours_billable
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: number
+    fs_group: Operations
+    style: default
+
+  - key: federated_billable_amount
+    label: "Federated billable amount"
+    description: "Billable amount aggregated live from a customer Postgres worklog view."
+    calculation_note: "SUM(billable_amount_eur)."
+    source_column: billable_amount_eur
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: Operations
+    style: default
+
+  - key: federated_utilisation
+    label: "Federated utilisation"
+    formula: federated_billable_hours / federated_hours_worked
+    format: percent
+    fs_group: Operations
+    style: ratio
+    scale_exempt: true

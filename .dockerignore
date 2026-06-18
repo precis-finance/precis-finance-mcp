@@ -1,0 +1,26 @@
+# .dockerignore.open — staged for the open `precis-mcp` repo, published as
+# .dockerignore. Keeps the open image lean and free of host-side
+# secrets; mirrors the monorepo .dockerignore, trimmed to the open tree (no
+# ui/ or marketing/).
+
+# Secrets / host-only config — consumed by compose at up-time, never baked.
+.env
+.env.*
+secrets/
+
+# Version control — root and any nested repo (defensive; the bundled instance/
+# snapshot ships without its .git).
+.git/
+**/.git
+.gitignore
+
+# Python build / cache artefacts
+.venv/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+*.egg-info/

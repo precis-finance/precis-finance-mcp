@@ -1,0 +1,281 @@
+# First-class dimension definitions (EPM-aligned)
+#
+# Three dimension types:
+#   - Leaf:    has `source` — owns a master data table
+#   - Derived: has `derived_from` — members are FK values from another dimension
+#   - Ragged:  has `ragged: true` — multi-level hierarchy with prefixed node IDs
+#
+# Relationships are declared bottom-up via `parents` (single-hop).
+# Transitive closure is computed at catalogue load time.
+
+dimensions:
+
+  # ── Leaf dimensions ────────────────────────────────────────────
+
+  cost_centre:
+    label: Cost Centre
+    attributes:
+      name: { label: Cost Centre Name }
+    display_attribute: name
+    source:
+      table: dim_cost_centre
+      key_column: cost_centre
+      attribute_mapping:
+        name: cost_centre_name
+    parents:
+      department:
+        source_column: department
+
+  counterparty_cc:
+    label: Counterparty Cost Centre
+    attributes:
+      name: { label: Cost Centre Name }
+    display_attribute: name
+    source:
+      table: dim_counterparty_cc
+      key_column: cost_centre
+      attribute_mapping:
+        name: cost_centre_name
+    parents:
+      counterparty_department:
+        source_column: department
+
+  account:
+    label: Account
+    attributes:
+      name: { label: Account Name }
+    display_attribute: name
+    source:
+      table: dim_account
+      key_column: account_code
+      attribute_mapping:
+        name: account_name
+    parents:
+      fs_line:
+        source_column: fs_line
+      account_type:
+        source_column: account_type
+
+  employee:
+    label: Employee
+    attributes:
+      name: { label: Employee Name }
+      code: { label: Employee Code }
+    display_attribute: name
+    source:
+      table: dim_employee
+      key_column: employee_id
+      attribute_mapping:
+        name: employee_name
+        code: employee_code
+    parents:
+      grade:
+        source_column: grade
+
+  project:
+    label: Project
+    attributes:
+      name: { label: Project Name }
+      code: { label: Project Code }
+    display_attribute: name
+    source:
+      table: dim_project
+      key_column: project_id
+      attribute_mapping:
+        name: project_name
+        code: project_code
+    parents:
+      project_type:
+        source_column: project_type
+      project_status:
+        source_column: status
+      client:
+        source_column: client_id
+
+  period:
+    label: Period
+    source:
+      table: dim_period
+      key_column: period
+    parents:
+      quarter:
+        source_column: quarter
+      fiscal_year:
+        source_column: fiscal_year
+
+  crm_account:
+    label: CRM Account
+    attributes:
+      name: { label: Account Name }
+      industry: { label: Industry }
+      segment: { label: Segment }
+      region: { label: Region }
+    display_attribute: name
+    source:
+      table: dim_crm_account
+      key_column: account_id
+      attribute_mapping:
+        name: account_name
+        industry: industry
+        segment: segment
+        region: region
+    parents:
+      crm_industry:
+        source_column: industry
+      crm_segment:
+        source_column: segment
+      crm_region:
+        source_column: region
+
+  # ── Derived dimensions ─────────────────────────────────────────
+
+  department:
+    label: Department
+    derived_from:
+      dimension: cost_centre
+      source_column: department
+    parents:
+      division:
+        source_column: division
+
+  division:
+    label: Division
+    derived_from:
+      dimension: cost_centre
+      source_column: division
+
+  counterparty_department:
+    label: Counterparty Department
+    derived_from:
+      dimension: counterparty_cc
+      source_column: department
+    parents:
+      counterparty_division:
+        source_column: division
+
+  counterparty_division:
+    label: Counterparty Division
+    derived_from:
+      dimension: counterparty_cc
+      source_column: division
+
+  fs_line:
+    label: Financial Statement Line
+    derived_from:
+      dimension: account
+      source_column: fs_line
+
+  account_type:
+    label: Account Type
+    derived_from:
+      dimension: account
+      source_column: account_type
+
+  grade:
+    label: Grade
+    derived_from:
+      dimension: employee
+      source_column: grade
+
+  project_type:
+    label: Project Type
+    derived_from:
+      dimension: project
+      source_column: project_type
+
+  project_status:
+    label: Project Status
+    derived_from:
+      dimension: project
+      source_column: status
+
+  client:
+    label: Client
+    attributes:
+      name: { label: Client Name }
+      industry: { label: Industry }
+      tier: { label: Tier }
+    display_attribute: name
+    source:
+      table: dim_client
+      key_column: client_id
+      attribute_mapping:
+        name: client_name
+        industry: industry
+        tier: tier
+
+  crm_industry:
+    label: Industry (CRM)
+    derived_from:
+      dimension: crm_account
+      source_column: industry
+
+  crm_segment:
+    label: Segment
+    derived_from:
+      dimension: crm_account
+      source_column: segment
+
+  crm_region:
+    label: Region
+    derived_from:
+      dimension: crm_account
+      source_column: region
+
+  quarter:
+    label: Quarter
+    derived_from:
+      dimension: period
+      source_column: quarter
+    parents:
+      fiscal_year:
+        source_column: fiscal_year
+
+  fiscal_year:
+    label: Fiscal Year
+    derived_from:
+      dimension: period
+      source_column: fiscal_year
+
+  # ── Ragged hierarchies ─────────────────────────────────────────
+
+  org_structure:
+    label: Organisational Structure
+    ragged: true
+    root_label: "— All Cost Centres —"
+    leaf_dimension: cost_centre
+    levels:
+      - dimension: division
+        display_prefix: "[D] "
+      - dimension: department
+        display_prefix: "[BU] "
+      - dimension: cost_centre
+        display_prefix: "[CC] "
+    source:
+      type: generated
+
+  calendar:
+    label: Calendar
+    ragged: true
+    root_label: "— All Periods —"
+    leaf_dimension: period
+    levels:
+      - dimension: fiscal_year
+      - dimension: quarter
+      - dimension: period
+    source:
+      type: generated
+
+  client_portfolio:
+    label: Client Portfolio
+    ragged: true
+    root_label: "— All Clients —"
+    leaf_dimension: project
+    levels:
+      - dimension: client
+        display_prefix: "[Client] "
+        node_prefix: "CLI::"
+      - dimension: project
+        display_prefix: "[Project] "
+    source:
+      type: generated

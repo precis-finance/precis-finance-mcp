@@ -1,0 +1,45 @@
+# customer_pg × fact_revenue_subledger — per-period project revenue subledger.
+#
+# Reads `projects.revenue_subledger` on the customer's Postgres. One
+# row per (project, recognition_date); recognition_date is monthly.
+# Identity projection + period filter.
+
+id: customer_pg__fact_revenue_subledger
+source: customer_pg
+target: live.fact_revenue_subledger
+scenario: ACTUALS
+kind: period
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+  period_selection:
+    strategy: lookback
+    lookback_periods: 12
+
+extract:
+  query: |
+    SELECT
+        to_char(recognition_date, 'YYYY-MM') AS period,
+        recognition_date,
+        project_id,
+        cost_centre_id AS cost_centre,
+        client_id,
+        project_type,
+        recognition_method,
+        currency,
+        hours_worked,
+        hours_billable,
+        revenue_recognised,
+        cost_recognised,
+        amount_billed,
+        contract_value,
+        percent_complete,
+        cum_revenue_recognised,
+        cum_cost_recognised,
+        cum_billed,
+        wip_balance
+    FROM projects.revenue_subledger
+    WHERE to_char(recognition_date, 'YYYY-MM') = :period

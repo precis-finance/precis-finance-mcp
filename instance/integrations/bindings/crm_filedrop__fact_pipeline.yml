@@ -1,0 +1,45 @@
+# crm_filedrop × fact_pipeline — CRM opportunities snapshot from CSV.
+#
+# Reads `opportunities.csv` from the `crm/` prefix of the file-drop
+# upload root. Source path resolved at the orchestrator boundary
+# (`${source_path}` = `${PRECIS_INGEST_UPLOAD_DIR}/crm/`). Snapshot
+# binding — `EXCHANGE TABLES` replaces `live.fact_pipeline` atomically
+# on each load.
+#
+# DuckDB reads the CSV via `read_csv_auto` (type inference); explicit
+# casts pin the precision-sensitive columns (`probability`, `amount`)
+# so they land cleanly into CH `Decimal` columns.
+
+id: crm_filedrop__fact_pipeline
+source: crm_filedrop
+target: live.fact_pipeline
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: crm_filedrop_token
+
+extract:
+  query: |
+    SELECT
+        opportunity_id,
+        account_id,
+        opportunity_name,
+        stage,
+        stage_category,
+        CAST(probability AS DECIMAL(5,4))            AS probability,
+        CAST(amount AS DECIMAL(14,2))                AS amount,
+        currency,
+        created_date,
+        close_date,
+        last_stage_change_date,
+        owner,
+        service_line,
+        engagement_type,
+        duration_months,
+        estimated_start_date,
+        source
+    FROM read_csv_auto('${source_path}/opportunities.csv')

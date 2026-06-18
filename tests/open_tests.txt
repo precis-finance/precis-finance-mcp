@@ -1,0 +1,105 @@
+# Open-core test manifest — the test files that exercise ONLY the open
+# `precis_mcp` package and therefore travel to the open `precis-mcp` repo at the
+# R4 cut. Source of truth for two consumers:
+#
+#   1. The collection-time boundary guard in conftest.py
+#      (`pytest_collection_modifyitems`) — fails the run if any file listed here
+#      imports the commercial `precis` package. This is the "extraction check"
+#      from precis_mcp_package_spec.md §6 / R3.
+#   2. The R4 repo cut — the list of test files to copy into the open repo.
+#
+# Membership rule: a test is open iff it imports nothing from `precis.`, does
+# not use the `client` fixture (which boots `precis.agui`), and imports nothing
+# outside the open export tree. The second clause excludes the 4 agui route
+# tests (admin/scenarios/tasks/workstreams) and test_oauth_proxy.py (all 8
+# tests drive the proxy through that fixture); the third excludes the
+# monorepo-tooling test test_eval_auth.py (scripts/eval/).
+# test_open_core_assembly.py is open with
+# one monorepo-only test skipif'd when `precis` is absent. Verified by running
+# the manifest against the assembled export tree: scripts/publish_open.py
+# gates every publish on it (spec §7).
+#
+# Paths are relative to tests/. Blank lines and `#` comments are ignored.
+# Keep sorted within each section. When you add an open test, add it here.
+#
+# Open infrastructure carried alongside these (NOT listed here because they are
+# not collected as tests): tests/fakes/{fake_clickhouse,fake_platform_db,
+# fake_redis,ingestion,mock_mcp}.py and tests/factories/{auth,ingestion}.py.
+# tests/fakes/fake_llm.py is NOT carried — no open test uses it (it is the
+# LangGraph chat-model fake, purely commercial).
+
+# --- unit (40) ---
+unit/test_admin_ops.py
+unit/test_auth.py
+unit/test_auth_mode.py
+unit/test_backup_ch_render.py
+unit/test_backup_config.py
+unit/test_backup_manifest.py
+unit/test_backup_prune.py
+unit/test_catalogue.py
+unit/test_catalogue_ref.py
+unit/test_clickhouse_init.py
+unit/test_context_validation.py
+unit/test_engine_catalogue.py
+unit/test_file_readers.py
+unit/test_formatter.py
+unit/test_ibis_backends.py
+unit/test_ibis_executor.py
+unit/test_live_ddl_runner.py
+unit/test_load_history_migration.py
+unit/test_object_store_and_period.py
+unit/test_oidc_config.py
+unit/test_passthrough_views.py
+unit/test_period_selection.py
+unit/test_pg_advisory_lock.py
+unit/test_profile_resolver.py
+unit/test_ragged_views.py
+unit/test_read_tools_json_safe.py
+unit/test_registry.py
+unit/test_resolver.py
+unit/test_retriever.py
+unit/test_revenue_subledger.py
+unit/test_run_routes_helpers.py
+unit/test_scenario_modifiers.py
+unit/test_scenario_registry.py
+unit/test_scenario_runner.py
+unit/test_scenario_store.py
+unit/test_scope_resolver.py
+unit/test_semantic_runner.py
+unit/test_swap.py
+unit/test_table_builder.py
+unit/test_transformer.py
+unit/test_validate.py
+
+# --- component (24) ---
+component/test_admin_cli.py
+component/test_app_open_lifespan.py
+component/test_auth.py
+component/test_backup_cli.py
+component/test_backup_restore.py
+component/test_backup_runner.py
+component/test_connection_tls.py
+component/test_engine_pipeline.py
+component/test_filter_resolver.py
+component/test_identity_resolution.py
+component/test_ingestion_read_tools.py
+component/test_ingestion_scheduler.py
+component/test_inspect.py
+component/test_load_history_writer.py
+component/test_open_core_assembly.py
+component/test_orchestrator.py
+component/test_orchestrator_logging.py
+component/test_orchestrator_observability.py
+component/test_read_tools.py
+component/test_run_endpoint.py
+component/test_sample_data_landing.py
+component/test_synthetic_data_crm.py
+component/test_upload_endpoint.py
+component/test_watcher.py
+
+# --- e2e (5) ---
+e2e/test_ingestion_e2e.py
+e2e/test_landing_ddl_integration.py
+e2e/test_load_history_migration_integration.py
+e2e/test_mcp_oauth2_e2e.py
+e2e/test_pg_advisory_lock_integration.py

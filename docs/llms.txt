@@ -1,0 +1,72 @@
+# Précis-MCP
+
+> Self-hostable, read-only financial-model access over the Model Context
+> Protocol: a metric engine driven by a declarative YAML catalogue over a SQL
+> semantic layer in ClickHouse, with ingestion, OAuth 2.1 identity, profiles,
+> backups, and an MCP tool surface for AI clients. The open core of the
+> Précis platform.
+
+Read "How Précis-MCP works" first — it defines the vocabulary (scenario,
+domain, dimension, binding, profile, instance directory) the rest assumes.
+All numbers come from the operator's own model: the `instance/` directory
+(catalogue YAML + semantic SQL) defines what exists; the engine refuses to
+serve an inconsistent model.
+
+## Getting started
+
+- [How Précis-MCP works](getting-started/concepts/): the moving parts, the
+  federated-read split, and the vocabulary table
+- [Quickstart](getting-started/quickstart/): single-user local server with
+  the populated demo model in ~15 minutes (Docker, dev key)
+
+## Configuration
+
+- [Catalogue & semantic model](configuration/catalogue-and-semantic/): the
+  two-layer model walkthrough — SQL views for meaning, YAML for exposure
+- [Adding metrics & dimensions](configuration/adding-metrics-and-dimensions/):
+  the change contract — invariants, federated-domain limits, traps, checklist
+- [ClickHouse schema contract](configuration/clickhouse-schema-contract/):
+  the databases, tables, views, and scenario registry a ready cluster holds
+- [Ingestion & data sources](configuration/ingestion/): sources, bindings,
+  extract→validate→atomic swap, scheduling, load verification
+- [User profiles & permissions](configuration/user-profiles/): scenario
+  patterns → roles → domain/dimension scope, with composable examples
+- [Environment variable reference](configuration/environment-variables/):
+  every knob
+
+## Deployment
+
+- [Remote access — sign-in & identity modes](deployment/oauth-keycloak/):
+  dev key / bundled Keycloak / direct OIDC, and user provisioning
+- [Corporate IdP via Keycloak brokering](deployment/keycloak-brokering/):
+  the SSO walkthrough, including DCR-surface hardening
+- [External IdP recipes](deployment/external-idp-recipes/): Auth0, Okta,
+  Entra ID, Ping — per-IdP steps and env blocks
+- [ClickHouse data modes](deployment/clickhouse-data-modes/): bundled vs
+  bring-your-own, provisioning presets
+- [Security model](deployment/security-model/): the trust model — read-only
+  enforcement, authn/authz layers, exposure surfaces, audit trail
+- [Production deployment checklist](deployment/production-checklist/): the
+  first-run checklist for a hardened multi-user deployment
+
+## Operations
+
+- [Onboarding a data source](operations/onboarding-ingestion/): the
+  end-to-end runbook for wiring a dataset
+- [Backups & restore](operations/backups/): declarative backup bundles,
+  restore, drills
+- [Rotating credentials](operations/rotating-credentials/): rotating
+  database, JWT, and API secrets without downtime
+- [Upgrading](operations/upgrades/): changelog-first upgrade procedure;
+  rollback is restore-from-backup
+- [Observability](operations/observability/): emitted spans/metrics/logs,
+  collector wiring, alerting on failed loads
+- [Troubleshooting](operations/troubleshooting/): symptom-indexed, verbatim
+  error strings
+
+## Reference
+
+- [MCP tool reference](reference/mcp-tools/): every advertised tool, its
+  parameters, variants, and scoping conventions
+- [Adding read tools](development/adding-read-tools/): the developer
+  contract for extending the tool surface

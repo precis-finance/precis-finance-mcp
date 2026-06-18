@@ -1,0 +1,19 @@
+# customer_pg × timesheets — monthly aggregated timesheet binding.
+
+id: customer_pg__timesheets
+source: customer_pg
+dataset: timesheets
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+  period_selection:
+    strategy: lookback
+    lookback_periods: 60
+extract:
+  source_table: "hr.timesheets"
+  period_column: period_start_date
+scenario: ACTUALS
+partition_column: period_start_date
+order_by: [period_start_date, employee_id, project_id]

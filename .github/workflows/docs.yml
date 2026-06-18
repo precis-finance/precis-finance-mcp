@@ -1,0 +1,64 @@
+# docs.yml — Build the MkDocs site and publish it to GitHub Pages.
+#
+# Staged at deploy/ci/docs.yml; published to .github/workflows/docs.yml
+# (GitHub Actions only runs workflows under .github/workflows/). Inert in the
+# Précis monorepo, which has no Actions runner — it runs only in the mirror.
+#
+# One-time setup in the mirror repo before the first run succeeds:
+#   - Repository must be public (or on a plan that permits Pages from private).
+#   - Settings -> Pages -> Source: "GitHub Actions".
+# The custom domain docs.precis.finance is carried by open_docs/CNAME, which
+# MkDocs copies into the built site (site/CNAME); GitHub Pages reads it.
+#
+# Builds on push and PR (strict — broken links/nav fail the run); deploys only
+# on push to main. Docs toolchain mirrors pyproject-open.toml's [dev] extra.
+name: docs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One concurrent Pages deployment; never cancel an in-flight publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # git-revision-date-localized reads commit history for page dates;
+          # full history avoids the build-date fallback (the squashed mirror
+          # still resolves to the sync commit's date).
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install docs toolchain
+        run: pip install mkdocs-material mkdocs-git-revision-date-localized-plugin
+      - name: Build site (strict)
+        run: mkdocs build --strict
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    # Deploy only from main; PR runs are build-only validation.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

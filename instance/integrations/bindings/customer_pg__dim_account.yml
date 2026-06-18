@@ -1,0 +1,30 @@
+# customer_pg × dim_account — chart of accounts snapshot.
+#
+# Reads `gl.accounts` from the customer's Postgres warehouse. Snapshot
+# binding — each load replaces the full `live.dim_account` content via
+# `EXCHANGE TABLES`. Presentation filter (active + non-HEADER) lives in
+# `semantic.dim_account`, not in this query.
+
+id: customer_pg__dim_account
+source: customer_pg
+target: live.dim_account
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+
+extract:
+  query: |
+    SELECT
+        account_code,
+        account_name,
+        account_type,
+        fs_line,
+        normal_balance,
+        parent_code,
+        is_active::int AS is_active
+    FROM gl.accounts

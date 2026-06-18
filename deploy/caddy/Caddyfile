@@ -1,0 +1,61 @@
+# Bundled auto-HTTPS ingress (COMPOSE_PROFILES+=bundled-proxy).
+#
+# Caddy obtains and renews the Let's Encrypt certificate for PRECIS_DOMAIN
+# automatically — no certbot, no renewal wiring. Requirements: a public DNS
+# record for the domain pointing at this host, and ports 80+443 reachable
+# from the internet (the ACME challenge). On a locked-down network, use your
+# own ingress instead (drop the bundled-proxy profile).
+#
+# Routing mirrors the reference nginx vhost (deploy/nginx/):
+#   /auth/*  → Keycloak  keycloak:8080   (bundled-keycloak profile)
+#   the rest → app_open  precis-mcp:8769 (/mcp, /.well-known/*, /authorize,
+#                                         /token, /register, /health)
+# Caddy preserves the Host header and sets X-Forwarded-Proto/-For on proxied
+# requests by default — exactly what KC_PROXY_HEADERS=xforwarded expects.
+#
+# rate_limit comes from mholt/caddy-ratelimit, compiled in by the Dockerfile
+# next to this file (not in stock Caddy) — it needs an explicit position in
+# the directive order.
+
+{
+	order rate_limit before reverse_proxy
+}
+
+{$PRECIS_DOMAIN} {
+	# OAuth AS-metadata, path-insertion form (RFC 8414): strict clients probe
+	# /.well-known/<type>/auth/realms/<realm>; Keycloak serves it at
+	# /auth/realms/<realm>/.well-known/<type>. Rewrite, then the /auth/*
+	# handler below proxies it.
+	@as_metadata path_regexp asmeta ^/\.well-known/(oauth-authorization-server|openid-configuration)/(.+)$
+	rewrite @as_metadata /{re.asmeta.2}/.well-known/{re.asmeta.1}
+
+	# Keycloak admin console + Admin REST API — blocked at the edge, same as
+	# the nginx reference. Administer via an SSH tunnel to the host's
+	# 127.0.0.1:8080, or replace with an allowlist for a trusted range.
+	handle /auth/admin/* {
+		respond 403
+	}
+
+	handle /auth/* {
+		# Anonymous DCR stays open by design (MCP clients self-register;
+		# registration grants no data access — the provisioning gate does),
+		# but rate-limit it per IP so it can't be used for unbounded
+		# client-row creation in Keycloak. Same budget as the nginx
+		# reference: 5/min, 429 on excess.
+		rate_limit {
+			zone precis_dcr {
+				match {
+					path /auth/realms/{$KC_REALM:precis}/clients-registrations*
+				}
+				key {client_ip}
+				events 5
+				window 1m
+			}
+		}
+		reverse_proxy keycloak:8080
+	}
+
+	handle {
+		reverse_proxy precis-mcp:8769
+	}
+}

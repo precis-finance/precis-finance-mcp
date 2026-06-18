@@ -1,0 +1,47 @@
+# customer_pg × gl — general ledger postings.
+#
+# Reads from `gl.journal_postings` on the customer's Postgres warehouse
+# (a source-side view joining the normalised gl.journal_entries +
+# gl.journal_lines). The extract query is executed verbatim by Ibis
+# against the source — Postgres plans and runs the GROUP BY, only the
+# aggregated rows traverse the wire and land in `live.fact_gl`.
+#
+# Period is the literal accounting period (String, source of truth on
+# the journal entry). Adjustment / 13th periods pass through unchanged —
+# no date derivation, no calendar assumption.
+
+id: customer_pg__gl
+source: customer_pg
+target: live.fact_gl
+scenario: ACTUALS
+kind: period
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+  period_selection:
+    strategy: lookback
+    lookback_periods: 60
+
+# Operator-authored extract query. Executed by Ibis against `source`
+# (customer_pg) — dialect is source-native Postgres SQL. The result-set
+# column names + types must match the declared shape of `target`
+# (live.fact_gl); the orchestrator validates the resultset shape before
+# materialising into ClickHouse and aborts the load on mismatch.
+#
+# `:period` is a bind parameter — substituted by the runner at execute
+# time with the scheduled period (no string interpolation, no SQL
+# injection surface). For `kind: snapshot` bindings, omit the WHERE
+# clause; the full result fully replaces `target`.
+extract:
+  query: |
+    SELECT
+        period,
+        account_code,
+        cost_centre_id as cost_centre,
+        SUM(amount) AS amount
+    FROM gl.journal_postings
+    WHERE period = :period
+    GROUP BY period, account_code, cost_centre_id

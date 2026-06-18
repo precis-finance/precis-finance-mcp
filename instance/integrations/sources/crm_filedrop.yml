@@ -1,0 +1,34 @@
+# CRM file-drop source — CSV files dropped into the local upload directory
+# under the `crm/` prefix. Picked up by the file-drop driver running on
+# the `http_upload` transport (LocalFsObjectStore backing, configured via
+# the deployment env var PRECIS_INGEST_UPLOAD_DIR).
+#
+# Dev contract: the synthetic data generator writes CSVs into
+# `${PRECIS_INGEST_UPLOAD_DIR}/crm/`. The crm_filedrop source's
+# `backend.prefix: "crm/"` scopes this source to those files within the
+# shared upload root. Production wiring later swaps this source for a real
+# CRM integration (Salesforce, HubSpot) without touching the binding or
+# dataset definitions.
+#
+# No credentials to resolve — LocalFs is unauthenticated. `secret_ref` is
+# required by the schema; declaring it for consistency. The registry will
+# emit a soft WARN at startup because no `CRM_FILEDROP_*` env vars exist;
+# that's expected and harmless for this transport.
+
+id: crm_filedrop
+display_name: "CRM CSV file drop"
+kind: http_upload
+secret_ref: crm_filedrop
+network:
+  egress_required: false
+  endpoints: []
+backend:
+  file_format: csv
+  prefix: "crm/"
+  csv:
+    delimiter: ","
+    encoding: "utf-8"
+    has_header: true
+    quotechar: '"'
+metadata:
+  usage: "ingestion"

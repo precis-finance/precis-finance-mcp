@@ -1,0 +1,19 @@
+# customer_pg × revenue_subledger — project revenue memo subledger.
+
+id: customer_pg__revenue_subledger
+source: customer_pg
+dataset: revenue_subledger
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+  period_selection:
+    strategy: lookback
+    lookback_periods: 60
+extract:
+  source_table: "projects.revenue_subledger"
+  period_column: recognition_date
+scenario: ACTUALS
+partition_column: recognition_date
+order_by: [recognition_date, project_id]

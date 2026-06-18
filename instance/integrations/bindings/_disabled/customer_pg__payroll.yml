@@ -1,0 +1,19 @@
+# customer_pg × payroll — monthly payroll postings.
+
+id: customer_pg__payroll
+source: customer_pg
+dataset: payroll
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+  period_selection:
+    strategy: lookback
+    lookback_periods: 60
+extract:
+  source_table: "hr.payroll"
+  period_column: pay_date
+scenario: ACTUALS
+partition_column: pay_date
+order_by: [pay_date, cost_centre_id, employee_id]

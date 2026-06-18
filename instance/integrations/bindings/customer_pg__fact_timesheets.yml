@@ -1,0 +1,37 @@
+# customer_pg × fact_timesheets — per-period timesheet aggregates.
+#
+# Reads `hr.timesheets` on the customer's Postgres. The source is
+# already at monthly grain per (employee, project, cost_centre); the
+# binding just projects + filters by period.
+#
+# `cost_centre_id` is renamed to `cost_centre`; `period` is derived as
+# 'YYYY-MM' from period_start_date and used as the CH partition key.
+
+id: customer_pg__fact_timesheets
+source: customer_pg
+target: live.fact_timesheets
+scenario: ACTUALS
+kind: period
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+  period_selection:
+    strategy: lookback
+    lookback_periods: 12
+
+extract:
+  query: |
+    SELECT
+        to_char(period_start_date, 'YYYY-MM') AS period,
+        period_start_date,
+        employee_id,
+        project_id,
+        cost_centre_id AS cost_centre,
+        hours_worked,
+        hours_billable,
+        activity_type
+    FROM hr.timesheets
+    WHERE to_char(period_start_date, 'YYYY-MM') = :period

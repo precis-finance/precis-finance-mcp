@@ -1,0 +1,34 @@
+# customer_pg × intercompany — intra-group recharge ledger.
+#
+# Reads `finance.intercompany_transactions` from the mock customer Postgres.
+# Source ids `cost_centre_id` / `counterparty_cc_id` are renamed to
+# `cost_centre` / `counterparty_cc` at the binding boundary.
+
+id: customer_pg__intercompany
+source: customer_pg
+target: live.fact_intercompany
+scenario: ACTUALS
+kind: period
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+  period_selection:
+    strategy: lookback
+    lookback_periods: 60
+
+# `:period` is a bind parameter substituted by the runner at execute time.
+# Result-set column names + types must match the declared shape of
+# `live.fact_intercompany`; the orchestrator validates before materialising.
+extract:
+  query: |
+    SELECT
+        period,
+        cost_centre_id      AS cost_centre,
+        counterparty_cc_id  AS counterparty_cc,
+        SUM(amount)         AS amount
+    FROM finance.intercompany_transactions
+    WHERE period = :period
+    GROUP BY period, cost_centre_id, counterparty_cc_id

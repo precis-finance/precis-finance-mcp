@@ -1,0 +1,68 @@
+domain: payroll
+source_view: v_payroll
+versioned: false
+
+dimensions:
+  - key: cost_centre
+    label: Cost Centre
+    source: cost_centre
+
+  - key: employee
+    label: Employee
+    source: employee
+  - key: period
+    label: Period
+    source: period
+
+metrics:
+  - key: headcount
+    label: Headcount
+    description: "Monthly active headcount (employees with a payroll record in the period)."
+    calculation_note: "COUNT of payroll rows per period. Rollup = avg gives average monthly headcount over the range."
+    source_column: "1"
+    aggregation: sum
+    rollup_method: avg
+    sign: raw
+    format: number
+    scale_exempt: true
+    fs_group: Payroll
+
+  - key: gross_salary
+    label: Gross Salary
+    description: "Total gross salary cost."
+    source_column: gross_salary_eur
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: Payroll
+
+  - key: employer_contributions
+    label: Employer Contributions
+    description: "Employer social security and pension contributions."
+    source_column: employer_contributions_eur
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: Payroll
+
+  - key: bonus_cost
+    label: Bonus
+    description: "Bonus payments."
+    source_column: bonus_eur
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: Payroll
+
+  - key: total_payroll_cost
+    label: Total Payroll Cost
+    description: "Total employment cost (salary + contributions + bonus)."
+    source_column: total_cost_eur
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: Payroll

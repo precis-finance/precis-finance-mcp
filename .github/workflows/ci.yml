@@ -1,0 +1,79 @@
+# ci.yml — CI for the open `precis-mcp` repository.
+#
+# Staged at deploy/ci/ci.yml; published to
+# .github/workflows/ci.yml (GitHub Actions only runs workflows under
+# .github/workflows/). It is inert in the Précis monorepo, which has no Actions runner.
+#
+# Four jobs:
+#   - boundary: the open import check (no `precis` import) — replaces the
+#     Précis monorepo's `lint-imports`, which degenerates once `precis` is absent. Pure
+#     stdlib AST scan, so it runs before any install.
+#   - tests: the open suite (unit + component). Both run entirely on in-process
+#     fakes (tests/fakes/), so no real ClickHouse/Postgres/Redis is needed. The
+#     e2e tier (real services, marked `slow`) is excluded here.
+#   - audit: pip-audit over the hashed lockfile (requirements.lock; regenerate
+#     with `make lock`) — known-vulnerability gate on the pinned dependency set.
+#   - image-scan: build the Docker image and trivy-scan it; fails on fixable
+#     HIGH/CRITICAL findings in the OS layer or site-packages.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: No commercial (precis) imports
+        run: python scripts/check_no_commercial_imports.py
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (open package + dev extras)
+        run: pip install ".[dev]"
+      - name: Unit + component suite (fakes, no real services)
+        run: pytest tests/unit tests/component -m "not slow" -q
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip-audit the dependency lockfile
+        run: |
+          pip install pip-audit
+          pip-audit --disable-pip --require-hashes -r requirements.lock
+      - name: pip-audit the optional warehouse-driver constraints
+        # Version-pinned (not hashed) — the opt-in connectors stay CVE-gated even
+        # though they ride a separate constraints file (see Dockerfile / Makefile
+        # lock-extras). --no-deps audits the fully-pinned set as-is (the file
+        # carries no hashes, so --require-hashes does not apply).
+        run: pip-audit --no-deps -r constraints-extras.txt
+
+  image-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t precis-mcp:scan .
+      - name: Trivy scan (fixable HIGH/CRITICAL gate)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: precis-mcp:scan
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true

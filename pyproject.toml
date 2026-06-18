@@ -1,0 +1,152 @@
+# pyproject-open.toml — staged standalone packaging metadata for the open
+# `precis-mcp` package.
+#
+# Why this name: in the Précis monorepo this cannot be `pyproject.toml` — that
+# name is taken by the root file carrying the import-linter boundary contract.
+#
+# Dependency subset audited from the actual imports across precis_mcp/*.py.
+# Deliberately excluded (Précis-platform-only, imported nowhere in precis_mcp/):
+# langgraph*, langchain-*, openai, google-genai, docker, slowapi, bcrypt,
+# quickjs-ng, defusedxml, lxml, sqlalchemy (transitive via ibis[postgres]),
+# and — once web_fetch moves to the Précis platform — anthropic, html2text, requests
+# (web_fetch_tools.py is their only open importer).
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "precis-mcp"
+version = "0.1.0"
+description = "Read-only financial-data access over MCP — the open core of Précis (metric engine, semantic layer, ingestion, ClickHouse read layer, MCP transport, OIDC auth)."
+readme = "README.md"
+requires-python = ">=3.12"
+# Elastic License 2.0 — source-available, not OSI open source.
+license = "Elastic-2.0"
+authors = [{ name = "Précis" }]
+keywords = ["mcp", "fpa", "finance", "clickhouse", "metrics", "semantic-layer"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: POSIX :: Linux",
+]
+
+# --- Core runtime: every dependency here is directly imported by an open
+#     module and needed on the default code path. ---
+dependencies = [
+    # MCP transport + HTTP server.
+    # fastapi <0.137: 0.137 wraps included routers in a single opaque
+    # `_IncludedRouter` entry in `app.routes`, hiding their sub-routes from
+    # flat introspection (breaks the open-app route assertion in
+    # tests/component/test_open_core_assembly.py; the app still serves them).
+    # starlette >=1.3.1: clears CVE-2026-54282 / CVE-2026-54283. The two pins
+    # are compatible (fastapi 0.136.3 accepts starlette 1.3.1).
+    "fastapi<0.137",
+    "uvicorn",
+    "mcp",
+    "starlette>=1.3.1",
+    # ClickHouse read layer + ingestion / metric engine
+    "clickhouse-connect",
+    "ibis-framework[duckdb,postgres]",
+    "pyarrow",
+    "numpy",
+    "pandas",
+    # Platform DB (load_history, users) — psycopg3 (db.py + scripts/migrate.py).
+    # Also backs the ingestion advisory lock — no redis dependency:
+    # db.get_redis_client is a lazy-import Précis-platform-only helper.
+    "psycopg[binary,pool]",
+    # Auth — IdP-agnostic OIDC verifier, JWKS fetch
+    "pyjwt[crypto]",
+    "httpx",
+    # File-reader ingestion (xlsx) + ingestion binding scheduler
+    "openpyxl",
+    "apscheduler>=3.10,<4",
+    # Config + serialization
+    "pydantic",
+    "python-dotenv",
+    "pyyaml",
+    # Structured logging
+    "structlog",
+    # Synthetic sample data (precis_mcp/sample_data) — the populated demo
+    # model. Pinned to the Précis monorepo's versions: the generator is seeded, but
+    # faker provider data changes across releases, and the demo dataset must
+    # be identical in both repos. Bump together with requirements.txt.
+    "faker==40.15.0",
+    "holidays==0.95",
+]
+
+[project.optional-dependencies]
+# Object-store drivers — lazy-imported (ingestion/object_store.py and the
+# backup destination, backup/destination.py), raise ImportError until
+# installed. Self-hosters opt in per source backend / backup destination.
+s3 = ["boto3"]
+# >=3.2 for PKey.from_type_string (pinned-host-key verification).
+sftp = ["paramiko>=3.2"]
+
+# Warehouse backends for ingestion + federated reads — lazy-imported by the
+# shared Ibis factory (ingestion/ibis_backends.py), which raises and names the
+# extra until it is installed. Postgres + duckdb (file-drop) ship in the
+# default `ibis-framework[duckdb,postgres]` above; self-hosters opt in only to
+# the warehouse they actually have. The driver pins are Ibis's, not ours.
+mssql = ["ibis-framework[mssql]"]
+snowflake = ["ibis-framework[snowflake]"]
+bigquery = ["ibis-framework[bigquery]"]
+databricks = ["ibis-framework[databricks]"]
+
+# Opt-in telemetry — observability.py wraps every import in try/except and is
+# gated by PRECIS_TELEMETRY_ENABLED. Infra instrumentation only; the LLM
+# instrumentors (anthropic/langchain) are excluded — the open package runs no LLM.
+telemetry = [
+    "opentelemetry-api>=1.31",
+    "opentelemetry-sdk>=1.31",
+    "opentelemetry-exporter-otlp-proto-http>=1.31",
+    "opentelemetry-instrumentation-fastapi>=0.52b0",
+    "opentelemetry-instrumentation-httpx>=0.52b0",
+    "opentelemetry-instrumentation-urllib3>=0.52b0",
+    "wrapt<2",
+]
+
+# Everything the carried open test suite needs beyond the runtime deps,
+# plus the docs build (mkdocs.yml at the repo root; `mkdocs serve` /
+# `mkdocs build --strict`).
+# No import-linter: the mirror has no `precis` to lint against — the AST scan
+# (scripts/check_no_commercial_imports.py) is the boundary guard there.
+dev = [
+    "pytest",
+    "fakeredis",
+    "mkdocs-material",
+    "mkdocs-git-revision-date-localized-plugin",
+    # `make lock` — regenerates the hashed dependency lockfile
+    "pip-tools",
+]
+
+[project.scripts]
+precis-mcp-admin = "precis_mcp.admin_cli:main"
+precis-mcp-clickhouse-init = "precis_mcp.clickhouse_init:main"
+# The two servers run as modules, no console-script wrapper:
+#   single-user local trial : python -m precis_mcp.server
+#   multi-user remote (ASGI) : uvicorn precis_mcp.app_open:app
+
+[tool.setuptools.packages.find]
+include = ["precis_mcp*"]
+
+[tool.setuptools.package-data]
+"precis_mcp" = ["**/*.md"]
+
+# Mirrors the Précis monorepo root pyproject's pytest config so the carried open test
+# suite runs unchanged in the open repo. No import-linter contract here — it
+# degenerates once `precis` is absent (the AST scan in
+# scripts/check_no_commercial_imports.py is the open-repo boundary guard).
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+    "--strict-markers",
+    "-ra",
+]
+markers = [
+    "unit: pure single-process tests, no I/O.",
+    "component: in-process multi-module tests using shared fakes from tests/fakes/.",
+    "e2e: real Postgres + ClickHouse.",
+    "slow: opt-in for tests over ~1s. Default invocations exclude these via `-m \"not slow\"`.",
+]

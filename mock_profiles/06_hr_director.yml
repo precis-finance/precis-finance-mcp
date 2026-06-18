@@ -1,0 +1,23 @@
+# Profile: HR director — payroll domain only, all scenarios.
+#
+# Rules exercised:
+#   - Domain allow-list narrows to a single domain. Any domain not listed
+#     in allow is implicitly excluded (allow present → start from allow set).
+#   - No dimension restrictions — headcount/payroll visible across every
+#     cost centre and employee.
+#   - Manager role at `*` with no literal override → applies uniformly.
+#
+# Expect:
+#   (ACTUALS,    manager-tool, payroll domain) → allowed, no dim filter
+#   (ACTUALS,    manager-tool, pnl domain)     → denied (pnl not in allow list)
+#   (BUD-2026,   planner-tool, payroll domain) → allowed (falls back to manager)
+#   (FC-2026-Q1, analyst-tool, gl domain)      → denied
+profile_id: hr-director
+name: HR Director — Payroll Only
+description: Manager access to payroll domain across every scenario; no other domains.
+
+scenarios:
+  "*":
+    manager:
+      domains:
+        allow: [payroll]

@@ -1,0 +1,81 @@
+# MkDocs configuration for the published `precis-mcp` mirror. In the mirror,
+# `open_docs/` *is* `docs/` (the MkDocs default), so no `docs_dir` override is
+# needed.
+#
+# Build locally:  mkdocs serve     (http://127.0.0.1:8000)
+# Build site:     mkdocs build     (output in ./site)
+# The tooling ships in the dev extra:  pip install -e ".[dev]"
+
+site_name: Précis-MCP
+site_url: https://docs.precis.finance/
+site_description: >-
+  Self-hostable, read-only financial-model access over the Model Context
+  Protocol — metric engine, semantic layer, ingestion, and OAuth2 transport.
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: black
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - scheme: slate
+      primary: black
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - content.code.annotate
+
+plugins:
+  - search
+  - git-revision-date-localized:
+      type: date
+      fallback_to_build_date: true
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: README.md
+  - Getting started:
+      - Quickstart (local, dev-key): getting-started/quickstart.md
+      - How Précis-MCP works: getting-started/concepts.md
+  - Deployment:
+      - Production deployment checklist: deployment/production-checklist.md
+      - Remote access — sign-in & identity modes: deployment/oauth-keycloak.md
+      - Corporate IdP via Keycloak brokering: deployment/keycloak-brokering.md
+      - External IdP recipes: deployment/external-idp-recipes.md
+      - ClickHouse data modes: deployment/clickhouse-data-modes.md
+      - Security model: deployment/security-model.md
+  - Configuration:
+      - Catalogue & semantic model: configuration/catalogue-and-semantic.md
+      - Adding metrics & dimensions: configuration/adding-metrics-and-dimensions.md
+      - ClickHouse schema contract: configuration/clickhouse-schema-contract.md
+      - Ingestion & data sources: configuration/ingestion.md
+      - User profiles & permissions: configuration/user-profiles.md
+      - Environment variable reference: configuration/environment-variables.md
+  - Operations:
+      - Onboarding a data source: operations/onboarding-ingestion.md
+      - Backups & restore: operations/backups.md
+      - Upgrading: operations/upgrades.md
+      - Rotating credentials: operations/rotating-credentials.md
+      - Observability: operations/observability.md
+      - Troubleshooting: operations/troubleshooting.md
+  - Reference:
+      - MCP tool reference: reference/mcp-tools.md
+  - Development:
+      - Adding read tools: development/adding-read-tools.md

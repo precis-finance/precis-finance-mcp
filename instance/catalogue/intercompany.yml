@@ -1,0 +1,33 @@
+domain: intercompany
+source_view: v_intercompany
+versioned: false
+inspect_enabled: true
+inspect_columns:
+  - scenario
+  - period
+  - cost_centre
+  - counterparty_cc
+  - amount
+
+dimensions:
+  - key: cost_centre
+    label: Cost Centre
+    source: cost_centre
+  - key: counterparty_cc
+    label: Counterparty Cost Centre
+    source: counterparty_cc
+  - key: period
+    label: Period
+    source: period
+
+metrics:
+  - key: intercompany_amount
+    label: Intercompany Recharge
+    description: "Intra-group recharge amount — what a cost centre was charged by a counterparty cost centre in the period. Standalone memo subledger, not part of the GL or plan. Filter/break down by counterparty_cc (and its department/division) to see who charged whom."
+    calculation_note: "SUM(amount) from semantic.v_intercompany. Positive = cost to the charged cost_centre, income to the counterparty_cc. Not reconciled to GL."
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: Intercompany

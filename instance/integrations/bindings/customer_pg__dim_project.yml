@@ -1,0 +1,39 @@
+# customer_pg × dim_project — project master snapshot.
+#
+# Reads `projects.projects` on the customer's Postgres. Snapshot binding —
+# `EXCHANGE TABLES` replaces `live.dim_project` atomically on each load.
+#
+# Source column `cost_centre_id` is renamed to `cost_centre` at the
+# binding boundary.
+
+id: customer_pg__dim_project
+source: customer_pg
+target: live.dim_project
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+
+extract:
+  query: |
+    SELECT
+        project_id,
+        project_code,
+        project_name,
+        client_id,
+        client_name,
+        project_type,
+        status,
+        start_date,
+        end_date,
+        budget_hours,
+        budget_revenue,
+        contract_value,
+        project_manager_id,
+        cost_centre_id  AS cost_centre,
+        currency
+    FROM projects.projects

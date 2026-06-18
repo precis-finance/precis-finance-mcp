@@ -1,0 +1,101 @@
+domain: gl_federated
+source_view: finance.gl_metric_view
+backend: customer_pg
+backend_kind: ibis
+versioned: false
+inspect_enabled: true
+inspect_columns:
+  - transaction_id
+  - journal_entry_id
+  - journal_line_id
+  - scenario
+  - entity_id
+  - period
+  - posting_date
+  - document_ref
+  - document_type
+  - supplier_id
+  - supplier_name
+  - account_code
+  - account_name
+  - account_type
+  - fs_line
+  - cost_centre
+  - project_id
+  - debit_amount
+  - credit_amount
+  - amount
+  - currency
+  - description
+  - source_system
+  - posted_by
+  - approval_status
+  - created_at
+
+dimensions:
+  - key: cost_centre
+    label: "Cost centre"
+    source: cost_centre
+  - key: account_code
+    label: Account
+    source: account
+  - key: period
+    label: Period
+    source: period
+  - key: posting_date
+    label: Posting date
+    source_inline: true
+    filterable: false
+  - key: supplier_id
+    label: Supplier
+    source_inline: true
+    filterable: false
+
+metrics:
+  - key: federated_debit_amount
+    label: Debit
+    description: "Debits from federated GL dataset. Use with account/cost_centre dimension filters for drill-down."
+    calculation_note: "SUM(debit_amount) from gl_transactions_detail."
+    source_column: debit_amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: GL
+
+  - key: federated_credit_amount
+    label: Credit
+    description: "General ledger amount for federated GL dataset. Use with account/cost_centre dimension filters for drill-down."
+    calculation_note: "SUM(credit_amount) from gl_transactions_detail."
+    source_column: credit_amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: GL
+
+  - key: federated_net_amount
+    label: Amount
+    description: "General ledger amount for federated GL dataset. Use with account/cost_centre dimension filters for drill-down."
+    calculation_note: "SUM(amount) from gl_transactions_detail, filtered by scenario and period. Sign is raw (debit-positive, credit-negative as stored in the ledger)."
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: GL
+
+  - key: federated_revenue_amount
+    label: Revenue amount
+    description: "Revenue postings from the federated GL dataset, using a structured where predicate."
+    calculation_note: "SUM(amount) from gl_transactions_detail where account_type = REVENUE."
+    source_column: amount
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: currency
+    fs_group: GL
+    where:
+      - column: account_type
+        op: eq
+        value: REVENUE

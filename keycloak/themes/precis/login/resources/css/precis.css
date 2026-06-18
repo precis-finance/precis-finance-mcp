@@ -1,0 +1,309 @@
+/* Self-hosted webfonts — same faces the SPA bundles (@fontsource), copied
+   into resources/fonts/ so the login page never depends on Google Fonts.
+   Cormorant 400 covers the wordmark (its font-weight:300 nearest-matches to
+   this face, exactly as the SPA renders it). */
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/dm-sans-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "DM Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("../fonts/dm-sans-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Cormorant Garamond";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../fonts/cormorant-garamond-latin-400-normal.woff2") format("woff2");
+}
+
+/* Précis login theme — overrides on top of keycloak.v2.
+   Mirrors the SPA's LoginPage feel: no card, narrow centred column,
+   Cormorant Garamond wordmark, "Finance Intelligence Platform"
+   subtitle, DM Sans 400 form labels (no bold anywhere). */
+
+:root {
+  --precis-bg: #FAFBFC;
+  --precis-surface: #FFFFFF;
+  --precis-ink: #1A1F2E;
+  --precis-ink-muted: #5A6478;
+  --precis-ink-faint: #8892A4;
+  --precis-accent: #0D9488;
+  --precis-accent-hover: #14B8A6;
+  --precis-border: rgba(12, 31, 44, 0.12);
+  --precis-critical: #C4453A;
+
+  --precis-font-sans: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --precis-font-display: "Cormorant Garamond", "Times New Roman", serif;
+
+  --pf-v5-global--primary-color--100: var(--precis-accent);
+  --pf-v5-global--primary-color--200: var(--precis-accent-hover);
+  --pf-v5-global--link--Color: var(--precis-accent);
+  --pf-v5-global--link--Color--hover: var(--precis-accent-hover);
+  --pf-v5-global--BackgroundColor--100: var(--precis-bg);
+  --pf-v5-global--BackgroundColor--200: var(--precis-surface);
+  --pf-v5-global--Color--100: var(--precis-ink);
+  --pf-v5-global--Color--200: var(--precis-ink-muted);
+  --pf-v5-global--FontFamily--text: var(--precis-font-sans);
+  --pf-v5-global--FontFamily--heading: var(--precis-font-display);
+  --pf-v5-global--danger-color--100: var(--precis-critical);
+}
+
+html, body, #keycloak-bg {
+  background: var(--precis-bg) !important;
+  background-image: none !important;
+  font-family: var(--precis-font-sans);
+  font-weight: 400;
+  color: var(--precis-ink);
+}
+
+/* Collapse keycloak.v2's grid layout into a single centred column. */
+.pf-v5-c-login {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8vh 1rem 2rem;
+  background: transparent;
+}
+
+.pf-v5-c-login__container {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  grid-template-areas: none !important;
+  grid-template-columns: none !important;
+  width: 100%;
+  max-width: 32rem;
+  gap: 2rem;
+}
+
+.pf-v5-c-login__header,
+.pf-v5-c-login__main,
+.pf-v5-c-login__footer {
+  grid-area: auto !important;
+  align-self: stretch !important;
+  width: 100% !important;
+  max-width: 32rem !important;
+  margin: 0 auto !important;
+  background: transparent !important;
+}
+
+.pf-v5-c-login__header {
+  text-align: center;
+}
+
+/* Précis wordmark. */
+#kc-header-wrapper,
+.pf-v5-c-brand {
+  font-family: var(--precis-font-display);
+  font-weight: 300;
+  font-size: 2.25rem;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--precis-ink);
+  padding: 0;
+  text-align: center;
+  text-transform: none;
+  background: transparent;
+  height: auto;
+}
+
+/* Subtitle below the wordmark — matches the SPA's
+   "Finance Intelligence Platform" caption. */
+#kc-header-wrapper::after,
+.pf-v5-c-brand::after {
+  content: "Finance Intelligence Platform";
+  display: block;
+  font-family: var(--precis-font-sans);
+  font-weight: 400;
+  font-size: 0.875rem;
+  color: var(--precis-ink-muted);
+  letter-spacing: 0;
+  margin-top: 0.625rem;
+  text-transform: none;
+}
+
+/* Hide Keycloak's default "Sign in to your account" page title. */
+#kc-page-title,
+.pf-v5-c-login__main-header > h1 {
+  display: none;
+}
+
+/* No card: form flush against the page background, matches the SPA. */
+.card-pf,
+.login-pf-page .card-pf,
+.pf-v5-c-login__main {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0;
+}
+
+.pf-v5-c-login__main-header {
+  padding: 0;
+}
+
+.pf-v5-c-login__main-body {
+  padding: 0;
+}
+
+/* Form spacing — matches the SPA's space-y-5 (1.25rem) between fields. */
+.pf-v5-c-form {
+  gap: 1.25rem;
+}
+
+.pf-v5-c-form__group {
+  margin: 0;
+}
+
+/* Labels.  DM Sans 400 (regular) — Précis never uses bold UI labels.
+   PatternFly defaults to 600 on the inner __label-text span; override
+   both layers explicitly. */
+label,
+.pf-v5-c-form__label,
+.pf-v5-c-form__label-text,
+.pf-c-form__label {
+  font-family: var(--precis-font-sans) !important;
+  color: var(--precis-ink-muted) !important;
+  font-size: 0.875rem !important;
+  font-weight: 400 !important;
+}
+
+/* Inputs. */
+.pf-v5-c-form-control,
+span.pf-v5-c-form-control,
+input[type="text"],
+input[type="password"],
+input[type="email"] {
+  font-family: var(--precis-font-sans);
+  font-weight: 400;
+  border: 1px solid var(--precis-border);
+  border-radius: 4px;
+  color: var(--precis-ink);
+  background: var(--precis-surface);
+  height: 2.5rem;
+  --pf-v5-c-form-control--BackgroundColor: var(--precis-surface);
+  --pf-v5-c-form-control--Color: var(--precis-ink);
+  --pf-v5-c-form-control--BorderBottomColor: var(--precis-border);
+  --pf-v5-c-form-control--BorderColor: var(--precis-border);
+}
+
+span.pf-v5-c-form-control > input {
+  color: var(--precis-ink);
+  background: transparent;
+  font-weight: 400;
+  height: 100%;
+}
+
+.pf-v5-c-form-control:focus-within,
+.pf-v5-c-form-control:focus,
+input[type="text"]:focus,
+input[type="password"]:focus,
+input[type="email"]:focus {
+  border-color: var(--precis-accent);
+  outline: 2px solid rgba(13, 148, 136, 0.18);
+  outline-offset: 1px;
+  --pf-v5-c-form-control--focus--BorderBottomColor: var(--precis-accent);
+}
+
+/* Password toggle. */
+.pf-v5-c-button.pf-m-control,
+button.pf-m-control {
+  background-color: var(--precis-surface) !important;
+  border: 1px solid var(--precis-border) !important;
+  border-left: 0 !important;
+  color: var(--precis-ink-muted) !important;
+  height: 2.5rem;
+  --pf-v5-c-button--m-control--BackgroundColor: var(--precis-surface);
+  --pf-v5-c-button--m-control--Color: var(--precis-ink-muted);
+}
+
+.pf-v5-c-button.pf-m-control:hover,
+button.pf-m-control:hover {
+  background-color: var(--precis-bg) !important;
+  color: var(--precis-ink) !important;
+}
+
+.pf-v5-c-button.pf-m-control svg,
+.pf-v5-c-button.pf-m-control i {
+  fill: currentColor;
+  color: currentColor;
+}
+
+.pf-v5-c-input-group__item.pf-m-fill .pf-v5-c-form-control {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.pf-v5-c-input-group__item:not(.pf-m-fill) .pf-v5-c-button {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+/* Primary submit button — DM Sans 500 (medium) is acceptable for the
+   primary action; matches the SPA's button. */
+.pf-v5-c-button.pf-m-primary,
+.pf-c-button.pf-m-primary,
+input[type="submit"],
+button[type="submit"] {
+  background-color: var(--precis-accent);
+  border: none;
+  color: #ffffff;
+  font-family: var(--precis-font-sans);
+  font-weight: 500;
+  letter-spacing: 0;
+  border-radius: 4px;
+  height: 2.5rem;
+  transition: background-color 150ms ease-in-out;
+}
+
+.pf-v5-c-button.pf-m-primary:hover,
+.pf-c-button.pf-m-primary:hover,
+input[type="submit"]:hover,
+button[type="submit"]:hover {
+  background-color: var(--precis-accent-hover);
+}
+
+/* "Remember me" checkbox. */
+.pf-v5-c-check__label {
+  font-weight: 400 !important;
+}
+
+/* Links — "Forgot password?" etc. */
+a, a:visited {
+  color: var(--precis-accent);
+  text-decoration: none;
+  font-weight: 400;
+}
+a:hover {
+  color: var(--precis-accent-hover);
+  text-decoration: underline;
+}
+
+/* Brokered IdP buttons — text only. The parent theme's provider logo
+   (font icon, img, or svg) renders unconstrained under this stylesheet,
+   so suppress every icon form and keep just the display name. */
+#kc-social-providers i,
+#kc-social-providers img,
+#kc-social-providers svg,
+.kc-social-provider-logo {
+  display: none !important;
+}
+
+/* Error / alert pills. */
+.pf-v5-c-alert.pf-m-danger,
+.pf-c-alert.pf-m-danger,
+.alert-error {
+  background: rgba(196, 69, 58, 0.08);
+  border: 1px solid rgba(196, 69, 58, 0.2);
+  color: var(--precis-critical);
+  border-radius: 4px;
+  font-weight: 400;
+}

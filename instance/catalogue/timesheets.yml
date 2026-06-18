@@ -1,0 +1,76 @@
+domain: timesheets
+source_view: v_timesheets
+versioned: false
+inspect_enabled: true
+inspect_columns:
+  - scenario
+  - period
+  - cost_centre
+  - employee
+  - project
+  - hours_worked
+  - hours_billable
+  - hours_non_billable
+
+dimensions:
+  - key: cost_centre
+    label: Cost Centre
+    source: cost_centre
+
+  - key: employee
+    label: Employee
+    source: employee
+
+  - key: project
+    label: Project
+    source: project
+  - key: period
+    label: Period
+    source: period
+
+metrics:
+  - key: hours_worked
+    label: Hours Worked
+    description: "Total hours worked (billable + non-billable) in the period."
+    calculation_note: "SUM(hours_worked) from semantic.v_timesheets."
+    source_column: hours_worked
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: number
+    scale_exempt: true
+    fs_group: Timesheets
+
+  - key: hours_billable
+    label: Billable Hours
+    description: "Hours billed to client projects in the period."
+    calculation_note: "SUM(hours_billable) from semantic.v_timesheets."
+    source_column: hours_billable
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: number
+    scale_exempt: true
+    fs_group: Timesheets
+
+  - key: hours_non_billable
+    label: Non-Billable Hours
+    description: "Hours worked but not billed (internal, bench, training)."
+    calculation_note: "SUM(hours_non_billable) from semantic.v_timesheets."
+    source_column: hours_non_billable
+    aggregation: sum
+    rollup_method: sum
+    sign: raw
+    format: number
+    scale_exempt: true
+    fs_group: Timesheets
+
+  # --- Derived ---
+  - key: ts_utilisation_rate
+    label: "Utilisation Rate %"
+    description: "Percentage of total hours that were billable."
+    calculation_note: "hours_billable / hours_worked * 100."
+    formula: "hours_billable / hours_worked * 100"
+    format: percent
+    scale_exempt: true
+    fs_group: Timesheets
