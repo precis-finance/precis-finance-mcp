@@ -112,6 +112,30 @@ x-precis-env: &precis-env
   CUSTOMER_PG_PASSWORD: ${CUSTOMER_PG_PASSWORD:-${PGPASSWORD}}
   CUSTOMER_PG_DATABASE: ${CUSTOMER_PG_DATABASE:-fpa_actuals}
 
+# The first-party precis-mcp application image — built from this repo's
+# Dockerfile and published to GHCR by the release workflow (deploy/ci/release.yml
+# → .github/workflows/release.yml, on a `v*` tag). Every service below that runs
+# the app — the server, the migrate/realm one-shots, and the ingestion/backup
+# daemons — shares this ONE image, so the tag and build args live in a single
+# place and the six services can never drift onto different builds.
+#
+# `image:` + `build:` together: a re-pull uses the published release image;
+# absent it (a fresh source checkout, or `docker compose up --build`) compose
+# falls back to building from source. PRECIS_MCP_TAG defaults to the current
+# release — bump it with each release, or override to a digest for re-pull
+# immutability matching the upstream-image policy below.
+x-precis-image: &precis-image
+  image: ghcr.io/precis-finance/precis-mcp:${PRECIS_MCP_TAG:-0.1.0}
+  build:
+    context: ..
+    dockerfile: Dockerfile
+    args:
+      # Optional warehouse drivers baked at build (bigquery, snowflake, mssql,
+      # databricks). Set PRECIS_EXTRAS in deploy/.env or via
+      # `deploy-mcp.sh --extras <name>`. Empty = no warehouse drivers. Shared
+      # here so every service builds an identical image under the shared tag.
+      PRECIS_EXTRAS: ${PRECIS_EXTRAS:-}
+
 # Images are digest-pinned (tag@sha256) so a re-pull cannot silently change
 # what runs. To take an image update: `docker buildx imagetools inspect <tag>`,
 # update the digest here and in docker-compose.local.yml, test, commit.
@@ -239,10 +263,7 @@ services:
   # precis-mcp image (the Keycloak 26 image is ubi-micro — no package manager —
   # so the reconcile can't live there). No docker socket, no kcadm.
   keycloak-realm-apply:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    <<: *precis-hardening
+    <<: [*precis-image, *precis-hardening]
     profiles: ["bundled-keycloak"]
     restart: "no"
     command: ["python", "deploy/keycloak/reconcile.py"]
@@ -262,10 +283,7 @@ services:
   # schema (auth, profiles, validation, load_history, audit) and none of the
   # Précis platform tables.
   migrate:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    <<: *precis-hardening
+    <<: [*precis-image, *precis-hardening]
     restart: "no"
     command: ["python", "scripts/migrate.py", "--scope", "open"]
     environment:
@@ -279,15 +297,7 @@ services:
         condition: service_healthy
 
   precis-mcp:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-      args:
-        # Optional warehouse drivers baked at build (bigquery, snowflake, mssql,
-        # databricks). Set PRECIS_EXTRAS in deploy/.env or via
-        # `deploy-mcp.sh --extras <name>`. Empty = no warehouse drivers.
-        PRECIS_EXTRAS: ${PRECIS_EXTRAS:-}
-    <<: *precis-hardening
+    <<: [*precis-image, *precis-hardening]
     restart: unless-stopped
     # The open ASGI entrypoint: /mcp + discovery + OAuth proxy shims, no
     # Précis routers, no LangGraph agent (precis_mcp/app_open.py).
@@ -384,10 +394,7 @@ services:
   # the registry at process start; after editing instance/integrations/,
   # `docker compose restart ingestion-scheduler` picks up the change.
   ingestion-scheduler:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    <<: *precis-hardening
+    <<: [*precis-image, *precis-hardening]
     profiles: ["ingestion"]
     restart: unless-stopped
     command: ["python", "-m", "precis_mcp.ingestion.scheduler_daemon"]
@@ -410,10 +417,7 @@ services:
   # `docker compose cp`, a host bind-mount, or your own transfer job); S3/SFTP
   # stores are env-configured pass-throughs an external system can push to.
   ingestion-watcher:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    <<: *precis-hardening
+    <<: [*precis-image, *precis-hardening]
     profiles: ["ingestion-watch"]
     restart: unless-stopped
     command: ["python", "-m", "precis_mcp.ingestion.watcher_daemon"]
@@ -453,10 +457,7 @@ services:
   # a missed fire is not back-filled; backup_history records actual runs.
   # See docs/operations/backups.md.
   backup-scheduler:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    <<: *precis-hardening
+    <<: [*precis-image, *precis-hardening]
     profiles: ["backup"]
     restart: unless-stopped
     # Runs as the clickhouse image's uid, not the image default: the CH server

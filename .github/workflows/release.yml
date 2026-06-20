@@ -1,0 +1,66 @@
+# release.yml — publish the open `precis-mcp` application image to GHCR.
+#
+# Staged at deploy/ci/release.yml; published to
+# .github/workflows/release.yml (GitHub Actions only runs workflows under
+# .github/workflows/). Inert in the Précis monorepo, which has no Actions runner.
+#
+# Cutting a release is pushing a `v*` tag on the mirror (e.g. `v0.1.0`). This
+# builds the single app image from the repo Dockerfile and pushes it to
+# ghcr.io/precis-finance/precis-mcp tagged with the version and `latest`. The
+# compose stack (deploy/docker-compose.yml) pulls this image by default and
+# falls back to a local build when it is absent — so the same six app services
+# (server, migrate/realm one-shots, ingestion and backup daemons) share one
+# published build.
+#
+# Scope: the core image (no optional warehouse drivers — PRECIS_EXTRAS empty).
+# Operators needing bigquery/snowflake/mssql/databricks build their own with
+# `--build-arg PRECIS_EXTRAS=...`; the build path stays in compose for that.
+# amd64 only for now (servers are amd64; the local compose builds natively on
+# other arches) — add linux/arm64 here once the image is proven.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/precis-finance/precis-mcp
+          # latest=auto: `latest` and the {{major}}.{{minor}} alias track real
+          # releases only — a prerelease tag (v0.1.0-rc.1, used to rehearse this
+          # workflow) publishes just its own version and never moves `latest`.
+          flavor: latest=auto
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.licenses=Elastic-2.0
+            io.modelcontextprotocol.server.name=io.github.precis-finance/precis-mcp
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
