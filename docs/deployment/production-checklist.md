@@ -100,13 +100,30 @@ non-zero naming exactly what is missing.
 
 ## 5. Seed identity and access
 
-No admin exists at install. Seed the first one, then build profiles and assign
-them (the CLI runs inside the server container):
+No admin exists at install. The simplest path is to let the deploy create it —
+pass `--admin-id` on your `deploy-mcp.sh` run (or set `PRECIS_BOOTSTRAP_ADMIN_ID`
+in `deploy/.env`):
 
 ```bash
+bash scripts/deploy-mcp.sh --admin-id you@example.com
+```
+
+The deploy's first-admin step creates that admin — idempotently, so it's safe on
+every run — and prints a one-time temporary password (change it on first login)
+in the deploy output. If you already deployed with `--admin-id`, it's done; the
+manual path below is only for adding admins later, or if you didn't set it.
+
+To seed it by hand in mode B, note that `create-admin` provisions a Keycloak
+account and so needs the Keycloak bootstrap-admin password — which the
+long-running server does not carry. Inject it with `run` (not `exec`):
+
+```bash
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env run --rm \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD="$(grep '^KEYCLOAK_ADMIN_PASSWORD=' deploy/.env | cut -d= -f2-)" \
+  precis-mcp python -m precis_mcp.admin_cli create-admin --id you@example.com
+# mode C (external IdP owns the credential): exec the running server is fine
 docker compose -f deploy/docker-compose.yml exec precis-mcp \
-  python -m precis_mcp.admin_cli create-admin --id you@example.com
-# mode C: add --no-keycloak (the external IdP owns the credential)
+  python -m precis_mcp.admin_cli create-admin --id you@example.com --no-keycloak --external-id <idp-subject>
 ```
 
 Then author and assign profiles — see

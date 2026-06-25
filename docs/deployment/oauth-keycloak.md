@@ -107,23 +107,44 @@ Two things to know:
 ## Create the first admin and provision users
 
 Being signed in by the IdP grants nothing — each user must also exist in
-Précis-MCP with a profile. The first admin is seeded with the **admin CLI** (the
-UI can't bootstrap itself). Run it inside the server container —
-`docker compose -f deploy/docker-compose.yml exec precis-mcp python -m …` —
-which already has the platform-DB connection configured:
+Précis-MCP with a profile, and the UI can't bootstrap itself. The simplest path
+is to let the deploy create it — pass `--admin-id` on your `deploy-mcp.sh` run
+(or set `PRECIS_BOOTSTRAP_ADMIN_ID` in `deploy/.env`):
 
 ```bash
-python -m precis_mcp.admin_cli create-admin --id alice
-# mode C (external IdP — no Keycloak account, the IdP owns the credential):
-python -m precis_mcp.admin_cli create-admin --id alice --no-keycloak --external-id <idp-subject>
+bash scripts/deploy-mcp.sh --admin-id alice@example.com
 ```
 
-Then provision and grant access:
+The deploy's first-admin step creates that admin — idempotently, so it's safe on
+every run — and prints a one-time temporary password (change it on first login)
+in the deploy output. If you already deployed with `--admin-id`, it's done; the
+manual steps below are only for adding admins later, or if you didn't set it.
+
+To do it by hand, run the **admin CLI** in the `precis-mcp` container. One
+wrinkle in bundled-Keycloak (mode B): `create-admin`, `create-user`, and
+`reset-password` provision a *Keycloak* account, so they need the Keycloak
+bootstrap-admin password — which the long-running server deliberately does not
+carry. Inject it for that one call (it lives in `deploy/.env` as
+`KEYCLOAK_ADMIN_PASSWORD`) by using `run` rather than `exec`:
 
 ```bash
-python -m precis_mcp.admin_cli create-user --id bob
-python -m precis_mcp.admin_cli profile create --file analyst.yml
-python -m precis_mcp.admin_cli assign --user bob --profile analyst
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env run --rm \
+  -e KC_BOOTSTRAP_ADMIN_PASSWORD="$(grep '^KEYCLOAK_ADMIN_PASSWORD=' deploy/.env | cut -d= -f2-)" \
+  precis-mcp python -m precis_mcp.admin_cli create-admin --id alice@example.com
+# mode C (external IdP — no Keycloak account, the IdP owns the credential):
+docker compose -f deploy/docker-compose.yml exec precis-mcp \
+  python -m precis_mcp.admin_cli create-admin --id alice --no-keycloak --external-id <idp-subject>
+```
+
+Then provision and grant access. `create-user` provisions Keycloak too, so it
+takes the same injected credential as above; profile and assignment commands
+touch only the platform DB, so a plain `exec` into the running server works:
+
+```bash
+docker compose -f deploy/docker-compose.yml exec precis-mcp \
+  python -m precis_mcp.admin_cli profile create --file analyst.yml
+docker compose -f deploy/docker-compose.yml exec precis-mcp \
+  python -m precis_mcp.admin_cli assign --user bob --profile analyst
 ```
 
 A user with no profile authenticates but can read nothing — assign a profile to

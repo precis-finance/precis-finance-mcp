@@ -19,6 +19,7 @@
 #   bash scripts/deploy-mcp.sh --extras bigquery    # bake a warehouse driver into the image (bigquery|snowflake|mssql|databricks; comma-separate for several). Re-run on a live instance to add one later — rebuilds (cached layers) + recreates.
 #   bash scripts/deploy-mcp.sh --data-only          # provision + exit (no Keycloak/server)
 #   bash scripts/deploy-mcp.sh --auth-mode MODE     # identity mode (see below)
+#   bash scripts/deploy-mcp.sh --admin-id you@example.com  # bootstrap the first admin (mode B); prints a one-time temp password. Persists PRECIS_BOOTSTRAP_ADMIN_ID; idempotent.
 #
 # Ingress mode (the ingress axis, also settable via PRECIS_INGRESS_MODE;
 # default bundled — `--ingress-mode bundled|byo`). Orthogonal to the other
@@ -81,6 +82,7 @@ AUTH_MODE="${PRECIS_AUTH_MODE:-keycloak}"   # keycloak (mode B) | oidc (mode C)
 INGRESS_MODE="${PRECIS_INGRESS_MODE:-bundled}"  # bundled (Caddy) | byo (own ingress)
 EXTRAS="${PRECIS_EXTRAS:-}"                  # comma-separated warehouse drivers baked into the image: bigquery,snowflake,mssql,databricks
 MCP_TAG="${PRECIS_MCP_TAG:-}"               # published image tag to pull (--tag); empty = the compose default
+ADMIN_ID="${PRECIS_BOOTSTRAP_ADMIN_ID:-}"   # first admin to bootstrap (--admin-id); empty = skip + print the manual command
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -91,6 +93,8 @@ while [ $# -gt 0 ]; do
         --no-build)    DO_BUILD=false ;;                 # explicit pull (the default; kept for back-compat)
         --tag)         MCP_TAG="$2"; shift 2; continue ;;   # published image tag to pull (sets PRECIS_MCP_TAG)
         --tag=*)       MCP_TAG="${1#*=}"; shift; continue ;;
+        --admin-id)    ADMIN_ID="$2"; shift 2; continue ;;  # first admin to bootstrap (sets PRECIS_BOOTSTRAP_ADMIN_ID)
+        --admin-id=*)  ADMIN_ID="${1#*=}"; shift; continue ;;
         --data-mode)   DATA_MODE="$2"; shift 2; continue ;;
         --data-mode=*) DATA_MODE="${1#*=}"; shift; continue ;;
         --auth-mode)   AUTH_MODE="$2"; shift 2; continue ;;
@@ -282,6 +286,10 @@ ssh "$SERVER" "
             echo '# Bare hostname for the bundled Caddy proxy (the host part of'
             echo '# PRECIS_BASE_URL). Required with the bundled-proxy profile:'
             echo 'PRECIS_DOMAIN='
+            echo '# First admin to bootstrap on deploy (email/id). Set via --admin-id'
+            echo '# or here; the deploy creates it (idempotent) and prints a one-time'
+            echo '# temporary password. Left empty, the deploy prints the manual command.'
+            echo 'PRECIS_BOOTSTRAP_ADMIN_ID='
         } > deploy/.env
         echo '  generated deploy/.env (set PRECIS_BASE_URL before the server phase)'
     else
@@ -323,6 +331,23 @@ if [ -n "$MCP_TAG" ]; then
         fi
     "
     echo "  set PRECIS_MCP_TAG=${MCP_TAG} in deploy/.env (pulls ghcr.io/precis-finance/precis-mcp:${MCP_TAG})"
+    echo ""
+fi
+
+# Persist the bootstrap admin id (--admin-id) into deploy/.env (idempotent upsert)
+# so the first-admin phase below — and later redeploys — know who to create.
+if [ -n "$ADMIN_ID" ]; then
+    ssh "$SERVER" "
+        set -euo pipefail
+        cd ${REMOTE_DIR}
+        umask 077
+        if grep -q '^PRECIS_BOOTSTRAP_ADMIN_ID=' deploy/.env; then
+            sed -i 's|^PRECIS_BOOTSTRAP_ADMIN_ID=.*|PRECIS_BOOTSTRAP_ADMIN_ID=${ADMIN_ID}|' deploy/.env
+        else
+            echo 'PRECIS_BOOTSTRAP_ADMIN_ID=${ADMIN_ID}' >> deploy/.env
+        fi
+    "
+    echo "  set PRECIS_BOOTSTRAP_ADMIN_ID=${ADMIN_ID} in deploy/.env"
     echo ""
 fi
 
@@ -428,6 +453,46 @@ ssh "$SERVER" "
     set +e
     echo -n 'precis-mcp /health: '; curl -sf http://127.0.0.1:8769/health && echo || echo FAIL
     echo -n 'discovery doc:      '; curl -sf http://127.0.0.1:8769/.well-known/oauth-protected-resource >/dev/null && echo OK || echo FAIL
+"
+echo ""
+
+# ── 6. First admin (idempotent; mode B auto-bootstrap) ────────────────
+# create-admin provisions BOTH the Keycloak user and the platform-DB row, so it
+# needs the platform-DB env (the precis-mcp service has it) AND the Keycloak
+# bootstrap-admin credential (it does NOT — only the keycloak one-shots carry
+# it). We run it in the precis-mcp service and inject KC_BOOTSTRAP_ADMIN_* for
+# this one call, so the long-running server never holds the Keycloak master
+# secret. Re-running is safe: an existing admin is reported and skipped.
+echo "=== 6. First admin ==="
+ssh "$SERVER" "
+    set -uo pipefail
+    cd ${REMOTE_DIR}
+    ADMIN_ID=\$(grep '^PRECIS_BOOTSTRAP_ADMIN_ID=' deploy/.env 2>/dev/null | cut -d= -f2- || true)
+    if [ -z \"\${ADMIN_ID:-}\" ]; then
+        echo '  no PRECIS_BOOTSTRAP_ADMIN_ID set — skipping. Bootstrap the first admin with:'
+        echo '    bash scripts/deploy-mcp.sh --admin-id you@example.com    (re-run this script), or directly:'
+        echo \"    ${COMPOSE} run --rm -e KC_BOOTSTRAP_ADMIN_PASSWORD precis-mcp python -m precis_mcp.admin_cli create-admin --id you@example.com\"
+        exit 0
+    fi
+    if [ '${AUTH_MODE}' = 'oidc' ]; then
+        echo \"  mode C (external IdP): Précis holds no credential — map the admin to its IdP subject:\"
+        echo \"    ${COMPOSE} run --rm precis-mcp python -m precis_mcp.admin_cli create-admin --id \${ADMIN_ID} --no-keycloak --external-id <idp-subject>\"
+        exit 0
+    fi
+    # Mode B: inject the bundled-Keycloak bootstrap-admin creds for this one call.
+    export KC_BOOTSTRAP_ADMIN_USERNAME=\$(grep '^KEYCLOAK_ADMIN_USERNAME=' deploy/.env | cut -d= -f2-)
+    export KC_BOOTSTRAP_ADMIN_PASSWORD=\$(grep '^KEYCLOAK_ADMIN_PASSWORD=' deploy/.env | cut -d= -f2-)
+    out=\$(${COMPOSE} run --rm --no-deps \
+            -e KC_BOOTSTRAP_ADMIN_USERNAME -e KC_BOOTSTRAP_ADMIN_PASSWORD \
+            precis-mcp python -m precis_mcp.admin_cli create-admin --id \"\${ADMIN_ID}\" 2>&1) && rc=0 || rc=\$?
+    echo \"\${out}\" | sed 's/^/    /'
+    if [ \"\${rc}\" -ne 0 ]; then
+        if echo \"\${out}\" | grep -q 'already exists'; then
+            echo \"  admin '\${ADMIN_ID}' already exists — nothing to do (idempotent).\"
+        else
+            echo \"  WARNING: first-admin bootstrap failed (rc=\${rc}); create it manually with the command above.\" >&2
+        fi
+    fi
 "
 echo ""
 echo "=== deploy-mcp.sh complete ==="

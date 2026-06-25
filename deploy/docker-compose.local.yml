@@ -75,7 +75,7 @@ services:
     # Pull the published image by default (it bundles the demo instance, so no
     # source checkout is needed); `up --build` builds from a checkout instead.
     # Same image as the multi-user bundle.
-    image: ghcr.io/precis-finance/precis-mcp:${PRECIS_MCP_TAG:-0.1.1}
+    image: ghcr.io/precis-finance/precis-mcp:${PRECIS_MCP_TAG:-0.2.1}
     build:
       context: ..
       dockerfile: Dockerfile

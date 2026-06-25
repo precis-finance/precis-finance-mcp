@@ -85,6 +85,7 @@ Postgres.
 | `PRECIS_AUTH_PREFLIGHT` | `false` | Run an issuer/JWKS/audience conformance check at boot and fail fast on misconfiguration. |
 | `PRECIS_IDENTITY_CLAIM` | `precis_user_id` (falls back to `preferred_username`) | Signed token claim carrying the user identity. |
 | `PRECIS_IDENTITY_COLUMN` | `id` | `users` column the claim is matched against (`id` or `external_id`). |
+| `PRECIS_BOOTSTRAP_ADMIN_ID` | empty | First admin to create on deploy (read by `deploy-mcp.sh`, also settable via `--admin-id`). The deploy creates it idempotently and prints a one-time temporary password; left empty, the deploy prints the manual command instead. |
 
 ## Identity — mode A: single-user dev key
 

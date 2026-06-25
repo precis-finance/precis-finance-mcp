@@ -9,6 +9,34 @@ my client integration?"*
      ritual (scripts/publish_open.py); move them under a dated heading when
      the sync is pushed to the mirror. -->
 
+## [0.2.1] - 2026-06-25
+
+A fix release on top of 0.2.0: the published image now serves the MCP widgets,
+the single-user quickstart pulls the current release, and first-admin creation
+is built into the deploy. No breaking changes — the `/mcp` tools and their
+responses are unchanged.
+
+### Fixed
+
+- **MCP widgets now ship in the published image.** `run_statement` / `run_metric`
+  carry a financial-table widget and `inspect_rows` an inspection-grid widget for
+  hosts that render MCP UI — but the prebuilt bundles were silently dropped from
+  the image (an over-broad `dist/` ignore also matched `ui/mcp-widgets/dist/`), so
+  the server fell back to text. The bundles are now packaged; widget-capable hosts
+  render the table, and other hosts keep getting the full figures as before.
+- **The single-user quickstart pulls the current release.** `docker-compose.local.yml`
+  pinned `PRECIS_MCP_TAG` to an older default, so a fresh quickstart pulled a
+  stale image; it now tracks the release.
+
+### Added
+
+- **First-admin bootstrap in `deploy-mcp.sh`.** `--admin-id <id>` (or
+  `PRECIS_BOOTSTRAP_ADMIN_ID` in `deploy/.env`) creates the first admin during
+  deploy — idempotently — and prints a one-time temporary password in the deploy
+  output; run without it, the deploy prints the exact manual command. In
+  bundled-Keycloak mode the Keycloak bootstrap-admin credential is injected only
+  for that one call, so the long-running server never carries it.
+
 ## [0.2.0] - 2026-06-25
 
 Adds the **read-only Excel add-in** as an open feature, served by the published

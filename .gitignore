@@ -18,9 +18,12 @@ __pycache__/
 *.pyc
 *.pyo
 
-# Packaging build artefacts
+# Packaging build artefacts. `dist/` is anchored to the repo root (a leading
+# slash) so it ignores only the top-level Python build output — an unanchored
+# `dist/` also matches `ui/mcp-widgets/dist/`, which silently dropped the
+# prebuilt MCP widget bundles from the published image.
 build/
-dist/
+/dist/
 *.egg-info/
 
 # Excel add-in local build artefacts (the Docker image builds dist/ from source).
