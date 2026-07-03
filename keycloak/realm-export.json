@@ -72,16 +72,6 @@
             "access.token.claim": "true",
             "userinfo.token.claim": "true"
           }
-        },
-        {
-          "name": "audience-precis-api",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-audience-mapper",
-          "config": {
-            "included.custom.audience": "https://demo.precis.finance/api",
-            "id.token.claim": "false",
-            "access.token.claim": "true"
-          }
         }
       ]
     }

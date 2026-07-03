@@ -278,10 +278,12 @@ with the output mode pinned per name:
 - **Dead params** (`_DEAD_MCP_PARAMS = {out, report_id, position}`) are
   stripped from every advertised `inputSchema` — `out` is pinned by the
   variant, and the other two belong to output paths the transport rejects.
-- **Result framing** — `frame_tool_result()` builds the JSON-RPC envelope:
-  `render` puts the derived block in `structuredContent` (the widget binds to
-  it; the model reads the same block as JSON in `content`); `agent` returns
-  the raw result on both channels; `out='report'` raises `FramingError`.
+- **Result framing** — `frame_tool_result()` builds the JSON-RPC envelope. Both
+  `render` and `agent` return the raw engine result on `content` and
+  `structuredContent`, so the model always reasons over stable figures; the
+  `render` variant *additionally* carries its rendered display block on the
+  result's `_meta` (`RENDER_BLOCK_META_KEY`) for the host to bind its widget to —
+  widget-only, not shown to the model. `out='report'` raises `FramingError`.
 
 For a plain data tool you touch none of this — the defaults advertise it as a
 single raw-data tool. You only edit `framing.py` to add a description, and the

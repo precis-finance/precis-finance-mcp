@@ -12,8 +12,12 @@ import pytest
 
 from precis_mcp.engine.catalogue import load_catalogue
 from precis_mcp.engine.ragged_views import (
+    build_diamond_check_sql,
+    build_generated_edges_sql,
     build_hierarchy_sql,
+    build_orphan_edges_sql,
     build_ragged_views,
+    build_recursive_rollup_sql,
     build_rollup_sql,
     _resolve_level_info,
 )
@@ -38,45 +42,57 @@ class TestRollupSql:
     def cat(self):
         return load_catalogue(str(CATALOGUE_DIR))
 
-    def test_rollup_reads_semantic_source(self, cat):
-        """Reads the leaf's normalised semantic source — no dbt Jinja, no live.*."""
+    def test_rollup_is_recursive_over_edges_view(self, cat):
+        dim = cat.dimensions["org_structure"]
+        sql = build_rollup_sql(dim, cat)
+        assert "WITH RECURSIVE" in sql
+        assert "semantic.dim_cost_centre_org_structure_edges" in sql
+        assert "SELECT DISTINCT" in sql
+
+    def test_rollup_base_reads_semantic_leaf_source(self, cat):
+        """Base case seeds every leaf → itself from the normalised semantic
+        source (no dbt Jinja, no live.*)."""
         dim = cat.dimensions["org_structure"]
         sql = build_rollup_sql(dim, cat)
         assert "FROM semantic.dim_cost_centre" in sql
-        assert "{{" not in sql  # no Jinja survived the dbt-era port
-
-    def test_rollup_has_all_union_blocks(self, cat):
-        dim = cat.dimensions["org_structure"]
-        sql = build_rollup_sql(dim, cat)
-        # 4 blocks: division, department, leaf (self), root → 3 UNION ALLs
-        assert sql.count("UNION ALL") == 3
-
-    def test_rollup_division_no_prefix(self, cat):
-        dim = cat.dimensions["org_structure"]
-        sql = build_rollup_sql(dim, cat)
-        assert "toString(division) AS node_id" in sql
-
-    def test_rollup_department_no_prefix(self, cat):
-        dim = cat.dimensions["org_structure"]
-        sql = build_rollup_sql(dim, cat)
-        assert "toString(department) AS node_id" in sql
-
-    def test_rollup_leaf_self_reference(self, cat):
-        dim = cat.dimensions["org_structure"]
-        sql = build_rollup_sql(dim, cat)
         assert "toString(cost_centre) AS node_id" in sql
-
-    def test_rollup_root_node(self, cat):
-        dim = cat.dimensions["org_structure"]
-        sql = build_rollup_sql(dim, cat)
-        assert "'all'" in sql
+        assert "{{" not in sql
 
     def test_project_rollup_reads_semantic_dim_project(self, cat):
         """client_portfolio leaf source resolves to semantic.dim_project."""
         dim = cat.dimensions["client_portfolio"]
         sql = build_rollup_sql(dim, cat)
         assert "FROM semantic.dim_project" in sql
+        assert "semantic.dim_project_client_portfolio_edges" in sql
         assert "live.dim_project" not in sql
+
+
+# ---------------------------------------------------------------------------
+# Generated edges SQL (child→parent derived from the leaf table)
+# ---------------------------------------------------------------------------
+
+class TestGeneratedEdges:
+    @pytest.fixture
+    def cat(self):
+        return load_catalogue(str(CATALOGUE_DIR))
+
+    def test_adjacent_level_pairs_and_root_edge(self, cat):
+        dim = cat.dimensions["org_structure"]
+        sql = build_generated_edges_sql(dim, cat)
+        # leaf-most first: cost_centre → department → division → all
+        assert "toString(cost_centre) AS child_node_id" in sql
+        assert "toString(department) AS parent_node_id" in sql
+        assert "toString(department) AS child_node_id" in sql
+        assert "toString(division) AS parent_node_id" in sql
+        assert "toString(division) AS child_node_id" in sql
+        assert "'all' AS parent_node_id" in sql
+        assert "FROM semantic.dim_cost_centre" in sql
+
+    def test_applies_node_prefix(self, cat):
+        dim = cat.dimensions["client_portfolio"]
+        sql = build_generated_edges_sql(dim, cat)
+        assert "concat('CLI::', toString(" in sql   # client level node_prefix
+        assert "'all' AS parent_node_id" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -196,49 +212,99 @@ class TestResolveLevelInfo:
 # ---------------------------------------------------------------------------
 
 class TestBuildRaggedViews:
-    def test_returns_two_views_per_generated_dimension(self):
+    def test_returns_expected_views_for_all_ragged_dims(self):
         cat = load_catalogue(str(CATALOGUE_DIR))
         views = build_ragged_views(cat)
         names = {name for name, _ in views}
-        # cost_centre/org_structure + period/calendar + project/client_portfolio
-        # = 3 dimensions × 2 views = 6
-        assert len(views) == 6
-        assert "dim_cost_centre_org_structure_rollup" in names
-        assert "dim_cost_centre_org_structure" in names
-        assert "dim_period_calendar_rollup" in names
-        assert "dim_period_calendar" in names
-        assert "dim_project_client_portfolio_rollup" in names
-        assert "dim_project_client_portfolio" in names
+        # Every ragged dim (3 generated + 1 provided) emits edges + node master
+        # + rollup = 4 × 3 = 12.
+        assert len(views) == 12
+        for stem in (
+            "dim_cost_centre_org_structure",
+            "dim_period_calendar",
+            "dim_project_client_portfolio",
+            "dim_cost_centre_solution_portfolio",
+        ):
+            assert stem in names
+            assert f"{stem}_edges" in names
+            assert f"{stem}_rollup" in names
 
     def test_view_bodies_are_sql(self):
         cat = load_catalogue(str(CATALOGUE_DIR))
         views = dict(build_ragged_views(cat))
-        assert "UNION ALL" in views["dim_cost_centre_org_structure_rollup"]
+        assert "WITH RECURSIVE" in views["dim_cost_centre_org_structure_rollup"]
         assert "all_nodes" in views["dim_cost_centre_org_structure"]
+        assert "child_node_id" in views["dim_cost_centre_org_structure_edges"]
 
-    def test_skips_provided_hierarchies(self, tmp_path):
-        """A ragged hierarchy with source type='provided' generates nothing."""
-        (tmp_path / "cat").mkdir()
-        cat_dir = write_yml(tmp_path / "cat", "dimensions.yml", """
-            dimensions:
-              region:
-                label: Region
-                source:
-                  table: regions
-                  key_column: region_id
-              geo:
-                label: Geo
-                ragged: true
-                leaf_dimension: region
-                root_label: "— All Regions —"
-                levels:
-                  - dimension: region
-                source:
-                  type: provided
-                  table: semantic.geo_rollup
-        """)
-        cat = load_catalogue(str(cat_dir))
-        assert build_ragged_views(cat) == []
+    def test_provided_hierarchy_generates_three_views(self, tmp_path):
+        """A ragged hierarchy with source type='provided' generates its three
+        semantic views (edges, node master, recursive rollup), with edges
+        emitted before the rollup that reads them."""
+        cat = load_catalogue(str(_provided_geo_catalogue(tmp_path)))
+        names = [n for n, _ in build_ragged_views(cat)]
+        assert "dim_region_geo_edges" in names
+        assert "dim_region_geo" in names
+        assert "dim_region_geo_rollup" in names
+        assert names.index("dim_region_geo_edges") < names.index("dim_region_geo_rollup")
+
+
+# ---------------------------------------------------------------------------
+# Provided ragged hierarchy (operator node master + child→parent edges)
+# ---------------------------------------------------------------------------
+
+def _provided_geo_catalogue(tmp_path: Path) -> Path:
+    (tmp_path / "cat").mkdir()
+    return write_yml(tmp_path / "cat", "dimensions.yml", """
+        dimensions:
+          region:
+            label: Region
+            attributes:
+              name: { label: Region Name }
+            display_attribute: name
+            source:
+              table: dim_region
+              key_column: region_id
+              attribute_mapping:
+                name: region_name
+          geo:
+            label: Geo
+            ragged: true
+            leaf_dimension: region
+            source:
+              type: provided
+              node_table: geo_nodes
+              edge_table: geo_edges
+              child_column: child_id
+              parent_column: parent_id
+    """)
+
+
+class TestProvidedHierarchy:
+    @pytest.fixture
+    def cat(self, tmp_path):
+        return load_catalogue(str(_provided_geo_catalogue(tmp_path)))
+
+    def test_edges_view_renames_to_platform_columns(self, cat):
+        edges = dict(build_ragged_views(cat))["dim_region_geo_edges"]
+        assert "child_id AS child_node_id" in edges
+        assert "parent_id AS parent_node_id" in edges
+        assert "FROM semantic.geo_edges" in edges
+
+    def test_node_master_unions_operator_nodes_and_injected_leaves(self, cat):
+        node = dict(build_ragged_views(cat))["dim_region_geo"]
+        assert "FROM semantic.geo_nodes" in node          # operator nodes
+        assert "UNION ALL" in node
+        assert "FROM semantic.dim_region" in node          # injected leaves
+        assert "'region' AS node_type" in node
+        assert "region_name AS node_name" in node          # leaf display_attribute
+        assert "node_name AS display_name" in node         # display derived from name
+
+    def test_rollup_is_recursive_over_the_edges_view(self, cat):
+        rollup = dict(build_ragged_views(cat))["dim_region_geo_rollup"]
+        assert "WITH RECURSIVE" in rollup
+        assert "INNER JOIN semantic.dim_region_geo_edges AS e" in rollup
+        assert "SELECT DISTINCT" in rollup
+        assert "toString(region_id) AS node_id" in rollup
 
 
 # ---------------------------------------------------------------------------
@@ -287,12 +353,11 @@ class TestCustomDimension:
         cat = load_catalogue(str(cat_dir))
         dim = cat.dimensions["org"]
 
-        rollup = build_rollup_sql(dim, cat)
-        assert "concat('reg:', toString(region)) AS node_id" in rollup
-        assert "toString(branch_id) AS node_id" in rollup
-        assert "'all'" in rollup
-        # region, leaf, root = 3 blocks = 2 UNION ALLs
-        assert rollup.count("UNION ALL") == 2
+        edges = build_generated_edges_sql(dim, cat)
+        assert "toString(branch_id) AS child_node_id" in edges   # branch → region
+        assert "concat('reg:', toString(region)) AS parent_node_id" in edges
+        assert "concat('reg:', toString(region)) AS child_node_id" in edges  # region → all
+        assert "'all' AS parent_node_id" in edges
 
         hierarchy = build_hierarchy_sql(dim, cat)
         assert "[R] " in hierarchy
@@ -334,6 +399,93 @@ class TestCustomDimension:
         cat = load_catalogue(str(cat_dir))
         dim = cat.dimensions["org"]
 
-        rollup = build_rollup_sql(dim, cat)
-        assert "toString(region) AS node_id" in rollup
-        assert "toString(branch_id) AS node_id" in rollup
+        edges = build_generated_edges_sql(dim, cat)
+        assert "toString(branch_id) AS child_node_id" in edges   # branch → region
+        assert "toString(region) AS parent_node_id" in edges
+
+
+# ---------------------------------------------------------------------------
+# Recursive rollup SQL — edge-model closure shared by the provided and
+# (post-homogenisation) generated paths.
+# ---------------------------------------------------------------------------
+
+class TestRecursiveRollupSql:
+    def _sql(self):
+        return build_recursive_rollup_sql(
+            leaf_source="semantic.dim_cost_centre",
+            leaf_key="cost_centre",
+            edges_view="semantic.dim_cost_centre_solution_portfolio_edges",
+        )
+
+    def test_is_recursive(self):
+        assert "WITH RECURSIVE rollup AS" in self._sql()
+
+    def test_base_maps_each_leaf_to_itself(self):
+        sql = self._sql()
+        assert "toString(cost_centre) AS node_id" in sql
+        assert "toString(cost_centre) AS cost_centre" in sql
+        assert "FROM semantic.dim_cost_centre" in sql
+
+    def test_recursive_term_climbs_child_to_parent(self):
+        sql = self._sql()
+        assert "e.parent_node_id AS node_id" in sql
+        assert (
+            "INNER JOIN semantic.dim_cost_centre_solution_portfolio_edges AS e "
+            "ON e.child_node_id = r.node_id"
+        ) in sql
+
+    def test_cycle_guard_carries_and_checks_visited_path(self):
+        sql = self._sql()
+        assert "arrayPushBack(r._path, e.parent_node_id)" in sql
+        assert "WHERE NOT has(r._path, e.parent_node_id)" in sql
+
+    def test_dedups_diamonds_with_distinct(self):
+        # A leaf reachable by more than one path must count once.
+        assert "SELECT DISTINCT" in self._sql()
+
+    def test_final_projection_is_node_id_and_leaf_key(self):
+        sql = self._sql()
+        tail = sql.rsplit("SELECT DISTINCT", 1)[1]
+        assert "node_id" in tail
+        assert "cost_centre" in tail
+        assert "_path" not in tail  # the cycle-guard column is internal only
+
+    def test_parameterised_by_leaf_and_edges(self):
+        sql = build_recursive_rollup_sql(
+            leaf_source="semantic.dim_branch",
+            leaf_key="branch_id",
+            edges_view="semantic.dim_branch_org_edges",
+        )
+        assert "toString(branch_id) AS node_id" in sql
+        assert "FROM semantic.dim_branch" in sql
+        assert "INNER JOIN semantic.dim_branch_org_edges AS e" in sql
+        assert "cost_centre" not in sql
+
+
+# ---------------------------------------------------------------------------
+# Integrity checks — diamond (reconvergence) and orphan-edge detection
+# ---------------------------------------------------------------------------
+
+class TestIntegrityChecks:
+    def test_diamond_check_counts_paths_without_dedup(self):
+        sql = build_diamond_check_sql(
+            leaf_source="semantic.dim_cost_centre",
+            leaf_key="cost_centre",
+            edges_view="semantic.dim_cost_centre_solution_portfolio_edges",
+        )
+        assert "WITH RECURSIVE" in sql
+        assert "count() AS paths" in sql
+        assert "GROUP BY node_id, cost_centre" in sql
+        assert "HAVING count() > 1" in sql
+        assert "SELECT DISTINCT" not in sql  # counts paths, must not dedup
+
+    def test_orphan_check_flags_endpoints_absent_from_node_master(self):
+        sql = build_orphan_edges_sql(
+            node_master="semantic.dim_cost_centre_solution_portfolio",
+            edges_view="semantic.dim_cost_centre_solution_portfolio_edges",
+        )
+        assert "child_node_id AS node_id, 'child'" in sql
+        assert "parent_node_id AS node_id, 'parent'" in sql
+        assert (
+            "NOT IN (SELECT node_id FROM semantic.dim_cost_centre_solution_portfolio)"
+        ) in sql

@@ -9,6 +9,71 @@ my client integration?"*
      ritual (scripts/publish_open.py); move them under a dated heading when
      the sync is pushed to the mirror. -->
 
+## [Unreleased]
+
+## [0.2.3] - 2026-07-03
+
+### Added
+
+- **Provided ragged hierarchies, multi-parent rollups, and
+  breakdown-by-hierarchy.** Ragged hierarchies are no longer limited to the
+  *generated* case (ancestor columns denormalised on the leaf table). A
+  hierarchy can now be **provided**: point `source.type: provided` in
+  `dimensions.yml` at an operator-supplied node master (`node_table`) and
+  child→parent edge table (`edge_table` with `child_column` /
+  `parent_column`), and the platform derives everything else. Because
+  topology now lives in an explicit edge object, a hierarchy supports ragged
+  depth and a child rolling up into **more than one parent** (set membership
+  — a leaf under two parents contributes its full value to each; weighted
+  allocation is deferred). Generated and provided hierarchies share one
+  representation: per hierarchy the platform derives three fixed-name
+  semantic views — the flattened node list (`dim_<leaf>_<key>`), the edges
+  (`…_edges`), and a recursive rollup (`…_rollup`) that replaces the old
+  single-parent UNION-ALL derivation. Reporting tools can also now **break
+  down by a hierarchy**: pass the hierarchy key itself in `dimensions` on
+  `run_statement` / `run_metric` (typically with a node filter) and the
+  figures split into that node's children, whatever level they sit at.
+
+    **Upgrade action:** the new `…_edges` views must be applied to ClickHouse —
+    run `python -m precis_mcp.clickhouse_init` after upgrading. A container
+    restart alone does not re-apply semantic views, and hierarchy queries fail
+    with `UNKNOWN_TABLE` until it runs.
+
+- **Excel add-in: member drop-downs and dimension discovery.** The task pane
+  now inserts native Excel data-validation drop-downs for any dimension —
+  leaf, derived, or ragged (hierarchies list every node, all levels). Lists
+  live on a hidden `PrecisLists` sheet as live `=PRECIS.HIERARCHY(…;"list")`
+  spills behind workbook-level `Precis_List_<dim>_*` named ranges, so all
+  drop-downs for a dimension share one list and the pane's **Refresh**
+  updates them all. Two display modes (codes, or `code | name` with the code
+  first for delimiter-safe extraction), plus a companion formula in the
+  adjacent column. Supporting server changes: a new `list_dimensions` tool
+  (catalogue metadata only — members remain `search_hierarchy`'s job),
+  `search_hierarchy` now lists derived-dimension members and takes a `limit`
+  (defaults unchanged; ceiling 10000), and a new `output="list"` mode on
+  `PRECIS.HIERARCHY`. The pane also links to the hosted function docs.
+  Manifest version is 1.0.0.4 — re-sideload or clear the Office cache to
+  pick up the new pane.
+
+### Changed
+
+- `run_statement` / `run_metric` (the widget-linked variants) now hand the
+  model the same raw engine result as the `_data` variants, with the rendered
+  table carried on result `_meta` — hosts cache widget bundles per connector,
+  so remove and re-add the connector if the widget looks stale.
+- Unified results now carry dimension item codes alongside display labels.
+- Rendered financial tables: two-tier headers on multi-scenario crosstabs,
+  and total-column shading, freeze, and bounded column widths.
+
+### Fixed
+
+- Sync database and Keycloak calls no longer run on the event loop, so one
+  slow query can't stall every in-flight stream; the permission gate's
+  scenario lookups are now TTL-cached (new `PRECIS_SCENARIO_REGISTRY_TTL`,
+  default 5s).
+- `/excel` responses send `Cache-Control: no-cache`, so browsers revalidate
+  the add-in bundle and an upgrade never serves a stale task pane.
+
 ## [0.2.2] - 2026-06-25
 
 A fix release on top of 0.2.1. The headline fix: enabling the Excel add-in no

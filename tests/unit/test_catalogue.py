@@ -947,7 +947,7 @@ class TestDimensionValidation:
         with pytest.raises(CatalogueError, match="(generated|provided)"):
             load_catalogue(str(tmp_path))
 
-    def test_ragged_provided_missing_table_raises(self, tmp_path):
+    def test_ragged_provided_missing_fields_raises(self, tmp_path):
         write_yml(tmp_path, "dimensions.yml", """
             dimensions:
               leaf:
@@ -959,15 +959,13 @@ class TestDimensionValidation:
                 label: Bad Ragged
                 ragged: true
                 leaf_dimension: leaf
-                levels:
-                  - dimension: leaf
                 source:
                   type: provided
         """)
-        with pytest.raises(CatalogueError, match="type='provided' but table is empty"):
+        with pytest.raises(CatalogueError, match="type='provided' requires"):
             load_catalogue(str(tmp_path))
 
-    def test_ragged_provided_with_table_passes(self, tmp_path):
+    def test_ragged_provided_with_fields_passes(self, tmp_path):
         write_yml(tmp_path, "dimensions.yml", """
             dimensions:
               leaf:
@@ -979,18 +977,20 @@ class TestDimensionValidation:
                 label: Ragged
                 ragged: true
                 leaf_dimension: leaf
-                root_label: "— All —"
-                levels:
-                  - dimension: leaf
                 source:
                   type: provided
-                  table: semantic.geo_rollup
+                  node_table: rag_nodes
+                  edge_table: rag_edges
+                  child_column: child_id
+                  parent_column: parent_id
         """)
         cat = load_catalogue(str(tmp_path))
         dim = cat.dimensions["rag"]
         assert dim.is_ragged
         assert dim.ragged_source.type == "provided"
-        assert dim.ragged_source.table == "semantic.geo_rollup"
+        assert dim.ragged_source.node_table == "semantic.rag_nodes"
+        assert dim.ragged_source.edge_table == "semantic.rag_edges"
+        assert dim.ragged_source.child_column == "child_id"
 
     def test_cube_dimension_unknown_key_raises(self, tmp_path):
         write_yml(tmp_path, "domain.yml", """

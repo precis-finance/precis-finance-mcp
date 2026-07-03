@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from precis_mcp.engine import scenario_registry
 from precis_mcp.engine.scenario_registry import (
     InvalidScenarioAliasError,
     NonWritableScenarioError,
@@ -12,6 +13,8 @@ from precis_mcp.engine.scenario_registry import (
     ShiftedScenarioRef,
     VariancePctScenarioRef,
     VarianceScenarioRef,
+    get_scenario_registry,
+    invalidate_scenario_registry_cache,
     load_scenario_registry,
 )
 
@@ -248,3 +251,59 @@ def test_load_scenario_registry_queries_semantic_scenarios():
     actuals_ref = loaded.resolve_key("actuals")
     assert isinstance(actuals_ref, RealScenarioRef)
     assert actuals_ref.scenario_id == "ACTUALS"
+
+
+class _CountingClient:
+    """query() counter with the minimal result shape the loader consumes."""
+
+    class _Result:
+        column_names = ["scenario_id", "alias", "name", "kind"]
+        result_rows = [("ACTUALS", "actuals", "Actuals", "ACTUAL")]
+
+    def __init__(self):
+        self.calls = 0
+
+    def query(self, sql: str):
+        self.calls += 1
+        return self._Result()
+
+
+def test_get_scenario_registry_caches_within_ttl():
+    client = _CountingClient()
+
+    first = get_scenario_registry(lambda: client)
+    second = get_scenario_registry(lambda: client)
+
+    assert client.calls == 1
+    assert second is first
+
+
+def test_get_scenario_registry_reloads_after_expiry(monkeypatch):
+    client = _CountingClient()
+
+    first = get_scenario_registry(lambda: client)
+    monkeypatch.setattr(scenario_registry, "_REGISTRY_TTL_SECONDS", 0.0)
+    second = get_scenario_registry(lambda: client)
+
+    assert client.calls == 2
+    assert second is not first
+
+
+def test_get_scenario_registry_factory_not_called_on_hit():
+    client = _CountingClient()
+    get_scenario_registry(lambda: client)
+
+    def exploding_factory():
+        raise AssertionError("factory must not be called on a cache hit")
+
+    get_scenario_registry(exploding_factory)
+
+
+def test_invalidate_scenario_registry_cache_forces_reload():
+    client = _CountingClient()
+
+    get_scenario_registry(lambda: client)
+    invalidate_scenario_registry_cache()
+    get_scenario_registry(lambda: client)
+
+    assert client.calls == 2

@@ -149,12 +149,14 @@ def test_apply_all_materialises_ragged_views_between_dims_and_views(tmp_path: Pa
     report = apply_all(semantic, ch, catalogue=catalogue)
 
     # File dim, then the auto pass-through for the catalogue leaf dim that has no
-    # file, then the generated ragged views (rollup then flattened), then views.
+    # file, then the generated ragged views (edges, node master, rollup — edges
+    # before the rollup that reads them), then views.
     assert report.views_applied == [
         "dim_account",            # file dim
         "dim_branch",             # auto pass-through (no file for the leaf dim)
-        "dim_branch_org_rollup",  # generated ragged
+        "dim_branch_org_edges",   # generated ragged
         "dim_branch_org",         # generated ragged
+        "dim_branch_org_rollup",  # generated ragged
         "v_gl",                   # file view
     ]
     # The pass-through reads the live mirror of the leaf dim.

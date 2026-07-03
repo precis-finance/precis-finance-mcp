@@ -72,6 +72,7 @@ def test_all_expected_tools_registered(tools):
         "run_statement",
         "run_metric",
         "search_hierarchy",
+        "list_dimensions",
         "resolve_to_cc_list",
         "reload_catalogue",
         "list_variants",
@@ -856,6 +857,127 @@ def test_search_hierarchy_admin_unfiltered(tools, fake_ch):
         ]
     finally:
         _clear_auth()
+
+
+# ---------------------------------------------------------------------------
+# search_hierarchy — derived-dimension members + caller-supplied limit
+# ---------------------------------------------------------------------------
+
+
+def test_search_hierarchy_lists_derived_members(tools, fake_ch):
+    """A derived dimension key lists the DISTINCT FK values of its leaf source."""
+    fake_ch.set_response(
+        "dim_cost_centre",
+        FakeQueryResult(
+            column_names=["member"],
+            result_rows=[("Delivery",), ("Sales",)],
+        ),
+    )
+    _set_auth("admin", allowed=[], is_admin=True)
+    try:
+        result = tools["search_hierarchy"](dimension="department")
+        assert result["records"] == [
+            {"dimension": "department", "code": "Delivery"},
+            {"dimension": "department", "code": "Sales"},
+        ]
+        assert result["hierarchy_nodes"] == []
+    finally:
+        _clear_auth()
+
+
+def test_search_hierarchy_derived_members_scoped(tools, fake_ch, monkeypatch):
+    """Derived members are restricted to values reachable from permitted leaves."""
+    import precis_mcp.engine.scope_enforcer as se
+
+    monkeypatch.setattr(
+        se, "union_read_member_sets",
+        lambda perms, cat, ch: {"cost_centre": {"CC-01"}},
+    )
+    _set_auth("u1", allowed=["ACTUALS"])
+    try:
+        tools["search_hierarchy"](dimension="department")
+        scoped = [
+            params for _, params in fake_ch.queries
+            if params and "scope_ids" in params
+        ]
+        assert scoped, "derived member query did not carry the scope filter"
+        assert scoped[0]["scope_ids"] == ["CC-01"]
+    finally:
+        _clear_auth()
+
+
+def test_search_hierarchy_derived_search_matches_query(tools, fake_ch):
+    """Free-text search reaches derived members via an ilike predicate."""
+    _set_auth("admin", allowed=[], is_admin=True)
+    try:
+        tools["search_hierarchy"](query="deliv", dimension="department")
+        searched = [
+            params for _, params in fake_ch.queries
+            if params and params.get("q") == "%deliv%"
+        ]
+        assert searched, "derived member query did not carry the search term"
+    finally:
+        _clear_auth()
+
+
+def test_search_hierarchy_limit_overrides_default_caps(tools, fake_ch):
+    """`limit` replaces the default caps on both sections (records + nodes)."""
+    _set_auth("admin", allowed=[], is_admin=True)
+    try:
+        tools["search_hierarchy"](dimension="cost_centre", limit=7)
+        member_queries = [q for q, _ in fake_ch.queries if "dim_cost_centre" in q]
+        assert member_queries, "no member queries issued"
+        assert all("LIMIT 7" in q for q in member_queries)
+    finally:
+        _clear_auth()
+
+
+def test_search_hierarchy_limit_clamped_to_ceiling(tools, fake_ch):
+    """An absurd caller limit is clamped to the server-side ceiling."""
+    _set_auth("admin", allowed=[], is_admin=True)
+    try:
+        tools["search_hierarchy"](dimension="cost_centre", limit=999_999)
+        member_queries = [q for q, _ in fake_ch.queries if "dim_cost_centre" in q]
+        assert member_queries
+        assert all("LIMIT 10000" in q for q in member_queries)
+    finally:
+        _clear_auth()
+
+
+def test_search_hierarchy_default_caps_preserved(tools, fake_ch):
+    """Without `limit`, today's listing caps stay: 200 records, 100 nodes."""
+    _set_auth("admin", allowed=[], is_admin=True)
+    try:
+        tools["search_hierarchy"](dimension="cost_centre")
+        qs = [q for q, _ in fake_ch.queries if "dim_cost_centre" in q]
+        assert any("LIMIT 200" in q for q in qs)
+        assert any("LIMIT 100" in q for q in qs)
+    finally:
+        _clear_auth()
+
+
+# ---------------------------------------------------------------------------
+# list_dimensions — catalogue metadata, never members
+# ---------------------------------------------------------------------------
+
+
+def test_list_dimensions_returns_catalogue_metadata(tools, catalogue):
+    result = tools["list_dimensions"]()
+    entries = {e["key"]: e for e in result["dimensions"]}
+    assert set(entries) == set(catalogue.dimensions)
+    assert entries["cost_centre"]["kind"] == "leaf"
+    assert entries["department"]["kind"] == "derived"
+    assert entries["org_structure"]["kind"] == "ragged"
+    assert entries["org_structure"]["leaf_dimension"] == "cost_centre"
+    assert "leaf_dimension" not in entries["cost_centre"]
+    assert entries["cost_centre"]["label"] == "Cost Centre"
+
+
+def test_list_dimensions_issues_no_warehouse_queries(tools, fake_ch):
+    """Metadata only — the tool never touches ClickHouse."""
+    before = len(fake_ch.queries)
+    tools["list_dimensions"]()
+    assert len(fake_ch.queries) == before
 
 
 # ---------------------------------------------------------------------------

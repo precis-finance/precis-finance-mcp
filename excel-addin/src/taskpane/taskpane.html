@@ -48,9 +48,23 @@
 
             <button id="refresh" class="px-btn px-btn--primary" type="button">Refresh data</button>
             <button id="disconnect" class="px-btn px-btn--ghost" type="button">Disconnect</button>
+
+            <div class="px-section">
+                <label class="px-label" for="dropdown-dim">Insert member drop-down</label>
+                <select id="dropdown-dim" class="px-input"></select>
+                <select id="dropdown-mode" class="px-input">
+                    <option value="code">Codes</option>
+                    <option value="label">Code + name</option>
+                </select>
+                <button id="insert-dropdown" class="px-btn px-btn--ghost" type="button">Insert on selected
+                    cells</button>
+            </div>
         </section>
 
         <p id="status" class="px-status"></p>
+
+        <p class="px-docs"><a target="_blank" rel="noreferrer"
+                href="https://docs.precis.finance/excel/functions/">Précis function documentation ↗</a></p>
     </main>
 </body>
 

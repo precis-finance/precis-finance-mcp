@@ -44,6 +44,11 @@ scenarios.
 =PRECIS.STATEMENT("full_pnl";"2026-01";"2026-04";"actuals";;;6;1)
 ```
 
+With a dimension breakdown **and** more than one scenario, the statement gains a
+two-row header — each dimension group sits above its scenario columns — and the
+total column is shaded so it stands out. Click **Format** to apply the full
+Précis styling.
+
 ---
 
 ## PRECIS.METRIC
@@ -121,13 +126,20 @@ List or search dimension members and ragged-hierarchy nodes.
 |---|---|---|
 | `dimension` | yes (to list) | Dimension key, e.g. `"cost_centre"`, `"employee"`. |
 | `query` | no | Free-text search, e.g. `"cloud"`; omit to list all members. |
-| `output` | no | `records` (leaf members, default) or `nodes` (ragged rollup nodes). |
+| `output` | no | `records` (leaf members, default), `nodes` (ragged rollup nodes), or `list` (two columns — member code and display name — with no header row). |
 
 ```excel
 =PRECIS.HIERARCHY("cost_centre")
 =PRECIS.HIERARCHY("cost_centre";;"nodes")
 =PRECIS.HIERARCHY("employee";"smith")
+=PRECIS.HIERARCHY("department";;"list")
 ```
+
+`list` works for every dimension kind — leaf, derived, and ragged (for a
+hierarchy key it lists every node, all levels) — and lifts the server's
+default result cap so the list is complete. It is the shape behind the task
+pane's [member drop-downs](index.md#member-drop-downs); use it directly
+whenever a formula needs a clean code + name lookup table.
 
 ---
 

@@ -146,13 +146,23 @@ class RaggedLevel(BaseModel):
 
 
 class RaggedSource(BaseModel):
-    """How a ragged hierarchy is materialised."""
+    """How a ragged hierarchy is materialised.
+
+    ``type='generated'`` derives the hierarchy from the leaf table's ancestor
+    columns (see ``ragged_views.build_ragged_views``). ``type='provided'`` reads
+    an operator-supplied node master (``node_table``) and child→parent edge
+    table (``edge_table``, columns named by ``child_column`` / ``parent_column``);
+    the platform derives the three semantic views (node master, edges, recursive
+    rollup) from those.
+    """
     model_config = ConfigDict(extra="forbid")
 
     type: RaggedSourceType
-    table: str = ""
-    child_column: str = ""
-    parent_column: str = ""
+    # Provided hierarchies:
+    node_table: str = ""      # operator node master (node_id, node_name, node_type)
+    edge_table: str = ""      # operator child→parent edge table
+    child_column: str = ""    # edge_table column naming the child node
+    parent_column: str = ""   # edge_table column naming the parent node
 
 
 class TransitiveResolution(BaseModel):
@@ -557,7 +567,8 @@ def _parse_dimension(key: str, raw: dict) -> Dimension:
             if isinstance(src_raw, dict):
                 ragged_source = RaggedSource(
                     type=src_raw.get("type", "generated"),
-                    table=src_raw.get("table", ""),
+                    node_table=src_raw.get("node_table", ""),
+                    edge_table=src_raw.get("edge_table", ""),
                     child_column=src_raw.get("child_column", ""),
                     parent_column=src_raw.get("parent_column", ""),
                 )
@@ -787,7 +798,8 @@ def _normalize_semantic_refs(catalogue: Catalogue) -> None:
     """Resolve every catalogue object reference to ``semantic.*`` in place.
 
     Covers clickhouse-backed domain ``source_view``, leaf-dimension
-    ``source.table``, and provided ragged ``ragged_source.table``. Federated
+    ``source.table``, and provided ragged ``ragged_source.node_table`` /
+    ``edge_table``. Federated
     (``backend_kind != 'clickhouse'``) domain source views are left untouched —
     they address a foreign backend, not ``semantic.*``. Runs before transitive-
     closure computation so the resolved table flows into
@@ -805,10 +817,16 @@ def _normalize_semantic_refs(catalogue: Catalogue) -> None:
             dim.source.table = _resolve_semantic_ref(
                 dim.source.table, f"dimension {key!r} source.table"
             )
-        if dim.ragged_source is not None and dim.ragged_source.table:
-            dim.ragged_source.table = _resolve_semantic_ref(
-                dim.ragged_source.table, f"dimension {key!r} ragged_source.table"
-            )
+        if dim.ragged_source is not None:
+            rs = dim.ragged_source
+            if rs.node_table:
+                rs.node_table = _resolve_semantic_ref(
+                    rs.node_table, f"dimension {key!r} ragged_source.node_table"
+                )
+            if rs.edge_table:
+                rs.edge_table = _resolve_semantic_ref(
+                    rs.edge_table, f"dimension {key!r} ragged_source.edge_table"
+                )
 
 
 def _compute_transitive_closure(catalogue: Catalogue) -> None:
@@ -1100,31 +1118,38 @@ def validate_catalogue(catalogue: Catalogue) -> None:
                     f"Ragged dimension {key!r}: leaf_dimension {dim.leaf_dimension!r} "
                     f"is not a leaf dimension (must have source)"
                 )
-            if not dim.ragged_levels:
-                raise CatalogueError(
-                    f"Ragged dimension {key!r} must have at least one level"
-                )
-            # Last level must match leaf_dimension
-            if dim.ragged_levels[-1].dimension != dim.leaf_dimension:
-                raise CatalogueError(
-                    f"Ragged dimension {key!r}: last level "
-                    f"{dim.ragged_levels[-1].dimension!r} must match "
-                    f"leaf_dimension {dim.leaf_dimension!r}"
-                )
-            # All levels must reference existing dimensions
-            for rl in dim.ragged_levels:
-                if rl.dimension not in dimensions:
+            rs = dim.ragged_source
+            if rs and rs.type == "provided":
+                # Provided: topology comes from an operator node master + edge
+                # table, not declared levels. Require the four fields the
+                # generators read; levels are neither needed nor consulted.
+                missing = [
+                    f for f in ("node_table", "edge_table", "child_column", "parent_column")
+                    if not getattr(rs, f)
+                ]
+                if missing:
                     raise CatalogueError(
-                        f"Ragged dimension {key!r}: level references "
-                        f"unknown dimension {rl.dimension!r}"
+                        f"Ragged dimension {key!r}: source type='provided' "
+                        f"requires {', '.join(missing)}"
                     )
-            # Source type check — ragged_source.type already constrained by
-            # Literal at construction; here we just require table when 'provided'
-            if dim.ragged_source and dim.ragged_source.type == "provided" and not dim.ragged_source.table:
-                raise CatalogueError(
-                    f"Ragged dimension {key!r}: source type='provided' "
-                    f"but table is empty"
-                )
+            else:
+                # Generated: derived from declared levels, leaf-last.
+                if not dim.ragged_levels:
+                    raise CatalogueError(
+                        f"Ragged dimension {key!r} must have at least one level"
+                    )
+                if dim.ragged_levels[-1].dimension != dim.leaf_dimension:
+                    raise CatalogueError(
+                        f"Ragged dimension {key!r}: last level "
+                        f"{dim.ragged_levels[-1].dimension!r} must match "
+                        f"leaf_dimension {dim.leaf_dimension!r}"
+                    )
+                for rl in dim.ragged_levels:
+                    if rl.dimension not in dimensions:
+                        raise CatalogueError(
+                            f"Ragged dimension {key!r}: level references "
+                            f"unknown dimension {rl.dimension!r}"
+                        )
 
     # Check for cycles in parent chains
     parent_graph: dict[str, set[str]] = {}

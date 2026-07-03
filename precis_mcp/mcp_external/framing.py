@@ -4,19 +4,22 @@
 
 Produces the JSON-RPC `tools/call` result envelope:
 
-| out=            | structuredContent | content (text)         |
-|-----------------|-------------------|------------------------|
-| agent / render  | engine result     | engine result as JSON  |
-| excel           | —                 | filename + base64 XLSX |
-| report          | rejected — report builder is in the Précis app    |
+| out=            | content + structuredContent | result `_meta`                 |
+|-----------------|-----------------------------|--------------------------------|
+| agent / render  | raw engine result           | render: widget block; agent: — |
+| excel           | filename + base64 XLSX       | —                              |
+| report          | rejected — report builder is in the Précis app               |
 
-`render` and `agent` produce the same envelope. A widget, when one is built
-for the tool, is linked per the MCP Apps extension
-(`io.modelcontextprotocol/ui`): the tool definition in `tools/list` carries
-`_meta.ui.resourceUri`, and the host fetches the bundle via `resources/read`
-— it is NOT inlined in the result. The resource handlers and the
-tools/list `_meta` live in `precis_mcp/mcp_external/server.py`; this module
-owns the result envelope and the bundle-lookup helpers.
+`render` and `agent` hand the model the *same* payload — the raw engine result
+on both channels — so the model reasons over stable keys, not a pivoted display
+block. The render variant additionally carries its rendered block under result
+`_meta` (`RENDER_BLOCK_META_KEY`): widget-only, hidden from the model per the
+MCP Apps / OpenAI Apps SDK `_meta` contract. The widget HTML itself is linked
+per the MCP Apps extension (`io.modelcontextprotocol/ui`): the tool definition
+in `tools/list` carries `_meta.ui.resourceUri`, and the host fetches the bundle
+via `resources/read` — it is NOT inlined in the result. The resource handlers
+and the tools/list `_meta` live in `precis_mcp/mcp_external/server.py`; this
+module owns the result envelope and the bundle-lookup helpers.
 """
 from __future__ import annotations
 
@@ -29,6 +32,16 @@ from typing import Any, Callable
 
 # MCP Apps (io.modelcontextprotocol/ui) MIME for ui:// HTML resources.
 MCP_APP_MIME = "text/html;profile=mcp-app"
+
+
+# Result-`_meta` key the render variant carries its widget block under. Hidden
+# from the model (MCP Apps / OpenAI Apps SDK `_meta` semantics): the model reads
+# the raw engine result on `content`/`structuredContent`, and the host binds its
+# widget to this block. The block dict is self-describing (`type`:
+# financial_table / inspection_grid / chart), so one key serves every widget.
+# Keep in sync with the widget clients that read it:
+# `ui/mcp-widgets/src/shared/host.ts` and `excel-addin/src/mcp.ts`.
+RENDER_BLOCK_META_KEY = "precis/renderBlock"
 
 
 # Maps block-emitting tools to the widget bundle URI.  Populated as
@@ -155,6 +168,11 @@ _MCP_TOOL_DESCRIPTIONS: dict[str, str] = {
     "search_hierarchy": (
         "Search the dimension hierarchies (cost centres, accounts, …) to find "
         "valid codes and ids before composing a query."
+    ),
+    "list_dimensions": (
+        "List the dimensions defined in the model — keys, labels, and kinds "
+        "(leaf / derived / ragged hierarchy). Catalogue metadata only; use "
+        "search_hierarchy to list a dimension's members."
     ),
     "list_inspection_sources": "List the row-level sources available for inspection.",
     "get_inspection_schema": "Get the column schema for an inspection source.",
@@ -327,15 +345,17 @@ def frame_tool_result(
     `out` is pinned per advertised tool variant (see `mcp_tool_variants`), so a
     given MCP tool is always one mode:
 
-    - `out='render'` (widget variant) — `structuredContent` is the emitted block
-      the widget binds to (falling back to the raw result if no block was
-      derived). The model reads the same block as JSON in `content`, so it has
-      the figures whether or not the host draws the widget. No presentation
-      instruction is added: the hosted clients (claude.ai, ChatGPT) render the
-      widget and inject their own "don't repeat it" guidance, and our MCP tool
-      descriptions don't claim "renders in the UI" — so an extra nudge only
-      contradicts the host and reads as injected guidance.
-    - `out='agent'` (`_data` variant) — `structuredContent` and `content` are
+    - `out='render'` (widget variant) — `content` and `structuredContent` are
+      the raw engine result (identical to the `_data` variant), and the rendered
+      block rides on result `_meta` (`RENDER_BLOCK_META_KEY`): delivered only to
+      the widget, hidden from the model per the MCP Apps / OpenAI Apps SDK
+      `_meta` contract. The model therefore reasons over the raw figures, not a
+      pivoted display block, whether or not the host draws the widget. No
+      presentation instruction is added: the hosted clients (claude.ai, ChatGPT)
+      render the widget and inject their own "don't repeat it" guidance, and our
+      MCP tool descriptions don't claim "renders in the UI" — so an extra nudge
+      only contradicts the host and reads as injected guidance.
+    - `out='agent'` (`_data` variant) — `content` and `structuredContent` are
       the raw engine result; no widget is linked, so the model presents text.
 
     The widget HTML itself is linked via the tool's `_meta.ui` in `tools/list`
@@ -350,22 +370,16 @@ def frame_tool_result(
     if mode is not None:
         return mode.framer(tool_name, tool_result)
 
-    if out == "render":
-        block = render_block if render_block is not None else (
-            tool_result if isinstance(tool_result, dict) else {"value": tool_result}
-        )
-        text = json.dumps(block, default=str, ensure_ascii=False)
-        return {
-            "content": [{"type": "text", "text": text}],
-            "structuredContent": block,
-            "isError": False,
-        }
-
-    # agent / unset — raw result on both channels; no widget.
+    # render + agent hand the model the same payload — the raw engine result on
+    # both channels. They differ only in that the render variant carries its
+    # rendered block on result `_meta` for the host to bind its widget to.
     raw = tool_result if isinstance(tool_result, dict) else {"value": tool_result}
     text = json.dumps(raw, default=str, ensure_ascii=False)
-    return {
+    envelope: dict = {
         "content": [{"type": "text", "text": text}],
         "structuredContent": raw,
         "isError": False,
     }
+    if out == "render" and render_block is not None:
+        envelope["_meta"] = {RENDER_BLOCK_META_KEY: render_block}
+    return envelope

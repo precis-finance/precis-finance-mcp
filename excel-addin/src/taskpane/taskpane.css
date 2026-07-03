@@ -262,3 +262,29 @@ body {
   color: var(--px-ink-muted);
   min-height: 1em;
 }
+
+/* ---- Member drop-downs ---- */
+.px-section {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--px-paper-dark);
+}
+
+.px-section select {
+  margin-bottom: 8px;
+}
+
+/* ---- Docs footer ---- */
+.px-docs {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+}
+
+.px-docs a {
+  color: var(--px-teal);
+  text-decoration: none;
+}
+
+.px-docs a:hover {
+  text-decoration: underline;
+}

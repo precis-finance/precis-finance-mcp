@@ -10,10 +10,11 @@
  * a remove + re-upload.
  */
 
-/* global console, document, Excel, Office */
+/* global console, document, Excel, HTMLElement, HTMLSelectElement, Office */
 
 import { getMcpUrl, getUserLabel, isConnected, disconnect, onAuthChange } from "../config";
 import { signIn } from "../oauth";
+import { fetchDimensions, insertDropdown, DropdownMode } from "./dropdowns";
 
 Office.onReady(() => {
   el("sideload-msg").style.display = "none";
@@ -30,6 +31,7 @@ Office.onReady(() => {
   el("signin").onclick = onSignIn;
   el("disconnect").onclick = onDisconnect;
   el("refresh").onclick = onRefresh;
+  el("insert-dropdown").onclick = onInsertDropdown;
 
   // A 401-forced disconnect inside a custom function flips the pane back to
   // the disconnected state (instead of staying falsely "Connected").
@@ -64,6 +66,58 @@ function render(connected: boolean): void {
     const user = getUserLabel();
     el("connected-user").textContent = user ? `Signed in as ${user}` : "";
     el("connected-url").textContent = getMcpUrl() ?? "";
+    void populateDimensionPicker();
+  } else {
+    dimensionsLoaded = false;
+  }
+}
+
+let dimensionsLoaded = false;
+
+/** Fill the drop-down dimension picker from `list_dimensions` (once per session). */
+async function populateDimensionPicker(): Promise<void> {
+  if (dimensionsLoaded) {
+    return;
+  }
+  const picker = el("dropdown-dim") as HTMLSelectElement;
+  try {
+    const dims = await fetchDimensions();
+    picker.innerHTML = "";
+    for (const d of dims) {
+      const opt = document.createElement("option");
+      opt.value = d.key;
+      opt.textContent =
+        d.kind === "ragged" ? `${d.label} (${d.key}) — hierarchy` : `${d.label} (${d.key})`;
+      picker.appendChild(opt);
+    }
+    dimensionsLoaded = dims.length > 0;
+  } catch (e) {
+    setStatus(`Could not load dimensions: ${(e as Error).message}`);
+  }
+}
+
+async function onInsertDropdown(): Promise<void> {
+  const picker = el("dropdown-dim") as HTMLSelectElement;
+  const dim = picker.value;
+  if (!dim) {
+    setStatus("Pick a dimension first.");
+    return;
+  }
+  const mode = (el("dropdown-mode") as HTMLSelectElement).value as DropdownMode;
+  setStatus(`Inserting ${dim} drop-down…`);
+  try {
+    const res = await insertDropdown(dim, mode);
+    let msg = res.provisioned
+      ? `Drop-down inserted; ${dim} list added to the hidden PrecisLists sheet.`
+      : `Drop-down inserted (reusing the existing ${dim} list).`;
+    if (res.companion === "occupied") {
+      msg += " Companion column not written — the adjacent cells aren't empty.";
+    } else if (res.companion === "skipped-multi-column") {
+      msg += " Companion column skipped for a multi-column selection.";
+    }
+    setStatus(msg);
+  } catch (e) {
+    setStatus(`Insert failed: ${(e as Error).message}`);
   }
 }
 

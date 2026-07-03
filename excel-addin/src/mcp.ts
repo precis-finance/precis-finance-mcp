@@ -5,11 +5,19 @@
  * SSE, no session-id header — the server derives the session from the bearer),
  * so a custom function can call `tools/call` directly without an `initialize`
  * handshake. We call the render variant `run_statement` / `run_metric` and read
- * its `structuredContent` (the financial_table block).
+ * its financial_table block from result `_meta` (the render variant puts the
+ * raw engine result on `structuredContent` and the block on `_meta`); the
+ * `_data` variants return the raw result on `structuredContent`.
  */
 
 import { getToken, disconnect } from "./config";
 import { tryRefresh } from "./oauth";
+
+// `_meta` key the render variant carries its widget block under. Must match the
+// server (`precis_mcp/mcp_external/framing.py::RENDER_BLOCK_META_KEY`). We read
+// `_meta` directly off the JSON-RPC result — this client is not behind a hosted
+// MCP-Apps bridge, so it is unaffected by hosts that strip `_meta`.
+const RENDER_BLOCK_META_KEY = "precis/renderBlock";
 
 let _rpcId = 0;
 
@@ -44,11 +52,11 @@ function releaseSlot(): void {
 }
 
 /**
- * Call an MCP tool and return its `structuredContent`. `T` is the caller's
- * expected shape — the render variant returns a financial_table block, the
- * `_data` variant the raw engine result. Throws a message-bearing Error on
- * transport / auth / tool error (a custom function surfaces it as the cell's
- * error text).
+ * Call an MCP tool and return its payload. `T` is the caller's expected shape —
+ * the render variant returns a financial_table block (from result `_meta`), the
+ * `_data` variant the raw engine result (from `structuredContent`). Throws a
+ * message-bearing Error on transport / auth / tool error (a custom function
+ * surfaces it as the cell's error text).
  */
 export async function callTool<T = unknown>(
   mcpUrl: string,
@@ -104,6 +112,13 @@ export async function callTool<T = unknown>(
     if (!result || result.isError) {
       const text = result?.content?.[0]?.text ?? "tool error";
       throw new Error(`Précis: ${text}`);
+    }
+    // Render variants carry the widget block on `_meta` (the model reads the raw
+    // result on `structuredContent`); prefer it so a render call yields the
+    // block and a `_data` call the raw result — each caller's expected `T`.
+    const block = result._meta?.[RENDER_BLOCK_META_KEY];
+    if (block !== undefined && block !== null) {
+      return block as T;
     }
     if (!result.structuredContent) {
       throw new Error("Précis: no structuredContent in the response.");

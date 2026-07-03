@@ -508,11 +508,24 @@ def _build_crosstab_table(
         return f"{col_label}|{alias}" if multi_block else col_label
 
     # Column order: grand total first (user preference), then dim-combos. Per scenario.
+    # With >1 scenario, use a two-tier header — the dim-combo spans a top row
+    # (`group`) with each scenario beneath it — mirroring the metric multi-block
+    # layout; every render surface groups columns by `group`. With one scenario
+    # the header stays flat (just the combo label).
     for c in grid["columns"]:
         for alias in aliases:
             key = _col_key(c["label"], alias)
-            label = f"{c['label']} {EM_DASH} {alias}" if multi_block else c["label"]
-            col: dict = {"key": key, "label": label, "align": "right"}
+            col: dict = {
+                "key": key,
+                "label": alias if multi_block else c["label"],
+                "align": "right",
+            }
+            if multi_block:
+                col["group"] = c["label"]
+            if c.get("is_total"):
+                # Mark the grand-total column so renderers can shade it like a
+                # total row (both scenario leaves of the Total group).
+                col["is_total"] = True
             if col_meta.get(alias, {}).get("variance"):
                 col["variance"] = True
             columns.append(col)

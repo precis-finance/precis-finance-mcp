@@ -61,6 +61,10 @@ class _CatalogueRef:
 
     def reload(self):
         self.current = load_and_validate(CATALOGUE_DIR)
+        from precis_mcp.engine.scenario_registry import (
+            invalidate_scenario_registry_cache,
+        )
+        invalidate_scenario_registry_cache()
         from precis_mcp.engine import check_dimension_sources
         warnings = check_dimension_sources(self.current)
         if warnings:

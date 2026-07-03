@@ -504,6 +504,12 @@ def _get_valid_dimension_keys_for_domains(
     for leaf_key in bound_leaf_keys:
         _walk_parents(leaf_key, visited)
 
+    # Ragged hierarchies over a bound leaf are groupable — breakdown *by* the
+    # hierarchy node (the divergent retrieve path handles them).
+    for dim_key, dim in catalogue.dimensions.items():
+        if getattr(dim, "is_ragged", False) and dim.leaf_dimension in bound_leaf_keys:
+            valid_keys.add(dim_key)
+
     return valid_keys
 
 

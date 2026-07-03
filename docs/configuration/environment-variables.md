@@ -48,6 +48,7 @@ by the server process itself.
 | `CHCACERT` | unset | CA certificate path to pin (with `CHSECURE`). |
 | `CHVERIFY` | unset | Set `false` to accept a self-signed dev certificate. |
 | `PRECIS_CLICKHOUSE_POOL_MAXSIZE` | `32` | Per-host size of the shared ClickHouse HTTP connection pool. Set it at or above `PRECIS_MAX_CONCURRENT_READS_GLOBAL` so the read-concurrency cap, not pool exhaustion, is what bounds a query burst. |
+| `PRECIS_SCENARIO_REGISTRY_TTL` | `5` | Seconds the in-process scenario-registry cache (backing the per-call permission gate) serves without re-reading `semantic.scenarios`. Scenario writes through the server invalidate immediately; the TTL only bounds staleness for writes made outside the process. |
 
 ## Read concurrency (the `/mcp` read path)
 

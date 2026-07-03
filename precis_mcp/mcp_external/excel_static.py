@@ -73,7 +73,12 @@ def _excel_headers() -> dict[str, str]:
     - a tight CSP that locks script/style/font/img/connect but omits
       ``frame-ancestors`` and ``X-Frame-Options`` so Excel (web and desktop) can
       frame the task pane, with ``connect-src`` carrying the OAuth issuer for the
-      sign-in discovery/token fetches.
+      sign-in discovery/token fetches;
+    - ``Cache-Control: no-cache``, because the bundle's entry files
+      (``taskpane.html``/``taskpane.js``/``functions.js``) have stable names —
+      without it browsers heuristically cache them and serve a stale add-in
+      after a deploy. ``no-cache`` still allows storing but forces
+      revalidation, so unchanged assets come back as cheap 304s.
 
     A hardening proxy must not re-add ``frame-ancestors`` / ``X-Frame-Options``
     on ``/excel`` or it will smother this.
@@ -96,6 +101,7 @@ def _excel_headers() -> dict[str, str]:
         "Access-Control-Allow-Origin": "*",
         "Cross-Origin-Resource-Policy": "cross-origin",
         "Content-Security-Policy": csp,
+        "Cache-Control": "no-cache",
     }
 
 

@@ -13,6 +13,7 @@ from typing import Any
 
 from precis_mcp.engine.catalogue import resolve_statement
 from precis_mcp.engine.formatter import (
+    DimensionFormat,
     FormatterBlock,
     _scale_value,
     format_response,
@@ -74,7 +75,7 @@ class TestMetricRows:
         resp = _fmt({"actuals": {("CC-SE",): {"revenue": 5e6}}},
                     [_metric_block()], ["cost_centre"], catalogue)
         row = resp["rows"][0]
-        assert set(row) == {"grain", "dimensions", "item", "values"}
+        assert set(row) == {"grain", "dimensions", "dimension_codes", "item", "values"}
         assert row["grain"] == "detail"
         assert row["dimensions"] == {"cost_centre": "CC-SE"}
         assert row["item"]["key"] == "revenue"
@@ -86,6 +87,7 @@ class TestMetricRows:
         row = resp["rows"][0]
         assert row["grain"] == "grand_total"
         assert row["dimensions"] == {}
+        assert row["dimension_codes"] == {}
         assert row["values"] == {"Actuals": 8.2e6}
 
     def test_subtotal_keeps_live_dim_only(self, catalogue):
@@ -94,6 +96,23 @@ class TestMetricRows:
         row = resp["rows"][0]
         assert row["grain"] == "subtotal"
         assert row["dimensions"] == {"cost_centre": "CC-SE"}
+        assert row["dimension_codes"] == {"cost_centre": "CC-SE"}
+
+    def test_dimension_codes_carry_raw_code_alongside_display_name(self, catalogue):
+        """When a display name is resolved, `dimensions` holds the name and
+        `dimension_codes` holds the raw code — so a consumer can drill without a
+        follow-up hierarchy lookup."""
+        dim_formats = {
+            "cost_centre": DimensionFormat(
+                display_attr="name", lookup={"CC-SE": {"name": "Software Eng"}},
+            )
+        }
+        resp = _fmt({"actuals": {("CC-SE",): {"revenue": 5e6}}},
+                    [_metric_block()], ["cost_centre"], catalogue,
+                    dim_formats=dim_formats)
+        row = resp["rows"][0]
+        assert row["dimensions"] == {"cost_centre": "Software Eng"}
+        assert row["dimension_codes"] == {"cost_centre": "CC-SE"}
 
     def test_multi_metric_one_row_per_metric(self, catalogue):
         resp = _fmt(
@@ -133,7 +152,10 @@ class TestStatementRows:
         vals = {m: 100.0 for m in mkeys}
         resp = _fmt({"actuals": {("CC-SE",): vals}}, blocks, ["cost_centre"], catalogue)
         assert resp["kind"] == "statement"
-        assert all(set(r) == {"grain", "dimensions", "item", "values"} for r in resp["rows"])
+        assert all(
+            set(r) == {"grain", "dimensions", "dimension_codes", "item", "values"}
+            for r in resp["rows"]
+        )
 
     def test_separator_is_line_property(self, catalogue):
         items, mkeys, blocks = self._stmt_blocks(catalogue)

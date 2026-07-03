@@ -162,6 +162,9 @@ TOOL_CATALOGUE: dict[str, dict[str, Any]] = {
     "search_hierarchy": {
         "mcp_read": True,
     },
+    "list_dimensions": {
+        "mcp_read": True,
+    },
     "resolve_to_cc_list": {},
     "reload_catalogue": {
         "skills": {"reporting", "analysis"},
@@ -387,6 +390,19 @@ def build_descriptors(catalogue_ref) -> dict[str, ToolDescriptor]:
     """
     raw_funcs = _load_all_tools(catalogue_ref)
     catalogue = tool_catalogue()
+
+    # Forward-drift guard: a catalogue entry with no registered tool function is
+    # silently absent from the bound tool set (build only iterates raw_funcs), so
+    # fail loud at load time — the catalogue and the registration must not drift
+    # apart. The reverse drift (registered but uncatalogued) is caught in the
+    # loop below.
+    unregistered = set(catalogue) - set(raw_funcs)
+    if unregistered:
+        raise ValueError(
+            f"Catalogue entries with no registered tool function: "
+            f"{sorted(unregistered)}. Every TOOL_CATALOGUE / COMMERCIAL_CATALOGUE "
+            "entry must have a factory that registers its function."
+        )
 
     descriptors: dict[str, ToolDescriptor] = {}
     for name, func in raw_funcs.items():
@@ -662,9 +678,9 @@ def _expand_scenario_ref_for_permissions(ref: str, catalogue: Any | None) -> set
     base_ids: set[str] = set()
     try:
         from precis_mcp.db import get_clickhouse_client
-        from precis_mcp.engine.scenario_registry import load_scenario_registry
+        from precis_mcp.engine.scenario_registry import get_scenario_registry
 
-        registry = load_scenario_registry(get_clickhouse_client())
+        registry = get_scenario_registry(get_clickhouse_client)
         base_ids = registry.expand_dependencies(base)
     except Exception:
         logger.info(

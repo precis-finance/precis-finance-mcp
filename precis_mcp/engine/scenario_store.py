@@ -18,7 +18,10 @@ from precis_mcp.engine.scenario_registry import (
     ScenarioRegistry,
     _validate_alias,
 )
-from precis_mcp.engine.scenario_registry import load_scenario_registry
+from precis_mcp.engine.scenario_registry import (
+    invalidate_scenario_registry_cache,
+    load_scenario_registry,
+)
 
 
 class ScenarioStore:
@@ -192,6 +195,7 @@ class ScenarioStore:
             },
         )
         self._registry = None
+        invalidate_scenario_registry_cache()
         return alias_value
 
     def update_scenario_metadata(
@@ -229,6 +233,7 @@ class ScenarioStore:
             parameters=params,
         )
         self._registry = None
+        invalidate_scenario_registry_cache()
 
     def update_locks(self, scenario_id: str, locks: list[dict]) -> None:
         self.client.command(
@@ -237,6 +242,7 @@ class ScenarioStore:
             parameters={"sid": scenario_id, "locks": json.dumps(locks)},
         )
         self._registry = None
+        invalidate_scenario_registry_cache()
 
 
 def _alias_from_scenario_id(scenario_id: str) -> str:

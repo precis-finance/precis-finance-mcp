@@ -37,15 +37,17 @@ advertised twice — once rendering, once raw:
 
 | Advertised name | Returns |
 |---|---|
-| `run_statement` / `run_metric` | the formatted table; linked to the **financial-table** widget |
+| `run_statement` / `run_metric` | the raw figures (same as the `_data` variant), plus a formatted table carried as a widget render block; linked to the **financial-table** widget |
 | `run_statement_data` / `run_metric_data` | the raw figures, for the model to reason over |
 | `inspect_rows` | row detail; linked to the **inspection-grid** widget |
 | everything else | plain data |
 
-Widgets follow the MCP Apps extension (`_meta.ui.resourceUri` on the tool,
-bundle fetched via `resources/read`); a widget is only advertised when its
-bundle is built. Hosts that don't render widgets still get the full result as
-JSON. Three parameters are stripped from every advertised schema (`out`,
+Both the rendering and `_data` variants return the **same** raw figures to the
+model; the rendering variant only *additionally* carries the formatted table as
+a widget render block on the result's `_meta` (hidden from the model). Widgets
+follow the MCP Apps extension (`_meta.ui.resourceUri` on the tool, bundle
+fetched via `resources/read`); a widget is only advertised when its bundle is
+built. Hosts that don't render widgets still get the full result as JSON. Three parameters are stripped from every advertised schema (`out`,
 `report_id`, `position` — output paths that don't exist on this transport).
 The reporting tools also advertise a few Excel-related parameters (`target`,
 `layout`, `filename`, `sheet_name`, `overwrite`); they belong to the Précis
@@ -84,11 +86,21 @@ is the map for composing `run_metric` calls.
 |---|---|---|
 | `query` | string, optional | Free-text match on names/codes (`"cloud"`, `"Smith"`). Omit to list a whole dimension. |
 | `dimension` | string, optional | Restrict to one dimension key (`cost_centre`, `employee`, …). Recommended when listing. |
+| `limit` | int, optional | Per-section result cap. Defaults to 200 records + 100 nodes when listing (50 + 20 when searching); capped at 10000. Raise it to list a large dimension completely. |
 
-Finds valid member ids before filtering. Returns `records` (leaf members,
+Finds valid member ids before filtering. Covers all three dimension kinds —
+leaf, derived, and ragged. Returns `records` (leaf and derived members,
 with the exact filter key to use) and `hierarchy_nodes` (rollup nodes —
 filter with the node id exactly as returned). Visibility is scoped: a member
 is returned only if at least one readable scenario allows it.
+
+### `list_dimensions`
+
+No parameters. The dimension catalogue as metadata — each entry carries `key`
+(valid in `filters` and `dimensions`), `label`, `kind` (`leaf`, `derived`, or
+`ragged`), and, for ragged hierarchies, the `leaf_dimension` they aggregate.
+It never returns members — that is `search_hierarchy`'s job; use this tool
+only to discover which dimension keys exist.
 
 ### `list_variants`
 

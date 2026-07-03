@@ -9,6 +9,10 @@ flat reporting keys for shifted/computed scenarios.
 
 from __future__ import annotations
 
+import os
+import threading
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -490,3 +494,36 @@ def load_scenario_registry(client: Any) -> ScenarioRegistry:
     """)
     rows = [dict(zip(result.column_names, row)) for row in result.result_rows]
     return ScenarioRegistry.from_rows(rows)
+
+
+_REGISTRY_TTL_SECONDS = float(os.getenv("PRECIS_SCENARIO_REGISTRY_TTL", "5"))
+_registry_cache: tuple[float, ScenarioRegistry] | None = None
+_registry_cache_lock = threading.Lock()
+
+
+def get_scenario_registry(client_factory: Callable[[], Any]) -> ScenarioRegistry:
+    """Process-wide, short-TTL cached view of ``load_scenario_registry``.
+
+    Hot per-call paths (the tool permission gate, skill routing) hit this
+    instead of re-querying ``semantic.scenarios`` per invocation.
+    ``client_factory`` is only called on a cache miss. Same-process scenario
+    writes invalidate eagerly (``ScenarioStore``); cross-process writes are
+    bounded by the TTL.
+    """
+    global _registry_cache
+    now = time.monotonic()
+    cached = _registry_cache
+    if cached is not None and now - cached[0] < _REGISTRY_TTL_SECONDS:
+        return cached[1]
+    with _registry_cache_lock:
+        cached = _registry_cache
+        if cached is not None and time.monotonic() - cached[0] < _REGISTRY_TTL_SECONDS:
+            return cached[1]
+        registry = load_scenario_registry(client_factory())
+        _registry_cache = (time.monotonic(), registry)
+        return registry
+
+
+def invalidate_scenario_registry_cache() -> None:
+    global _registry_cache
+    _registry_cache = None

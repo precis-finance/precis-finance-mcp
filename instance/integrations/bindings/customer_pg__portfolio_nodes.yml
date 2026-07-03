@@ -1,0 +1,27 @@
+# customer_pg × portfolio_nodes — solution_portfolio node master snapshot.
+#
+# Reads `master.portfolio_nodes` from the customer's Postgres warehouse — the
+# non-leaf (portfolio/solution) nodes of the provided ragged hierarchy. Leaf
+# cost-centre nodes are auto-injected downstream and are not carried here.
+# Snapshot binding — each load replaces `live.portfolio_nodes` via
+# `EXCHANGE TABLES`.
+
+id: customer_pg__portfolio_nodes
+source: customer_pg
+target: live.portfolio_nodes
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+
+extract:
+  query: |
+    SELECT
+        node_id,
+        node_name,
+        node_type
+    FROM master.portfolio_nodes

@@ -623,6 +623,11 @@ def resolve(
 
             for cd in domain_cat.dimensions:
                 _add_parents(cd.key, set())
+            # A ragged hierarchy over a bound leaf is groupable (breakdown *by*
+            # the hierarchy node — the divergent retrieve path handles it).
+            for dname, d in catalogue.dimensions.items():
+                if getattr(d, "is_ragged", False) and d.leaf_dimension in valid_dim_keys:
+                    valid_dim_keys.add(dname)
             for dim_name in dimensions:
                 if dim_name not in valid_dim_keys:
                     available = [

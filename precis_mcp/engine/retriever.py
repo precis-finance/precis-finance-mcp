@@ -196,16 +196,27 @@ def _base_metrics_for_query(
 
 @dataclass
 class _Join:
-    """A LEFT JOIN to a leaf dimension table for a derived breakdown axis."""
-    alias: str          # d0, d1, …
-    table: str          # semantic.dim_cost_centre
+    """A join to a dimension table (or subquery) for a breakdown axis.
+
+    Derived breakdowns use a ``LEFT JOIN`` to the leaf dimension table. The ragged
+    breakdown path uses an ``INNER JOIN`` to a node→leaf subquery and matches the
+    stringified leaf key (``cast_fact``, since the rollup stores ``toString``).
+    """
+    alias: str          # d0, d1, … (or 'b' for the ragged node join)
+    table: str          # semantic.dim_cost_centre, or a "(subquery)" string
     fact_col: str       # the leaf's bound column on the fact view
-    dim_key_col: str    # the leaf dim table's key column
+    dim_key_col: str    # the joined table's key column
+    kind: str = "LEFT"       # LEFT | INNER
+    cast_fact: bool = False  # wrap the fact column in toString() in the ON
 
     def sql(self) -> str:
+        left = (
+            f"toString({_FACT}.{self.fact_col})" if self.cast_fact
+            else f"{_FACT}.{self.fact_col}"
+        )
         return (
-            f"LEFT JOIN {self.table} {self.alias} "
-            f"ON {_FACT}.{self.fact_col} = {self.alias}.{self.dim_key_col}"
+            f"{self.kind} JOIN {self.table} {self.alias} "
+            f"ON {left} = {self.alias}.{self.dim_key_col}"
         )
 
 
@@ -518,6 +529,78 @@ def generate_sql(
     )
 
 
+def generate_ragged_sql(
+    data_query: DataQuery,
+    catalogue: Catalogue,
+    ragged_breakdown: dict,
+    dimension_filters: dict[str, list[str]] | None,
+) -> list[tuple[str, dict]]:
+    """SQL for a breakdown *by* a ragged hierarchy (the divergent retrieve path).
+
+    The breakdown axis is ``node_id`` from an INNER JOIN to the hierarchy's
+    ``_rollup`` restricted to the anchor node and its immediate children (from
+    ``_edges``). Grouping by ``node_id`` yields one row per node — the anchor row
+    is the total (its own deduped leaf set), the child rows the breakdown. Detail
+    grain only: the parent-node row is the total, so no GROUPING SETS is needed.
+    The rollup method machinery (sum / avg / closing / count_distinct) applies
+    unchanged, since each node group is an independent aggregation over its own
+    leaves.
+    """
+    domain = catalogue.domains.get(data_query.domain)
+    if domain is None:
+        raise KeyError(f"Unknown catalogue domain: {data_query.domain!r}")
+
+    key = ragged_breakdown["dimension"]
+    leaf = ragged_breakdown["leaf_dimension"]
+    leaf_dim = catalogue.dimensions.get(leaf)
+    if leaf_dim is None or leaf_dim.source is None:
+        raise KeyError(f"Ragged hierarchy {key!r} has no resolvable leaf dimension")
+    leaf_key = leaf_dim.source.key_column
+
+    bound = {cd.key: cd.source for cd in domain.dimensions if cd.source}
+    if leaf not in bound:
+        raise KeyError(
+            f"Ragged hierarchy {key!r} leaf {leaf!r} is not bound to domain "
+            f"{domain.domain!r}"
+        )
+    fact_leaf_col = bound[leaf]
+
+    stem = f"dim_{leaf}_{key}"
+    rollup_view = f"semantic.{stem}_rollup"
+    edges_view = f"semantic.{stem}_edges"
+
+    # B: node_id → leaf, restricted to the anchor node plus its immediate children.
+    subquery = (
+        f"    SELECT node_id, {leaf_key} FROM {rollup_view}\n"
+        f"    WHERE node_id = {{ragged_anchor:String}}\n"
+        f"       OR node_id IN (\n"
+        f"           SELECT child_node_id FROM {edges_view}\n"
+        f"           WHERE parent_node_id = {{ragged_anchor:String}})"
+    )
+    b_join = _Join(
+        alias="b",
+        table=f"(\n{subquery}\n)",
+        fact_col=fact_leaf_col,
+        dim_key_col=leaf_key,
+        kind="INNER",
+        cast_fact=True,
+    )
+
+    return _generate_aggregate_sql(
+        data_query,
+        _base_metrics_for_query(data_query, catalogue),
+        domain.source_view,
+        dimensions=[key],
+        dimension_filters=dimension_filters,
+        versioned=domain.versioned,
+        closing_time_dims=None,
+        grains=GrainSpec(),  # detail only — the anchor-node row carries the total
+        name_to_expr={key: "b.node_id"},
+        joins=[b_join],
+        extra_params={"ragged_anchor": ragged_breakdown["anchor_node_id"]},
+    )
+
+
 def _from_clause(source_view: str, joins: list[_Join]) -> str:
     """The aliased FROM with any derived-axis leaf joins appended."""
     sql = f"FROM {source_view} {_FACT}"
@@ -625,8 +708,13 @@ def _generate_aggregate_sql(
     grains: GrainSpec = GrainSpec(),
     name_to_expr: dict[str, str] | None = None,
     joins: list[_Join] | None = None,
+    extra_params: dict | None = None,
 ) -> list[tuple[str, dict]]:
     """One query per rollup_method group present in metrics.
+
+    ``extra_params`` is merged into every query's parameter dict — used by the
+    ragged breakdown path to bind the anchor node id referenced in its join
+    subquery.
 
     Each query covers the requested grains via GROUP BY GROUPING SETS, with a
     GROUPING() tag column when more than the detail grain is asked for. The
@@ -708,6 +796,8 @@ def _generate_aggregate_sql(
                     )
                 )
 
+    if extra_params:
+        return [(sql, {**params, **extra_params}) for sql, params in results]
     return results
 
 
@@ -827,6 +917,7 @@ def retrieve(
     ch_client,
     dimension_filters: dict[str, list[str]] | None = None,
     ibis_backends: dict[str, object] | None = None,
+    ragged_breakdown: dict | None = None,
 ) -> RawResults:
     """Execute all data queries in the plan and return raw results.
 
@@ -893,7 +984,14 @@ def retrieve(
                 plan.grains,
             )
         else:
-            queries = generate_sql(dq, catalogue, plan.dimensions, dimension_filters, plan.grains)
+            if ragged_breakdown is not None:
+                queries = generate_ragged_sql(
+                    dq, catalogue, ragged_breakdown, dimension_filters
+                )
+            else:
+                queries = generate_sql(
+                    dq, catalogue, plan.dimensions, dimension_filters, plan.grains
+                )
             result_sets = execute_queries(queries, ch_client)
 
         for result_set in result_sets:

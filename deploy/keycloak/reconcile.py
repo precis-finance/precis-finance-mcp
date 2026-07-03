@@ -37,6 +37,7 @@ ADMIN_PASS = os.environ["KC_BOOTSTRAP_ADMIN_PASSWORD"]
 BASE = (os.environ.get("PRECIS_BASE_URL") or "").rstrip("/")
 PUBLIC = (os.environ.get("KC_BASE_URL_PUBLIC") or (f"{BASE}/auth" if BASE else "")).rstrip("/")
 AUD = os.environ.get("KC_MCP_AUDIENCE") or (f"{BASE}/mcp" if BASE else "")
+API_AUD = os.environ.get("KC_API_AUDIENCE") or (f"{BASE}/api" if BASE else "")
 ORIGIN = PUBLIC[:-5] if PUBLIC.endswith("/auth") else PUBLIC  # SPA origin, no /auth
 EXCEL_ADDIN_ENABLED = os.environ.get("KC_ENABLE_EXCEL_ADDIN", "").strip().lower() in (
     "1", "true", "yes",
@@ -165,6 +166,39 @@ def main() -> None:
     elif addin is not None:
         _admin("DELETE", f"/clients/{addin['id']}")
         print("Deleted disabled precis-excel-addin public client.", flush=True)
+
+    # 2c. SPA /api audience mapper on the precis-spa client ONLY.  Deliberately
+    #     not a realm-default scope: the /mcp audience is realm-default (§5), so
+    #     every connector token carries it — if the /api audience were also
+    #     realm-default, a read-only connector token could be replayed against
+    #     the SPA write/admin API (A-S1).  Scoping it to precis-spa is what makes
+    #     the SPA-channel audience check discriminating.
+    if API_AUD:
+        spa = _admin("GET", "/clients?clientId=precis-spa")
+        if spa:
+            c = spa[0]
+            cid = c["id"]
+            mappers = _admin("GET", f"/clients/{cid}/protocol-mappers/models") or []
+            api_mapper = next(
+                (m for m in mappers if m["name"] == "audience-precis-api"), None
+            )
+            if api_mapper is None:
+                _admin("POST", f"/clients/{cid}/protocol-mappers/models", {
+                    "name": "audience-precis-api", "protocol": "openid-connect",
+                    "protocolMapper": "oidc-audience-mapper",
+                    "config": {"included.custom.audience": API_AUD,
+                               "id.token.claim": "false", "access.token.claim": "true"},
+                })
+                print(f"  added audience-precis-api mapper (aud={API_AUD})", flush=True)
+            elif api_mapper["config"].get("included.custom.audience") != API_AUD:
+                api_mapper["config"]["included.custom.audience"] = API_AUD
+                _admin("PUT", f"/clients/{cid}/protocol-mappers/models/{api_mapper['id']}",
+                       api_mapper)
+                print(f"  restamped audience-precis-api mapper to {API_AUD}", flush=True)
+            else:
+                print("  audience-precis-api mapper already current.", flush=True)
+        else:
+            print("precis-spa client absent — skipping /api audience mapper.", flush=True)
 
     # 3. Declare precis_user_id in the user profile (else Keycloak 26 drops it
     #    and /mcp can't resolve the identity claim).

@@ -65,6 +65,9 @@ logger = logging.getLogger(__name__)
 _INSPECT_AGENT_ROW_CAP = 100
 _INSPECT_AGENT_CHAR_CAP = 50_000
 
+# Per-section ceiling for search_hierarchy's caller-supplied `limit`.
+_HIERARCHY_LIMIT_CEILING = 10_000
+
 
 def _duplicate_alias_error(blocks: list[dict]) -> dict | None:
     """Return a validation error if two column blocks share an alias.
@@ -1329,21 +1332,27 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
     def search_hierarchy(
         query: str | None = None,
         dimension: str | None = None,
+        limit: int | None = None,
         out: str = "agent",
     ) -> dict:
         """[UTILITY] Search or list dimension members and hierarchy nodes.
+
+        Covers all three dimension kinds: leaf (own master data), derived
+        (attribute values of another dimension's master data), and ragged
+        hierarchies (rollup nodes).
 
         Two modes of operation:
 
         - **Search** (``query`` provided): filters dimension members and hierarchy
           nodes by free-text match. Use to find specific items by name or code.
         - **List** (``query`` omitted or ``None``): returns all members of the
-          specified dimension (up to 200 records + 100 hierarchy nodes).
+          specified dimension (up to 200 records + 100 hierarchy nodes by
+          default; raise ``limit`` for a complete list of a large dimension).
           Always pass ``dimension`` when listing to avoid a cross-dimension dump.
 
         Returns two sections:
 
-        - **records**: leaf-level rows from master data tables. Each record shows
+        - **records**: leaf and derived members. Each record shows
           the dimension key as the filter key with exact filter_usage.
         - **hierarchy_nodes**: rollup hierarchy nodes (for ragged hierarchies).
           Use these node_id values with the hierarchy key as the filter key
@@ -1357,9 +1366,15 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
             dimension: Dimension key to restrict results (e.g. 'cost_centre',
                 'employee', 'project', 'client', 'client_portfolio').
                 Recommended when listing without a query.
+            limit: Per-section result cap. Defaults to 200 records + 100
+                nodes when listing, 50 + 20 when searching; capped at 10000.
             out: Output mode — 'agent' (default) or 'excel'. When 'excel',
                 generates an Excel file with two sheets (Records + Hierarchy Nodes).
         """
+        if limit is not None:
+            limit = max(1, min(int(limit), _HIERARCHY_LIMIT_CEILING))
+        record_limit = limit if limit is not None else (50 if query else 200)
+        node_limit = limit if limit is not None else (20 if query else 100)
         client = get_clickhouse_client()
         records: list[dict] = []
         hierarchy_nodes: list[dict] = []
@@ -1425,7 +1440,7 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                     f"FROM {dim.source.table} "
                     f"{where}"
                     f"ORDER BY {select_cols[0]} "
-                    f"LIMIT {50 if query else 200}"
+                    f"LIMIT {record_limit}"
                 )
 
                 try:
@@ -1453,12 +1468,47 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                 except Exception:
                     continue
 
+            # --- Search derived dimensions (FK columns on a leaf source) ---
+            if dim.is_derived and dim._transitive:
+                resolution = next(iter(dim._transitive.values()))
+                conditions = [f"toString({resolution.filter_column}) != ''"]
+                params = {}
+                if (
+                    permitted_members is not None
+                    and resolution.leaf_dimension in permitted_members
+                ):
+                    conditions.append(
+                        f"toString({resolution.leaf_key_column}) "
+                        f"IN ({{scope_ids:Array(String)}})"
+                    )
+                    params["scope_ids"] = sorted(
+                        permitted_members[resolution.leaf_dimension]
+                    )
+                if query:
+                    conditions.append(
+                        f"ilike(toString({resolution.filter_column}), {{q:String}})"
+                    )
+                    params["q"] = f"%{query}%"
+                sql = (
+                    f"SELECT DISTINCT toString({resolution.filter_column}) AS member "
+                    f"FROM {resolution.source_table} "
+                    f"WHERE {' AND '.join(conditions)} "
+                    f"ORDER BY member "
+                    f"LIMIT {record_limit}"
+                )
+                try:
+                    result = client.query(sql, parameters=params)
+                    for row in result.result_rows:
+                        records.append({
+                            "dimension": dim_key,
+                            "code": str(row[0]),
+                        })
+                except Exception:
+                    continue
+
             # --- Search ragged hierarchy nodes ---
             if dim.is_ragged and dim.leaf_dimension:
-                if dim.ragged_source and dim.ragged_source.type == "provided" and dim.ragged_source.table:
-                    hierarchy_view = dim.ragged_source.table
-                else:
-                    hierarchy_view = f"semantic.dim_{dim.leaf_dimension}_{dim_key}"
+                hierarchy_view = f"semantic.dim_{dim.leaf_dimension}_{dim_key}"
 
                 node_conditions = ["node_type != 'all'"]
                 node_params: dict = {}
@@ -1471,10 +1521,7 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                         # Cannot map nodes to permitted leaves — fail closed.
                         node_conditions.append("1 = 0")
                     else:
-                        if dim.ragged_source and dim.ragged_source.type == "provided" and dim.ragged_source.table:
-                            rollup_view = dim.ragged_source.table
-                        else:
-                            rollup_view = f"semantic.dim_{dim.leaf_dimension}_{dim_key}_rollup"
+                        rollup_view = f"semantic.dim_{dim.leaf_dimension}_{dim_key}_rollup"
                         node_conditions.append(
                             f"node_id IN (SELECT DISTINCT node_id FROM {rollup_view} "
                             f"WHERE toString({resolution.leaf_key_column}) "
@@ -1490,21 +1537,13 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                             "(ilike(node_name, {q:String}) OR ilike(node_id, {q:String}))"
                         )
                         node_params["q"] = f"%{query}%"
-                        node_sql = (
-                            f"SELECT node_id, node_name, display_name, node_type "
-                            f"FROM {hierarchy_view} "
-                            f"WHERE {' AND '.join(node_conditions)} "
-                            f"ORDER BY level, node_name "
-                            f"LIMIT 20"
-                        )
-                    else:
-                        node_sql = (
-                            f"SELECT node_id, node_name, display_name, node_type "
-                            f"FROM {hierarchy_view} "
-                            f"WHERE {' AND '.join(node_conditions)} "
-                            f"ORDER BY sort_key, level "
-                            f"LIMIT 100"
-                        )
+                    node_sql = (
+                        f"SELECT node_id, node_name, display_name, node_type "
+                        f"FROM {hierarchy_view} "
+                        f"WHERE {' AND '.join(node_conditions)} "
+                        f"ORDER BY node_type, node_name "
+                        f"LIMIT {node_limit}"
+                    )
                     node_result = client.query(node_sql, parameters=node_params)
                     for row in node_result.result_rows:
                         node_type = str(row[3])
@@ -1542,6 +1581,39 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
             )
 
         return result
+
+    @mcp.tool()
+    def list_dimensions() -> dict:
+        """[UTILITY] List the dimensions defined in the catalogue.
+
+        Returns catalogue *metadata* only — dimension keys, labels, and
+        kinds — never members. To list or search the members of a dimension
+        (cost centres, employees, hierarchy nodes, …) use ``search_hierarchy``;
+        that is the common call. Reach for ``list_dimensions`` only to
+        discover which dimension keys exist — e.g. valid ``dimensions`` /
+        ``filters`` keys, or to populate a picker.
+
+        Each entry:
+
+        - **key**: the dimension key usable in ``dimensions`` and ``filters``.
+        - **label**: display label.
+        - **kind**: 'leaf' (own master data), 'derived' (attribute of another
+          dimension's master data), or 'ragged' (multi-level rollup hierarchy).
+        - **leaf_dimension**: ragged entries only — the leaf dimension the
+          hierarchy aggregates.
+        """
+        dimensions = []
+        for key, dim in ref.current.dimensions.items():
+            kind = (
+                "leaf" if dim.is_leaf
+                else "derived" if dim.is_derived
+                else "ragged"
+            )
+            entry: dict = {"key": key, "label": dim.label, "kind": kind}
+            if dim.is_ragged and dim.leaf_dimension:
+                entry["leaf_dimension"] = dim.leaf_dimension
+            dimensions.append(entry)
+        return {"dimensions": dimensions}
 
     @mcp.tool()
     def resolve_to_cc_list(filter_key: str, filter_value: str) -> list[str]:

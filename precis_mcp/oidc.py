@@ -153,6 +153,39 @@ def mcp_audience() -> str | None:
     return f"{base}/mcp" if base else None
 
 
+def api_audience() -> str | None:
+    """RFC 8707 audience the SPA ``/api`` surface requires in a token's ``aud``.
+
+    Distinct from ``mcp_audience`` on purpose: the ``/mcp`` audience sits on a
+    Keycloak *realm-default* client scope, so every token in the realm carries
+    it (SPA, Excel add-in, and every anonymous-DCR connector alike).  The API
+    audience is stamped on the ``precis-spa`` client *only*, so a connector
+    token — which receives realm-default scopes but not the SPA client's
+    mappers — lacks it and cannot be replayed against the write/admin/HITL API.
+
+    Resolution order: ``OIDC_API_AUDIENCE`` (mode C — the de-branded name, set
+    to whatever the external IdP stamps as the SPA resource audience; used
+    verbatim so it matches the token exactly) → legacy ``KC_API_AUDIENCE`` →
+    derived ``$PRECIS_BASE_URL/api``.  ``None`` when none is set — API
+    audience enforcement is then off (dev with no base URL).
+    """
+    oidc_aud = os.environ.get("OIDC_API_AUDIENCE")
+    if oidc_aud:
+        return oidc_aud  # verbatim — must match the IdP's stamped aud exactly
+    kc_aud = os.environ.get("KC_API_AUDIENCE")
+    if kc_aud:
+        return kc_aud.rstrip("/")
+    base = os.environ.get("PRECIS_BASE_URL", "").rstrip("/")
+    return f"{base}/api" if base else None
+
+
+def token_has_audience(claims: dict, expected: str) -> bool:
+    """True if ``expected`` is present in the token's ``aud`` (str or list)."""
+    aud = claims.get("aud")
+    aud_list = [aud] if isinstance(aud, str) else (aud or [])
+    return expected in aud_list
+
+
 def require_mcp_audience_when_configured() -> None:
     """Refuse to start a configured multi-user deploy with no `/mcp` audience.
 
@@ -170,6 +203,27 @@ def require_mcp_audience_when_configured() -> None:
             "Set OIDC_AUDIENCE, KC_MCP_AUDIENCE, or PRECIS_BASE_URL — "
             "without one, the RFC 8707 audience check is off and any "
             "same-issuer token is accepted at /mcp."
+        )
+
+
+def require_api_audience_when_configured() -> None:
+    """Refuse to start a configured deploy with no SPA ``/api`` audience.
+
+    The mirror of ``require_mcp_audience_when_configured`` for the SPA channel.
+    Without a resolvable API audience the middleware's replay guard is silently
+    off, so a read-only connector token (which carries the realm-default
+    ``/mcp`` audience and the ``precis_user_id`` identity claim) can be replayed
+    as a ``Bearer``/cookie against the full write/admin/HITL API.  A set
+    ``PRECIS_AUTH_MODE`` marks a real deploy; dev/test keeps the check optional.
+    """
+    if not os.environ.get("PRECIS_AUTH_MODE", "").strip():
+        return
+    if api_audience() is None:
+        raise RuntimeError(
+            "PRECIS_AUTH_MODE is set but no /api audience is resolvable. "
+            "Set OIDC_API_AUDIENCE, KC_API_AUDIENCE, or PRECIS_BASE_URL — "
+            "without one, a read-only connector token can be replayed "
+            "against the SPA write/admin API."
         )
 
 
@@ -286,10 +340,11 @@ def verify_keycloak_token(token: str) -> dict:
         signing_key,
         algorithms=["RS256"],
         issuer=config.issuer,
-        # No audience check here.  The SPA token's aud is the api audience
-        # (set by the realm's protocol mapper).  Per-channel audience checks
-        # belong in the channel's middleware (MCP route group will enforce
-        # its own RFC 8707 audience claim in Phase 2).
+        # No audience check here — this validator is shared by both channels.
+        # Each channel enforces its own RFC 8707 audience on the verified
+        # claims: the SPA middleware requires the `/api` audience
+        # (`api_audience`), the MCP handler the `/mcp` audience
+        # (`mcp_audience`).  A single `aud` here could not satisfy both.
         options={
             "require": ["exp", "iat", "sub"],
             "verify_aud": False,

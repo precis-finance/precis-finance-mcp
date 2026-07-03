@@ -116,9 +116,71 @@ def _apply_semantic(instance_dir: Path, ch_client: Any) -> Any:
         from precis_mcp.engine import load_and_validate
 
         catalogue = load_and_validate(str(cat_dir))
-    return semantic_runner.apply_all(
+    report = semantic_runner.apply_all(
         instance_dir / "semantic", ch_client, catalogue=catalogue
     )
+    if catalogue is not None:
+        _warn_ragged_integrity(catalogue, ch_client)
+    return report
+
+
+def _warn_ragged_integrity(catalogue: Any, ch_client: Any) -> None:
+    """Emit operator-log warnings for ragged-hierarchy data defects.
+
+    Runs after the ragged views are applied, against the live data:
+
+    - **diamonds** — a leaf reaching a node by more than one path (the rollup
+      dedups them, but the reconvergence is a modelling defect);
+    - **orphan edges** — an edge referencing a node absent from the node master
+      (the rollup ignores them).
+
+    Non-blocking by design (spec decision: operator logs only). Data-dependent, so
+    a fresh provision before ingestion simply finds nothing. Each query is guarded
+    so a probe failure never fails provisioning.
+    """
+    from precis_mcp.engine.ragged_views import (
+        build_diamond_check_sql,
+        build_orphan_edges_sql,
+    )
+
+    for key, dim in getattr(catalogue, "dimensions", {}).items():
+        if not (getattr(dim, "is_ragged", False) and dim.leaf_dimension):
+            continue
+        leaf_dim = catalogue.dimensions.get(dim.leaf_dimension)
+        if leaf_dim is None or leaf_dim.source is None:
+            continue
+        stem = f"dim_{dim.leaf_dimension}_{dim.key}"
+        try:
+            rows = ch_client.query(build_diamond_check_sql(
+                leaf_source=leaf_dim.source.table,
+                leaf_key=leaf_dim.source.key_column,
+                edges_view=f"semantic.{stem}_edges",
+            )).result_rows
+            if rows:
+                sample = ", ".join(f"{r[0]}←{r[1]}(x{r[2]})" for r in rows[:5])
+                _logger.warning(
+                    "clickhouse_init.ragged_diamond", dimension=key,
+                    count=len(rows), sample=sample,
+                )
+        except Exception as exc:  # noqa: BLE001 — a probe failure must not block
+            _logger.warning(
+                "clickhouse_init.ragged_diamond_check_failed", dimension=key, error=str(exc),
+            )
+        try:
+            rows = ch_client.query(build_orphan_edges_sql(
+                node_master=f"semantic.{stem}",
+                edges_view=f"semantic.{stem}_edges",
+            )).result_rows
+            if rows:
+                sample = ", ".join(f"{r[0]}({r[1]})" for r in rows[:5])
+                _logger.warning(
+                    "clickhouse_init.ragged_orphan_edge", dimension=key,
+                    count=len(rows), sample=sample,
+                )
+        except Exception as exc:  # noqa: BLE001 — a probe failure must not block
+            _logger.warning(
+                "clickhouse_init.ragged_orphan_check_failed", dimension=key, error=str(exc),
+            )
 
 
 def plan(scope: str, extension_steps: list[Step] | None = None) -> list[Step]:
@@ -203,17 +265,15 @@ def _check_semantic_views(catalogue: Any, ch_client: Any) -> list[CheckResult]:
       - each clickhouse-backed domain's `source_view` (the fact views),
       - every leaf dimension's `semantic.dim_*` master — operator-authored or the
         auto pass-through (`passthrough_views.build_passthrough_views`),
-      - the ragged-hierarchy views — generated `dim_{leaf}_{key}[_rollup]`
-        (`ragged_views.build_ragged_views`) or an operator-`provided`
-        `ragged_source.table`.
+      - the ragged-hierarchy views — `dim_{leaf}_{key}`, `_edges`, and `_rollup`
+        for both generated and provided hierarchies
+        (`ragged_views.build_ragged_views`).
 
     A view the catalogue names but provisioning never created fails here rather
     than at first query — the leaf/ragged families are why a sample-data bootstrap
     that skipped the catalogue-derived views (`inspect_rows`/`search_hierarchy`
     against a missing `semantic.dim_*`) used to pass `--check` clean.
     """
-    from precis_mcp.engine.ragged_views import _is_generated
-
     existing = _existing_semantic_objects(ch_client)
     results: list[CheckResult] = []
     seen: set[str] = set()
@@ -244,15 +304,13 @@ def _check_semantic_views(catalogue: Any, ch_client: Any) -> list[CheckResult]:
         src = getattr(dim, "source", None)
         if dim.is_leaf and src is not None and src.table and src.table.startswith("semantic."):
             assert_present(src.table, f"dimension {key!r} source")
-        if dim.is_ragged:
-            if _is_generated(dim):
-                stem = f"dim_{dim.leaf_dimension}_{dim.key}"
-                assert_present(f"semantic.{stem}", f"ragged dimension {key!r}")
-                assert_present(f"semantic.{stem}_rollup", f"ragged dimension {key!r}")
-            else:
-                rs = getattr(dim, "ragged_source", None)
-                if rs is not None and rs.table:
-                    assert_present(rs.table, f"ragged dimension {key!r} provided source")
+        if dim.is_ragged and dim.leaf_dimension:
+            # Both generated and provided paths produce the fixed-name node
+            # master, the edges relationships, and the recursive rollup.
+            stem = f"dim_{dim.leaf_dimension}_{dim.key}"
+            assert_present(f"semantic.{stem}", f"ragged dimension {key!r}")
+            assert_present(f"semantic.{stem}_edges", f"ragged dimension {key!r} edges")
+            assert_present(f"semantic.{stem}_rollup", f"ragged dimension {key!r}")
 
     return results
 

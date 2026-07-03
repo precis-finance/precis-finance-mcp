@@ -1,0 +1,25 @@
+# customer_pg × portfolio_edges — solution_portfolio child→parent relationships.
+#
+# Reads `master.portfolio_edges` from the customer's Postgres warehouse. Each
+# row is one child→parent roll-up; a child may appear under more than one parent
+# (multi-parent roll-up). Snapshot binding — each load replaces
+# `live.portfolio_edges` via `EXCHANGE TABLES`.
+
+id: customer_pg__portfolio_edges
+source: customer_pg
+target: live.portfolio_edges
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+
+extract:
+  query: |
+    SELECT
+        child_node_id,
+        parent_node_id
+    FROM master.portfolio_edges

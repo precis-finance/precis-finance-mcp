@@ -290,6 +290,64 @@ CC_MAP = {cc[0]: cc for cc in COST_CENTRES}
 BILLABLE_CCS  = [cc[0] for cc in COST_CENTRES if cc[4]]
 CORPORATE_CCS = [cc[0] for cc in COST_CENTRES if not cc[4]]
 
+# --- solution_portfolio: a "provided" ragged hierarchy over cost centres ---
+# A second hierarchy over the cost-centre leaf set (alongside the generated
+# org_structure), supplied as an operator-authored node master + child→parent
+# edges rather than derived from columns. It cross-cuts the org tree and
+# exercises ragged depth (leaves attaching directly to a portfolio) and
+# multi-parent roll-ups. Leaf cost-centre nodes are auto-injected downstream,
+# so only the non-leaf (portfolio/solution) nodes are declared here.
+PORTFOLIO_NODES = [
+    # (node_id, node_name, node_type)
+    ("P-CLOUD",     "Cloud & Platform",         "portfolio"),
+    ("P-DIGITAL",   "Digital Products",         "portfolio"),
+    ("P-DATAAI",    "Data & AI",                "portfolio"),
+    ("P-CYBER",     "Cyber & Trust",            "portfolio"),
+    ("P-ADVISORY",  "Advisory & Strategy",      "portfolio"),
+    ("P-ENTFUNC",   "Enterprise Functions",     "portfolio"),
+    ("S-CLOUDMIG",  "Cloud Migration & Ops",    "solution"),
+    ("S-PLATENG",   "Platform Engineering",     "solution"),
+    ("S-APPDEV",    "Application Development",   "solution"),
+    ("S-MOBILE",    "Mobile & Frontend",        "solution"),
+    ("S-ANALYTICS", "Analytics & BI",           "solution"),
+    ("S-MLAI",      "ML & AI Solutions",        "solution"),
+    ("S-SECOPS",    "Security Operations",      "solution"),
+    ("S-SECADV",    "Security Advisory",        "solution"),
+    ("S-DIGTX",     "Digital Transformation",   "solution"),
+    ("S-INTERNAL",  "Internal Shared Services", "solution"),
+]
+
+# parent_node_id -> [child_node_id, ...]. Children are solution nodes or, where
+# a branch is ragged, cost-centre leaf ids directly. A child appearing under two
+# parents is intentional (multi-parent roll-up); CC-DANA-02 reaching P-DATAAI via
+# both S-ANALYTICS and S-MLAI is an intentional diamond (see spec).
+PORTFOLIO_CHILDREN = {
+    "P-CLOUD":     ["S-CLOUDMIG", "S-PLATENG"],
+    "P-DIGITAL":   ["S-PLATENG", "S-APPDEV", "S-MOBILE", "CC-SENG-05"],
+    "P-DATAAI":    ["S-ANALYTICS", "S-MLAI", "CC-SENG-05", "CC-DANA-03"],
+    "P-CYBER":     ["S-SECOPS", "S-SECADV", "CC-DANA-03"],
+    "P-ADVISORY":  ["S-ANALYTICS", "S-SECADV", "S-DIGTX"],
+    "P-ENTFUNC":   ["S-INTERNAL"],
+    "S-CLOUDMIG":  ["CC-CLOUD-01", "CC-CLOUD-02", "CC-CLOUD-03"],
+    "S-PLATENG":   ["CC-CLOUD-03", "CC-CLOUD-04"],
+    "S-APPDEV":    ["CC-SENG-02", "CC-SENG-04"],
+    "S-MOBILE":    ["CC-SENG-01", "CC-SENG-03"],
+    "S-ANALYTICS": ["CC-DANA-01", "CC-DANA-02"],
+    "S-MLAI":      ["CC-SENG-06", "CC-DANA-02"],
+    "S-SECOPS":    ["CC-CSEC-02"],
+    "S-SECADV":    ["CC-CSEC-01"],
+    "S-DIGTX":     ["CC-DGTX-01", "CC-DGTX-02", "CC-DGTX-03"],
+    "S-INTERNAL":  ["CC-FINC-01", "CC-HRES-01", "CC-MKTG-01",
+                    "CC-MKTG-02", "CC-GADM-01", "CC-GADM-02"],
+}
+
+# Flattened (child_node_id, parent_node_id) rows for master.portfolio_edges.
+PORTFOLIO_EDGES = [
+    (child, parent)
+    for parent, children in PORTFOLIO_CHILDREN.items()
+    for child in children
+]
+
 # Intra-group recharge agreements: (provider_cc, [consumer_ccs], base_monthly_eur).
 # Not posted to the GL or plan.
 INTERCO_AGREEMENTS = [
@@ -1910,6 +1968,22 @@ CREATE TABLE master.cost_centres (
     updated_at       TIMESTAMP    NOT NULL DEFAULT NOW()
 );
 
+-- master.portfolio_nodes / master.portfolio_edges — the solution_portfolio
+-- provided ragged hierarchy. Node master (non-leaf nodes only) + child→parent
+-- edges. Leaf cost-centre nodes are auto-injected downstream, so excluded here.
+DROP TABLE IF EXISTS master.portfolio_edges CASCADE;
+DROP TABLE IF EXISTS master.portfolio_nodes CASCADE;
+CREATE TABLE master.portfolio_nodes (
+    node_id   VARCHAR(20)  PRIMARY KEY,
+    node_name VARCHAR(100) NOT NULL,
+    node_type VARCHAR(20)  NOT NULL
+);
+CREATE TABLE master.portfolio_edges (
+    child_node_id  VARCHAR(20) NOT NULL,
+    parent_node_id VARCHAR(20) NOT NULL,
+    PRIMARY KEY (child_node_id, parent_node_id)
+);
+
 -- hr.employees
 DROP TABLE IF EXISTS hr.timesheets CASCADE;
 DROP TABLE IF EXISTS hr.payroll CASCADE;
@@ -2541,6 +2615,21 @@ def load_postgres(clients, employees, projects, timesheets, payroll, entries, li
     )
     conn.commit()
     print(f"  Inserted {len(COST_CENTRES)} cost centres")
+
+    # 1b-ii. solution_portfolio provided ragged hierarchy (nodes + edges)
+    cur.executemany(
+        """INSERT INTO master.portfolio_nodes (node_id, node_name, node_type)
+           VALUES (%s, %s, %s)""",
+        PORTFOLIO_NODES,
+    )
+    cur.executemany(
+        """INSERT INTO master.portfolio_edges (child_node_id, parent_node_id)
+           VALUES (%s, %s)""",
+        PORTFOLIO_EDGES,
+    )
+    conn.commit()
+    print(f"  Inserted {len(PORTFOLIO_NODES)} portfolio nodes, "
+          f"{len(PORTFOLIO_EDGES)} portfolio edges")
 
     # 1c. gl.dim_period — the customer warehouse owns the period dimension
     # (the customer_pg__dim_period binding projects it into live.dim_period),

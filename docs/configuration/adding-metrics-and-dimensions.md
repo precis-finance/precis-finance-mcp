@@ -316,7 +316,7 @@ source-view column for `product`.
 |---|---|---|---|
 | **Leaf** | has its own master data (codes, names, attributes) | `source:` (`table`, `key_column`, `attribute_mapping`) | filtering, display labels, attributes, a base for hierarchy |
 | **Derived** | is only a column value on another dimension's table | `derived_from:` (`dimension`, `source_column`) | filtering and grouping by that value; no master data of its own |
-| **Ragged** | is one of several levels you want exposed as a single browsable axis | `ragged: true`, `leaf_dimension`, `levels` | one dimension that rolls up every level at once |
+| **Ragged** | is one of several levels you want exposed as a single browsable axis | `ragged: true`, `leaf_dimension`, and either `levels` (generated) or a provided node + edge set | one dimension that rolls up every level at once |
 
 A **ragged** dimension reuses dimensions you already declared as ordered `levels`
 (root → leaf); the platform derives its rollup views from the leaf's master table
@@ -326,11 +326,18 @@ A **ragged** dimension reuses dimensions you already declared as ordered `levels
 - `levels` is non-empty and its **last** entry equals `leaf_dimension`;
 - every level references an existing dimension.
 
-`root_label` and per-level `display_prefix` are optional presentation. A dimension
-expresses **one** rollup path: to roll the same leaf up a different way — cost
-centres by organisation *and* by geography, SKUs by category *and* by brand —
-declare a **separate** ragged dimension with its own `levels`; do not overload one
-dimension's `parents` chain to carry two trees.
+`root_label` and per-level `display_prefix` are optional presentation.
+
+When your hierarchy isn't clean ancestor columns — a node rolls up into **more
+than one** parent, or branches reach different depths — declare it as **provided**
+instead: supply a node master and a child→parent edge table (`source: { type:
+provided, node_table, edge_table, child_column, parent_column }`) and the platform
+builds the rollup from the edges. See the catalogue guide for the full shape.
+
+Either way, one ragged dimension expresses **one** hierarchy: to roll the same
+leaf up a different way — cost centres by organisation *and* by geography, SKUs by
+category *and* by brand — declare a **separate** ragged dimension; do not overload
+one dimension's `parents` chain to carry two trees.
 
 ### Step 3: Bind dimensions and metrics in a domain file
 

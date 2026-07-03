@@ -254,6 +254,21 @@ dimensions:
     source:
       type: generated
 
+  # A "provided" ragged hierarchy over the cost-centre leaf set: an operator
+  # node master + child→parent edges rather than derived from columns. Cross-cuts
+  # the org tree; supports ragged depth and a child rolling up into several
+  # parents. See docs/ragged_hierarchies_spec.md.
+  solution_portfolio:
+    label: Solution Portfolio
+    ragged: true
+    leaf_dimension: cost_centre
+    source:
+      type: provided
+      node_table: portfolio_nodes
+      edge_table: portfolio_edges
+      child_column: child_node_id
+      parent_column: parent_node_id
+
   calendar:
     label: Calendar
     ragged: true

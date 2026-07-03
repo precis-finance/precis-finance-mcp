@@ -55,7 +55,7 @@ The **Précis** group on the Home tab has three buttons:
 
 | Button | Does |
 |---|---|
-| **Panel** | Opens the task pane (connect, refresh, sign out). |
+| **Panel** | Opens the task pane (connect, refresh, member drop-downs, sign out, function docs). |
 | **Format** | Styles the selected spill — header band, subtotals, totals, variance colours, number formats. |
 | **Refresh** | Re-fetches every `PRECIS.*` cell in the workbook (a full recalculation). |
 
@@ -70,6 +70,37 @@ total is ruled and bold), with favourable/unfavourable variance in green/red.
 
 Re-running **Format** resets prior styling first, so it's safe to re-apply after
 changing the formula's columns.
+
+## Member drop-downs
+
+The task pane can turn any selected cells into a native Excel drop-down of a
+dimension's members — cost centres, projects, hierarchy nodes — for building
+input sheets and filter cells that only accept valid values.
+
+1. In the pane, pick a dimension under **Insert member drop-down**. The picker
+   lists every dimension in your model; ragged hierarchies appear as their own
+   entries (marked *hierarchy*) and list every node, all levels.
+2. Pick what the drop-down shows: **Codes** (e.g. `CC-100`) or **Code + name**
+   (e.g. `CC-100 | Cloud Infrastructure`).
+3. Select the target cells in the sheet and click **Insert on selected cells**.
+
+The member list lives on a hidden `PrecisLists` sheet as a live
+`=PRECIS.HIERARCHY(…;"list")` spill, referenced through workbook-level defined
+names (`Precis_List_<dimension>_…`). Consequences worth knowing:
+
+- **One list per dimension per workbook.** Inserting more drop-downs for the
+  same dimension — on any sheet — reuses the same list; **Refresh** updates
+  them all in one recalculation.
+- **A companion formula** lands in the column to the right of a single-column
+  selection: the member's display name next to a code drop-down, the extracted
+  code next to a code + name one. Cells that already have content are never
+  overwritten (the pane tells you when it skips).
+- **In code + name mode the cell value is not a valid filter value.** Use the
+  companion code cell in downstream formulas, or extract the code yourself
+  with `=TEXTBEFORE(A1;" | ")` — the code comes first, so the extraction works
+  whatever the display name contains.
+- Drop-down values are validated against the list at entry time; like any
+  Excel data validation, they are a guide, not a lock.
 
 ## Server-side setup (for operators)
 
@@ -128,8 +159,11 @@ no deployer action is needed. Excel desktop loads same-origin and ignores it.
 
 The server sets the `/excel` security headers itself: `Access-Control-Allow-Origin: *`,
 `Cross-Origin-Resource-Policy: cross-origin` (so the Office host can load the ribbon
-icons), and a content-security policy that allows `office.js` and **omits**
-`frame-ancestors`/`X-Frame-Options` so Excel can frame the task pane. This is not a
+icons), a content-security policy that allows `office.js` and **omits**
+`frame-ancestors`/`X-Frame-Options` so Excel can frame the task pane, and
+`Cache-Control: no-cache` so browsers revalidate the bundle on every load and an
+upgrade never serves a stale task pane (a caching proxy in front should not
+override this on `/excel`). This is not a
 choice — an Office add-in is the opposite shape from a normal web page: Excel hosts
 the task pane in an iframe and loads `office.js` cross-origin, so the `/excel`
 endpoint **must** be framable. A reverse proxy that denies framing in front of it

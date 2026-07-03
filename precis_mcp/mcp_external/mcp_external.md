@@ -18,10 +18,13 @@ user needs:
 Figures default to thousands with one decimal place unless you pass `scale` /
 `decimals` explicitly.
 
-Utility tools — `list_scenarios`, `list_kpis`, `search_hierarchy`,
-`list_inspection_sources`, `get_inspection_schema`, `inspect_rows`,
-`list_variants` — discover valid scenario ids, metric keys, dimensions, and
-row-level detail before composing a query.
+Utility tools — `list_scenarios`, `list_kpis`, `list_dimensions`,
+`search_hierarchy`, `list_inspection_sources`, `get_inspection_schema`,
+`inspect_rows`, `list_variants` — discover valid scenario ids, metric keys,
+dimensions, and row-level detail before composing a query. `list_dimensions`
+tells you which dimension keys exist (metadata only); `search_hierarchy` lists
+or searches a dimension's members — reach for it whenever you need valid
+member ids.
 
 ## Choosing run_statement vs run_metric
 
@@ -35,6 +38,17 @@ row-level detail before composing a query.
 
 The `period` and `cost_centre` dimensions work for every statement; other
 dimensions may only apply to compatible metrics.
+
+## Breaking down by a hierarchy
+
+A hierarchy dimension can be used as a breakdown: it shows **one level down** —
+the filtered hierarchy node is the **Total**, its **immediate children** are the
+rows. Pass a filter selecting one node of the hierarchy together with the
+hierarchy as the dimension: `filters={<hierarchy>: <node_id>}` with
+`dimensions=[<hierarchy>]`. "Drill into {X}" means filter the hierarchy to X's
+node and break down by that hierarchy. Use `search_hierarchy` to get a node's id.
+One hierarchy at a time (the sole breakdown axis), a node filter is required, and
+a time/calendar hierarchy cannot be broken down this way.
 
 ## The data model
 

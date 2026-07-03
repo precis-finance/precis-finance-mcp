@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 from precis_mcp.engine.catalogue import Catalogue, CatalogueError
 from precis_mcp.engine.resolver import ResolverError
+from precis_mcp.engine.types import ROLLED_UP
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +262,103 @@ def _build_dim_formats(
     return dim_formats if dim_formats else None
 
 
+# Ragged hierarchy leaves that are time dimensions — breakdown by a time/calendar
+# ragged hierarchy is deferred (the node axis would cross time; closing is
+# non-additive over the buckets).
+_RAGGED_TIME_LEAVES = {"period"}
+
+
+def _detect_ragged_breakdown(
+    dimensions: list[str],
+    catalogue: Catalogue,
+    raw_filters: object,
+    domain: str,
+) -> dict | None:
+    """Detect and validate a breakdown *by* a ragged hierarchy.
+
+    Returns a descriptor ``{dimension, leaf_dimension, anchor_node_id}`` when a
+    ragged hierarchy is used as a breakdown dimension, else ``None``. Raises
+    ``ResolverError`` (agent-facing) when the v1 preconditions are not met:
+    sole axis, non-time hierarchy, ClickHouse domain, and an anchor node filtered
+    on the same hierarchy.
+    """
+    ragged = [
+        d for d in dimensions
+        if (dim := catalogue.dimensions.get(d)) is not None and dim.is_ragged
+    ]
+    if not ragged:
+        return None
+    key = ragged[0]
+    dim = catalogue.dimensions[key]
+
+    if len(dimensions) > 1:
+        raise ResolverError(
+            f"A ragged hierarchy ({key!r}) can only be the sole breakdown "
+            f"dimension. Remove the other dimensions or drop {key!r}."
+        )
+    if dim.leaf_dimension in _RAGGED_TIME_LEAVES:
+        raise ResolverError(
+            f"Breaking down by a time ragged hierarchy ({key!r}) is not supported. "
+            f"Break down by 'quarter' or 'fiscal_year' instead."
+        )
+    dom = catalogue.domains.get(domain)
+    if dom is not None and getattr(dom, "backend_kind", "clickhouse") != "clickhouse":
+        raise ResolverError(
+            f"Breaking down by a ragged hierarchy ({key!r}) needs a ClickHouse "
+            f"domain; {domain!r} is federated."
+        )
+    anchor = raw_filters.get(key) if isinstance(raw_filters, dict) else None
+    if isinstance(anchor, (list, tuple)):
+        anchor = anchor[0] if len(anchor) == 1 else None
+    if not anchor:
+        raise ResolverError(
+            f"Breaking down by ragged hierarchy {key!r} needs a filter selecting "
+            f"one node of that hierarchy, e.g. filters={{{key!r}: '<node_id>'}}."
+        )
+    return {
+        "dimension": key,
+        "leaf_dimension": dim.leaf_dimension,
+        "anchor_node_id": str(anchor),
+    }
+
+
+def _remap_ragged_anchor_to_total(raw_results, anchor_node_id: str) -> None:
+    """Re-key the anchor-node row to the grand-total grain, in place.
+
+    The ragged retrieve path emits one row per node (anchor + immediate
+    children), all at detail grain. The anchor row carries the total (its own
+    deduped leaf set), so re-keying it to the rolled-up sentinel makes the
+    formatter render it as the Total while the child rows stay as the breakdown.
+    """
+    anchor_key = (anchor_node_id,)
+    total_key = (ROLLED_UP,)
+    for scenario_results in raw_results.values():
+        if anchor_key in scenario_results:
+            scenario_results[total_key] = scenario_results.pop(anchor_key)
+
+
+def _ragged_dim_format(ragged_breakdown: dict, ch_client):
+    """A ``DimensionFormat`` mapping node_id → node display name.
+
+    A ragged dimension has no ``source`` table of its own, so the standard
+    dimension-lookup path does not apply; node labels come from the generated
+    node master ``semantic.dim_{leaf}_{key}``.
+    """
+    key = ragged_breakdown["dimension"]
+    leaf = ragged_breakdown["leaf_dimension"]
+    view = f"semantic.dim_{leaf}_{key}"
+    try:
+        res = ch_client.query(f"SELECT node_id, display_name FROM {view}")
+        lookup = {str(r[0]): {"display_name": str(r[1])} for r in res.result_rows}
+    except Exception:
+        logger.warning(
+            "Failed to fetch ragged node labels for %r; using raw node ids",
+            key, exc_info=True,
+        )
+        return None
+    return {key: formatter.DimensionFormat(display_attr="display_name", lookup=lookup)}
+
+
 # ---------------------------------------------------------------------------
 # Main orchestration function
 # ---------------------------------------------------------------------------
@@ -359,6 +457,13 @@ def execute_report(
     raw_filters = request.get("filters")
     if isinstance(raw_filters, dict):
         _reject_inline_dimension_filters(catalogue, request_domain, raw_filters)
+
+    # Breakdown *by* a ragged hierarchy takes a divergent retrieve path; validate
+    # the v1 preconditions here (sole axis, non-time, ClickHouse, anchor node).
+    ragged_breakdown = _detect_ragged_breakdown(
+        plan.dimensions, catalogue, raw_filters, request_domain,
+    )
+
     if raw_filters and ch_client is not None:
         dimension_filters = resolve_filters(
             raw_filters, catalogue, ch_client, domain=request_domain,
@@ -417,6 +522,8 @@ def execute_report(
         retrieve_kwargs = {"dimension_filters": dimension_filters}
         if ibis_backends is not None:
             retrieve_kwargs["ibis_backends"] = ibis_backends
+        if ragged_breakdown is not None:
+            retrieve_kwargs["ragged_breakdown"] = ragged_breakdown
         raw_results: retriever.RawResults = retriever.retrieve(
             retriever_plan,
             catalogue,
@@ -426,6 +533,12 @@ def execute_report(
         # Map retriever results back using resolver's scenario keys.
         # retriever.retrieve keys by dq.scenario_key which we preserved,
         # so no remapping needed.
+        if ragged_breakdown is not None:
+            # Re-key the anchor-node row to the grand-total grain so it renders
+            # as the Total; the child-node rows stay detail.
+            _remap_ragged_anchor_to_total(
+                raw_results, ragged_breakdown["anchor_node_id"]
+            )
     else:
         # Dry-run / test mode: return empty results for every data query
         raw_results = {}
@@ -445,7 +558,10 @@ def execute_report(
     # ------------------------------------------------------------------
     # Stage 4b: Build dimension display/sort lookups
     # ------------------------------------------------------------------
-    dim_formats = _build_dim_formats(catalogue, plan.dimensions, ch_client)
+    if ragged_breakdown is not None and ch_client is not None:
+        dim_formats = _ragged_dim_format(ragged_breakdown, ch_client)
+    else:
+        dim_formats = _build_dim_formats(catalogue, plan.dimensions, ch_client)
 
     # ------------------------------------------------------------------
     # Stage 5: Format → response dict

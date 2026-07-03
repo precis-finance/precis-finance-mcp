@@ -150,17 +150,23 @@ def _leaf_dim(table: str) -> SimpleNamespace:
 
 
 def _generated_ragged_dim(leaf: str, key: str) -> SimpleNamespace:
-    # No ragged_source → `_is_generated` treats it as platform-generated.
+    # No ragged_source → treated as platform-generated (levels-derived).
     return SimpleNamespace(
         is_leaf=False, is_ragged=True, source=None,
         leaf_dimension=leaf, key=key, ragged_source=None,
     )
 
 
-def _provided_ragged_dim(leaf: str, key: str, table: str) -> SimpleNamespace:
+def _provided_ragged_dim(leaf: str, key: str) -> SimpleNamespace:
     return SimpleNamespace(
         is_leaf=False, is_ragged=True, source=None, leaf_dimension=leaf, key=key,
-        ragged_source=SimpleNamespace(type="provided", table=table),
+        ragged_source=SimpleNamespace(
+            type="provided",
+            node_table="semantic.portfolio_nodes",
+            edge_table="semantic.portfolio_edges",
+            child_column="child_node_id",
+            parent_column="parent_node_id",
+        ),
     )
 
 
@@ -269,9 +275,10 @@ def test_check_asserts_generated_ragged_views():
         {},
         dimensions={"org_structure": _generated_ragged_dim("cost_centre", "org_structure")},
     )
-    ch = _ch_views_present()  # neither ragged view present
+    ch = _ch_views_present()  # none of the three ragged views present
     by = {r.name: r for r in clickhouse_init.check(Path("/x"), ch, scope="open", _load=lambda d: cat)}
     assert not by["view:semantic.dim_cost_centre_org_structure"].ok
+    assert not by["view:semantic.dim_cost_centre_org_structure_edges"].ok
     assert not by["view:semantic.dim_cost_centre_org_structure_rollup"].ok
 
 
@@ -282,27 +289,87 @@ def test_check_generated_ragged_views_pass_when_present():
     )
     ch = _ch_views_present(
         "semantic.dim_cost_centre_org_structure",
+        "semantic.dim_cost_centre_org_structure_edges",
         "semantic.dim_cost_centre_org_structure_rollup",
     )
     by = {r.name: r for r in clickhouse_init.check(Path("/x"), ch, scope="open", _load=lambda d: cat)}
     assert by["view:semantic.dim_cost_centre_org_structure"].ok
+    assert by["view:semantic.dim_cost_centre_org_structure_edges"].ok
     assert by["view:semantic.dim_cost_centre_org_structure_rollup"].ok
 
 
-def test_check_provided_ragged_uses_source_table():
+def test_check_asserts_provided_ragged_views():
+    # A provided ragged hierarchy produces the same fixed-name node master and
+    # rollup as generated, plus a normalised edges view — all three are asserted.
     cat = _fake_cat(
         {},
         dimensions={
-            "client_portfolio": _provided_ragged_dim(
-                "project", "client_portfolio", "semantic.dim_project_portfolio"
-            )
+            "solution_portfolio": _provided_ragged_dim("cost_centre", "solution_portfolio")
         },
     )
-    ch = _ch_views_present()  # provided table absent
+    ch = _ch_views_present()  # none of the three present
     by = {r.name: r for r in clickhouse_init.check(Path("/x"), ch, scope="open", _load=lambda d: cat)}
-    assert not by["view:semantic.dim_project_portfolio"].ok
-    # The generated naming is NOT used for an operator-provided ragged source.
-    assert "view:semantic.dim_project_client_portfolio" not in by
+    assert not by["view:semantic.dim_cost_centre_solution_portfolio"].ok
+    assert not by["view:semantic.dim_cost_centre_solution_portfolio_rollup"].ok
+    assert not by["view:semantic.dim_cost_centre_solution_portfolio_edges"].ok
+
+
+def test_check_provided_ragged_views_pass_when_present():
+    cat = _fake_cat(
+        {},
+        dimensions={
+            "solution_portfolio": _provided_ragged_dim("cost_centre", "solution_portfolio")
+        },
+    )
+    ch = _ch_views_present(
+        "semantic.dim_cost_centre_solution_portfolio",
+        "semantic.dim_cost_centre_solution_portfolio_rollup",
+        "semantic.dim_cost_centre_solution_portfolio_edges",
+    )
+    by = {r.name: r for r in clickhouse_init.check(Path("/x"), ch, scope="open", _load=lambda d: cat)}
+    assert by["view:semantic.dim_cost_centre_solution_portfolio"].ok
+    assert by["view:semantic.dim_cost_centre_solution_portfolio_rollup"].ok
+    assert by["view:semantic.dim_cost_centre_solution_portfolio_edges"].ok
+
+
+def _ragged_leaf() -> SimpleNamespace:
+    return SimpleNamespace(
+        is_leaf=True, is_ragged=False,
+        source=SimpleNamespace(table="semantic.dim_cost_centre", key_column="cost_centre"),
+    )
+
+
+def test_warn_ragged_integrity_logs_diamond_and_orphan(monkeypatch):
+    calls: list[tuple] = []
+    monkeypatch.setattr(
+        clickhouse_init._logger, "warning",
+        lambda event, **kw: calls.append((event, kw)),
+    )
+    cat = _fake_cat({}, dimensions={
+        "cost_centre": _ragged_leaf(),
+        "solution_portfolio": _provided_ragged_dim("cost_centre", "solution_portfolio"),
+    })
+    ch = _StubCH(responses={
+        "having count()": [("P-DATAAI", "CC-DANA-02", 2)],  # a diamond
+        "'child'": [("CC-GHOST", "child")],                  # an orphan edge
+    })
+    clickhouse_init._warn_ragged_integrity(cat, ch)
+    events = {e for e, _ in calls}
+    assert "clickhouse_init.ragged_diamond" in events
+    assert "clickhouse_init.ragged_orphan_edge" in events
+
+
+def test_warn_ragged_integrity_silent_when_clean(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        clickhouse_init._logger, "warning", lambda event, **kw: calls.append(event),
+    )
+    cat = _fake_cat({}, dimensions={
+        "cost_centre": _ragged_leaf(),
+        "solution_portfolio": _provided_ragged_dim("cost_centre", "solution_portfolio"),
+    })
+    clickhouse_init._warn_ragged_integrity(cat, _StubCH())  # no rows → no warnings
+    assert calls == []
 
 
 @pytest.fixture

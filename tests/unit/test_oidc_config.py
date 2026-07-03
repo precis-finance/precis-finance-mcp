@@ -392,3 +392,69 @@ class TestRequireMcpAudienceWhenConfigured:
         monkeypatch.setenv("PRECIS_AUTH_MODE", "keycloak")
         monkeypatch.setenv("PRECIS_BASE_URL", "https://demo.example.com")
         require_mcp_audience_when_configured()  # no raise
+
+
+# ---------------------------------------------------------------------------
+# SPA /api audience (A-S1) — the discriminating check the /mcp audience can't
+# provide, because /mcp sits on a realm-default scope every token carries.
+# ---------------------------------------------------------------------------
+
+
+def _no_api_audience(monkeypatch):
+    for var in ("OIDC_API_AUDIENCE", "KC_API_AUDIENCE", "PRECIS_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+
+
+def test_api_audience_derived_from_base(monkeypatch):
+    _no_api_audience(monkeypatch)
+    monkeypatch.setenv("PRECIS_BASE_URL", "https://demo.precis.finance")
+    assert oidc.api_audience() == "https://demo.precis.finance/api"
+
+
+def test_api_audience_kc_var_wins_over_base(monkeypatch):
+    monkeypatch.setenv("PRECIS_BASE_URL", "https://demo.precis.finance")
+    monkeypatch.setenv("KC_API_AUDIENCE", "https://x.example/api")
+    assert oidc.api_audience() == "https://x.example/api"
+
+
+def test_api_audience_oidc_var_wins_verbatim(monkeypatch):
+    # OIDC_API_AUDIENCE is used verbatim (no rstrip) — must match the IdP's
+    # stamped aud exactly, including any trailing slash.
+    monkeypatch.setenv("PRECIS_BASE_URL", "https://demo.precis.finance")
+    monkeypatch.setenv("KC_API_AUDIENCE", "https://x.example/api")
+    monkeypatch.setenv("OIDC_API_AUDIENCE", "https://api.example/resource/")
+    assert oidc.api_audience() == "https://api.example/resource/"
+
+
+def test_api_audience_none_when_unset(monkeypatch):
+    _no_api_audience(monkeypatch)
+    assert oidc.api_audience() is None
+
+
+def test_token_has_audience_string_and_list(monkeypatch):
+    assert oidc.token_has_audience({"aud": "a/api"}, "a/api") is True
+    assert oidc.token_has_audience({"aud": ["x/mcp", "a/api"]}, "a/api") is True
+    # A connector token carrying only the /mcp audience is rejected at /api.
+    assert oidc.token_has_audience({"aud": ["x/mcp"]}, "a/api") is False
+    assert oidc.token_has_audience({}, "a/api") is False
+
+
+class TestRequireApiAudienceWhenConfigured:
+    """Mirror of the /mcp guard for the SPA channel: a configured deploy must
+    resolve an /api audience, else a connector token is replayable at /api."""
+
+    def test_unset_auth_mode_is_tolerant(self, monkeypatch):
+        monkeypatch.delenv("PRECIS_AUTH_MODE", raising=False)
+        _no_api_audience(monkeypatch)
+        oidc.require_api_audience_when_configured()  # no raise
+
+    def test_configured_mode_without_audience_refuses(self, monkeypatch):
+        monkeypatch.setenv("PRECIS_AUTH_MODE", "oidc")
+        _no_api_audience(monkeypatch)
+        with pytest.raises(RuntimeError, match="api audience"):
+            oidc.require_api_audience_when_configured()
+
+    def test_configured_mode_with_base_url_passes(self, monkeypatch):
+        monkeypatch.setenv("PRECIS_AUTH_MODE", "keycloak")
+        monkeypatch.setenv("PRECIS_BASE_URL", "https://demo.example.com")
+        oidc.require_api_audience_when_configured()  # no raise

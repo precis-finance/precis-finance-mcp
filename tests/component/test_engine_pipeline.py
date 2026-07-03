@@ -384,6 +384,42 @@ def test_period_dimension(catalogue, scenario_registry):
     assert '2025-03' in periods
 
 
+def test_ragged_breakdown_end_to_end(catalogue, scenario_registry):
+    """Breakdown by a ragged hierarchy: anchor node → Total, children → detail
+    rows carrying node display names (from the node master)."""
+    mock_results = {'actuals': {
+        ('P-DATAAI',): {'revenue': 900_000.0},
+        ('S-ANALYTICS',): {'revenue': 500_000.0},
+        ('S-MLAI',): {'revenue': 400_000.0},
+    }}
+    ch = FakeClickHouseClient()
+    # filter resolution: anchor node → leaf ids (rollup query)
+    ch.set_response("solution_portfolio_rollup", [("CC-DANA-01",), ("CC-SENG-06",)])
+    # node labels (node-master query)
+    ch.set_response("node_id, display_name", [
+        ("P-DATAAI", "Data & AI"),
+        ("S-ANALYTICS", "Analytics & BI"),
+        ("S-MLAI", "ML & AI Solutions"),
+    ])
+    request = {
+        'context': {'period_start': '2025-01', 'period_end': '2025-12'},
+        'dimensions': ['solution_portfolio'],
+        'filters': {'solution_portfolio': 'P-DATAAI'},
+        'blocks': [{'model': 'metric:revenue', 'scenario': 'actuals', 'alias': 'Actuals'}],
+    }
+    with patch('precis_mcp.engine.retriever.retrieve', return_value=mock_results):
+        response = execute_report(
+            request, catalogue, ch_client=ch, scenario_registry=scenario_registry,
+        )
+
+    assert 'rows' in response
+    dim_vals = [r.get('dimensions', {}).get('solution_portfolio') for r in response['rows']]
+    assert 'Analytics & BI' in dim_vals      # child breakdown, display name
+    assert 'ML & AI Solutions' in dim_vals
+    values = [r['values'].get('Actuals') for r in response['rows']]
+    assert pytest.approx(900_000.0, abs=1.0) in values  # the anchor total
+
+
 # ---------------------------------------------------------------------------
 # Test 5: Prior year shifted scenario — retriever receives shifted period
 # ---------------------------------------------------------------------------

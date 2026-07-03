@@ -227,6 +227,28 @@ def _dim_key_to_dict(
     return result
 
 
+def _dim_key_to_codes(
+    dim_key: DimensionKey,
+    dimensions: list[str],
+) -> dict[str, str]:
+    """The raw leaf code per live dimension, parallel to `_dim_key_to_dict`.
+
+    Surfaces the underlying code (e.g. a cost-centre id) alongside the display
+    name so a consumer can drill without a follow-up hierarchy lookup. Mirrors
+    `_dim_key_to_dict`'s rolled-up handling, so `dimension_codes` and
+    `dimensions` carry the same keys.
+    """
+    result: dict[str, str] = {}
+    for i, dim_name in enumerate(dimensions):
+        if i >= len(dim_key):
+            continue
+        code = dim_key[i]
+        if code == ROLLED_UP:
+            continue
+        result[dim_name] = code
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -258,8 +280,12 @@ def format_response(
     """Format engine results into the unified result schema.
 
     One self-describing shape for metric and statement breakdowns alike: a flat
-    list of grain-tagged ``rows``, each ``{grain, dimensions, item, values}``,
-    plus the column list (``scenarios``) and the breakdown axes (``dimensions``).
+    list of grain-tagged ``rows``, each
+    ``{grain, dimensions, dimension_codes, item, values}``, plus the column list
+    (``scenarios``) and the breakdown axes (``dimensions``). ``dimension_codes``
+    carries the raw leaf code per axis (e.g. a cost-centre id) alongside the
+    display name in ``dimensions``, so a consumer can drill without a follow-up
+    hierarchy lookup.
 
     - ``kind`` is ``"statement"`` when any block renders a statement, else
       ``"metric"``; it guides layout, not row shape.
@@ -277,6 +303,7 @@ def format_response(
     rows: list[dict] = []
     for dim_key in all_dim_keys:
         dim_values = _dim_key_to_dict(dim_key, dimensions, dim_formats)
+        dim_codes = _dim_key_to_codes(dim_key, dimensions)
         grain = _grain_of(dim_key, dimensions)
         pending_separator = False
         for ik in item_keys:
@@ -310,6 +337,7 @@ def format_response(
             rows.append({
                 "grain": grain,
                 "dimensions": dim_values,
+                "dimension_codes": dim_codes,
                 "item": item,
                 "values": values,
             })

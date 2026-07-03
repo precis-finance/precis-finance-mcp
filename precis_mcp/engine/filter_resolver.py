@@ -139,11 +139,8 @@ def _resolve_ragged_filter(
             f"Ragged dimension {dim.key!r} has no leaf_dimension"
         )
 
-    # Determine view name
-    if dim.ragged_source and dim.ragged_source.type == "provided" and dim.ragged_source.table:
-        view = dim.ragged_source.table
-    else:
-        view = f"semantic.dim_{dim.leaf_dimension}_{dim.key}_rollup"
+    # Both generated and provided hierarchies expose the same fixed-name rollup.
+    view = f"semantic.dim_{dim.leaf_dimension}_{dim.key}_rollup"
 
     # Get the leaf key column from transitive resolution
     resolution = dim._transitive.get(dim.leaf_dimension)

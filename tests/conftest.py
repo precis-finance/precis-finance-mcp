@@ -47,6 +47,12 @@ os.environ.pop("JWT_DEV_USER", None)
 # Tests that mint binding tokens for the push / upload endpoints use this.
 os.environ.setdefault("INGEST_BINDING_JWT_SECRET", "test-binding-jwt-secret-not-for-production-use")
 
+# Allow the non-durable in-memory checkpointer during tests: the `client`
+# fixture boots the real agui app through TestClient, and there is no test
+# Postgres, so create_checkpointer() fails and the lifespan falls back to
+# MemorySaver. Production refuses to boot on that failure (B-F4); tests opt in.
+os.environ.setdefault("PRECIS_ALLOW_MEMORY_CHECKPOINTER", "1")
+
 # Platform-DB pool: fail fast in tests rather than the production-default 10s
 # acquire timeout, so a test that reaches the real pool (no test DB, or wrong
 # creds) errors in ~1s instead of stalling the suite. Tests that need platform
@@ -276,6 +282,18 @@ def db() -> FakePlatformDB:
     return FakePlatformDB()
 
 
+@pytest.fixture(autouse=True)
+def _reset_scenario_registry_cache():
+    """The process-wide TTL registry cache must not leak across tests —
+    each test wires its own fake ClickHouse client."""
+    from precis_mcp.engine.scenario_registry import (
+        invalidate_scenario_registry_cache,
+    )
+    invalidate_scenario_registry_cache()
+    yield
+    invalidate_scenario_registry_cache()
+
+
 @pytest.fixture
 def ch_client() -> FakeClickHouseClient:
     """In-memory ClickHouse-client substitute. See `tests/fakes/fake_clickhouse.py`.
@@ -378,13 +396,25 @@ def _patch_keycloak_verifier():
         if len(parts) < 2:
             raise ValueError(f"verify_keycloak_token: malformed test token: {token!r}")
         user_id = parts[1]
-        return {
+        # Stamp whatever audiences the current env resolves to, so a test that
+        # turns on audience enforcement (by setting OIDC_API_AUDIENCE etc.) still
+        # sees the sentinel token as a full-access SPA token.  With no audience
+        # configured (the default) `aud` is omitted and enforcement is off — the
+        # channel checks are no-ops, matching a dev box.  A test exercising the
+        # A-S1 connector-replay path patches this verifier locally to return a
+        # token carrying only the /mcp audience.
+        from precis_mcp import oidc
+        aud = [a for a in (oidc.api_audience(), oidc.mcp_audience()) if a]
+        claims = {
             "precis_user_id": user_id,
             "preferred_username": user_id,
             "sub": user_id,
             "iat": 0,
             "exp": 9_999_999_999,
         }
+        if aud:
+            claims["aud"] = aud
+        return claims
 
     mp = MonkeyPatch()
     mp.setattr("precis_mcp.oidc.verify_keycloak_token", fake_verify)

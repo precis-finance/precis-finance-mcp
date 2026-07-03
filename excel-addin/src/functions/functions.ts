@@ -28,7 +28,7 @@ function requireConn(): { mcpUrl: string; token: string } {
  *
  * Rows are statement lines (Revenue → EBITDA); columns are scenarios. Fetches a
  * live `financial_table` block from the configured `/mcp` (`run_statement`,
- * reading `structuredContent`) and spills it via `blockToGrid`. Style the spill
+ * reading the block from result `_meta`) and spills it via `blockToGrid`. Style the spill
  * with "Apply Précis formatting" on the Home ribbon. Trailing args are optional.
  *
  * @customfunction STATEMENT
@@ -240,12 +240,15 @@ export async function metric(
  * `search_hierarchy` returns two sections — leaf **records** (members) and ragged
  * **hierarchy_nodes** (rollup nodes). `output` chooses which one to spill. Omit
  * `query` to list all members of `dimension`; pass `query` for a free-text search.
+ * `output="list"` spills a header-free two-column `[code, display name]` list of
+ * every member (all node levels for a ragged key) — the shape the task pane's
+ * member drop-downs are built on.
  *
  * @customfunction HIERARCHY
  * @helpurl https://docs.precis.finance/excel/functions/#precishierarchy
  * @param dimension Dimension key, e.g. "cost_centre" (recommended when listing).
  * @param query Free-text search, e.g. "cloud"; omit to list all members.
- * @param output "records" (leaf members, default) or "nodes" (ragged hierarchy nodes).
+ * @param output "records" (leaf members, default), "nodes" (ragged hierarchy nodes), or "list" (two-column code + display name, no header).
  * @returns A flat table of the chosen section that spills into the cells.
  */
 export async function hierarchy(
@@ -255,6 +258,8 @@ export async function hierarchy(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any[][]> {
   const { mcpUrl, token } = requireConn();
+  const mode = (output || "records").trim().toLowerCase();
+  const wantList = mode === "list";
   const args: Record<string, unknown> = {};
   if ((dimension || "").trim()) {
     args.dimension = dimension.trim();
@@ -262,15 +267,48 @@ export async function hierarchy(
   if ((query || "").trim()) {
     args.query = query.trim();
   }
+  if (wantList) {
+    // A drop-down list must be complete — lift the server's default cap.
+    args.limit = 10000;
+  }
   const res = await callTool<{ records?: unknown[]; hierarchy_nodes?: unknown[] }>(
     mcpUrl,
     token,
     "search_hierarchy",
     args
   );
-  const wantNodes = (output || "records").trim().toLowerCase().startsWith("node");
+  if (wantList) {
+    return membersToList(res, dimension);
+  }
+  const wantNodes = mode.startsWith("node");
   const rows = (wantNodes ? res.hierarchy_nodes : res.records) ?? [];
   return objectsToGrid(rows as Record<string, unknown>[]);
+}
+
+/**
+ * Reshape a `search_hierarchy` result into the header-free `[code, display name]`
+ * list the drop-down machinery consumes. Records (leaf and derived members) win;
+ * a ragged key returns only nodes, so fall back to `[node_id, display_name]`.
+ */
+export function membersToList(
+  res: { records?: unknown[]; hierarchy_nodes?: unknown[] },
+  dimension: string
+): string[][] {
+  const records = (res.records ?? []) as Record<string, unknown>[];
+  if (records.length > 0) {
+    return records.map((r) => {
+      const code = String(r.code ?? "");
+      return [code, String(r.display_name ?? "") || code];
+    });
+  }
+  const nodes = (res.hierarchy_nodes ?? []) as Record<string, unknown>[];
+  if (nodes.length > 0) {
+    return nodes.map((n) => {
+      const id = String(n.node_id ?? "");
+      return [id, String(n.display_name ?? n.node_name ?? "") || id];
+    });
+  }
+  throw new Error(`No members found for "${dimension}".`);
 }
 
 /**

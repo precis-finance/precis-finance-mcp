@@ -90,63 +90,69 @@ def _resolve_level_info(ragged_dim: Dimension, catalogue: Catalogue) -> list[dic
     return levels
 
 
-def build_rollup_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
-    """Generate the node → leaf mapping SQL (``dim_{leaf}_{key}_rollup``)."""
+def build_generated_edges_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
+    """Derive child→parent edges from the leaf table's ancestor columns.
+
+    The generated counterpart to a provided edge table: for each adjacent pair
+    of declared levels it emits the deeper→shallower node relationship, plus an
+    edge from the top level to the synthetic ``all`` root, so the recursive
+    rollup reproduces the full closure (including ``all`` → every leaf). Node-id
+    expressions match ``build_hierarchy_sql`` (same prefix/column logic) so the
+    edges, node master, and rollup all agree on node ids.
+    """
     leaf_dim = catalogue.dimensions.get(ragged_dim.leaf_dimension)
     if not leaf_dim or not leaf_dim.source:
         raise ValueError(f"Cannot resolve leaf dimension for {ragged_dim.key}")
-
     source = leaf_dim.source.table
-    leaf_col = leaf_dim.source.key_column
     levels = _resolve_level_info(ragged_dim, catalogue)
 
-    lines: list[str] = []
-    lines.append(f"-- Generated from dimensions.yml: ragged hierarchy {ragged_dim.key}")
-    lines.append(f"-- Node → leaf mapping for hierarchy resolution.")
-    lines.append("")
-
-    unions: list[str] = []
-
-    # Non-leaf levels: concat(prefix, column) AS node_id
-    for level in levels:
-        if level["is_leaf"]:
-            continue
+    def node_id(level: dict) -> str:
         prefix = level["node_prefix"]
         col = level["column"]
-        label = level["label"]
-        comment = f"-- {label} level: resolves to all {leaf_dim.label}s in that {label.lower()}"
-        if prefix:
-            select = f"    concat('{prefix}', toString({col})) AS node_id,"
-        else:
-            select = f"    toString({col}) AS node_id,"
+        return f"concat('{prefix}', toString({col}))" if prefix else f"toString({col})"
+
+    unions: list[str] = []
+    # Deeper → shallower for each adjacent level pair (leaf-most first).
+    for i in range(len(levels) - 1, 0, -1):
         unions.append(
-            f"{comment}\n"
-            f"SELECT\n"
-            f"{select}\n"
-            f"    {leaf_col}\n"
+            f"-- {levels[i]['label']} → {levels[i - 1]['label']}\n"
+            f"SELECT DISTINCT\n"
+            f"    {node_id(levels[i])} AS child_node_id,\n"
+            f"    {node_id(levels[i - 1])} AS parent_node_id\n"
             f"FROM {source}"
         )
-
-    # Leaf level: resolves to itself
+    # Top level → synthetic 'all' root.
     unions.append(
-        f"-- {leaf_dim.label} level: resolves to itself\n"
-        f"SELECT\n"
-        f"    toString({leaf_col}) AS node_id,\n"
-        f"    toString({leaf_col}) AS {leaf_col}\n"
+        f"-- {levels[0]['label']} → root\n"
+        f"SELECT DISTINCT\n"
+        f"    {node_id(levels[0])} AS child_node_id,\n"
+        f"    'all' AS parent_node_id\n"
         f"FROM {source}"
     )
 
-    # Root: resolves to all
-    unions.append(
-        f"-- Synthetic root: resolves to all {leaf_dim.label.lower()}s\n"
-        f"SELECT\n"
-        f"    'all'          AS node_id,\n"
-        f"    toString({leaf_col}) AS {leaf_col}\n"
-        f"FROM {source}"
+    header = (
+        f"-- Generated from dimensions.yml: edges for ragged hierarchy {ragged_dim.key}\n\n"
     )
+    return header + "\n\nUNION ALL\n\n".join(unions) + "\n"
 
-    lines.append("\nUNION ALL\n\n".join(unions))
-    return "\n".join(lines) + "\n"
+
+def build_rollup_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
+    """Recursive node → leaf rollup over the hierarchy's ``*_edges`` view.
+
+    Shared by generated and provided hierarchies — both read the fixed-name
+    ``semantic.dim_{leaf}_{key}_edges`` view produced alongside. The recursive
+    closure replaces the former per-level UNION-ALL derivation so a single code
+    path serves both, and multi-parent / arbitrary-depth edges resolve.
+    """
+    leaf_dim = catalogue.dimensions.get(ragged_dim.leaf_dimension)
+    if not leaf_dim or not leaf_dim.source:
+        raise ValueError(f"Cannot resolve leaf dimension for {ragged_dim.key}")
+    stem = f"dim_{ragged_dim.leaf_dimension}_{ragged_dim.key}"
+    return build_recursive_rollup_sql(
+        leaf_source=leaf_dim.source.table,
+        leaf_key=leaf_dim.source.key_column,
+        edges_view=f"semantic.{stem}_edges",
+    )
 
 
 def build_hierarchy_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
@@ -311,33 +317,187 @@ def build_hierarchy_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
     return result
 
 
-def _is_generated(dim: Dimension) -> bool:
-    """A ragged dimension whose rollup Précis derives (not operator-provided).
+def build_recursive_rollup_sql(*, leaf_source: str, leaf_key: str, edges_view: str) -> str:
+    """Generate the node → leaf rollup as a recursive walk over an edge view.
 
-    Matches the runtime branch in ``filter_resolver._resolve_ragged_filter``:
-    only ``type: provided`` (with a table) reads an external rollup; everything
-    else is generated here.
+    The TO-BE rollup shared by the provided and (post-homogenisation) generated
+    paths. Given a child→parent ``edges_view`` (columns ``child_node_id`` /
+    ``parent_node_id``) and the leaf dimension's ``leaf_source`` / ``leaf_key``,
+    it emits the closure ``(node_id, {leaf_key})`` — every node mapped to all
+    the leaves beneath it.
+
+    Each leaf seeds the walk mapped to itself; the recursive term climbs one
+    edge at a time, carrying the visited-node ``_path`` so a cyclic edge set
+    cannot loop forever. ``SELECT DISTINCT`` collapses a leaf reachable by more
+    than one path (a diamond) to a single ``(node_id, leaf)`` row — the reason
+    the single-parent UNION-ALL derivation is not a drop-in port.
     """
-    if not dim.is_ragged or not dim.leaf_dimension:
-        return False
-    rs = dim.ragged_source
-    if rs and rs.type == "provided" and rs.table:
-        return False
-    return True
+    return _recursive_rollup_cte(
+        leaf_source=leaf_source, leaf_key=leaf_key, edges_view=edges_view
+    ) + (
+        "SELECT DISTINCT\n"
+        "    node_id,\n"
+        f"    {leaf_key}\n"
+        "FROM rollup\n"
+    )
+
+
+def _recursive_rollup_cte(*, leaf_source: str, leaf_key: str, edges_view: str) -> str:
+    """The ``WITH RECURSIVE rollup AS (...)`` block shared by the rollup view and
+    the diamond check. One row per ``(node_id, leaf, path)`` — the caller either
+    dedups (the rollup) or counts paths (the diamond check)."""
+    return (
+        "WITH RECURSIVE rollup AS (\n"
+        "    -- Base: every leaf resolves to itself\n"
+        "    SELECT\n"
+        f"        toString({leaf_key}) AS node_id,\n"
+        f"        toString({leaf_key}) AS {leaf_key},\n"
+        f"        [toString({leaf_key})] AS _path\n"
+        f"    FROM {leaf_source}\n"
+        "    UNION ALL\n"
+        "    -- Step: climb one child→parent edge, guarding against cycles\n"
+        "    SELECT\n"
+        "        e.parent_node_id AS node_id,\n"
+        f"        r.{leaf_key} AS {leaf_key},\n"
+        "        arrayPushBack(r._path, e.parent_node_id) AS _path\n"
+        "    FROM rollup AS r\n"
+        f"    INNER JOIN {edges_view} AS e ON e.child_node_id = r.node_id\n"
+        "    WHERE NOT has(r._path, e.parent_node_id)\n"
+        ")\n"
+    )
+
+
+def build_diamond_check_sql(
+    *, leaf_source: str, leaf_key: str, edges_view: str, limit: int = 50
+) -> str:
+    """Rows where a leaf reaches a node by **more than one path** (a diamond).
+
+    Same recursive walk as the rollup but grouped without the final ``DISTINCT``:
+    a ``(node_id, leaf)`` pair with ``paths > 1`` is a reconvergence. Returns
+    ``(node_id, {leaf_key}, paths)``; an empty result means no diamonds. Used for
+    an operator-log warning — the rollup itself dedups, so this never blocks.
+    """
+    return _recursive_rollup_cte(
+        leaf_source=leaf_source, leaf_key=leaf_key, edges_view=edges_view
+    ) + (
+        "SELECT\n"
+        "    node_id,\n"
+        f"    {leaf_key},\n"
+        "    count() AS paths\n"
+        "FROM rollup\n"
+        f"GROUP BY node_id, {leaf_key}\n"
+        "HAVING count() > 1\n"
+        "ORDER BY paths DESC, node_id\n"
+        f"LIMIT {int(limit)}\n"
+    )
+
+
+def build_orphan_edges_sql(*, node_master: str, edges_view: str, limit: int = 50) -> str:
+    """Edge endpoints absent from the node master — orphan edges.
+
+    The node master carries every valid node (operator/level nodes, the injected
+    leaves, and — generated only — the ``all`` root), so any edge whose child or
+    parent id is not present references a node that does not exist. Returns
+    ``(node_id, role)``; an empty result means no orphans. Used for an
+    operator-log warning — the recursive rollup ignores such edges anyway.
+    """
+    return (
+        "SELECT node_id, role FROM (\n"
+        f"    SELECT DISTINCT child_node_id AS node_id, 'child' AS role FROM {edges_view}\n"
+        "    UNION ALL\n"
+        f"    SELECT DISTINCT parent_node_id AS node_id, 'parent' AS role FROM {edges_view}\n"
+        ")\n"
+        f"WHERE node_id NOT IN (SELECT node_id FROM {node_master})\n"
+        f"LIMIT {int(limit)}\n"
+    )
+
+
+def build_provided_edges_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
+    """Normalise a provided edge table to ``(child_node_id, parent_node_id)``.
+
+    The operator's edge table may name its columns anything; this view renames
+    them to the platform's column contract so the recursive rollup is agnostic
+    to the source shape.
+    """
+    rs = ragged_dim.ragged_source
+    if rs is None:
+        raise ValueError(f"Provided ragged dimension {ragged_dim.key} has no ragged_source")
+    return (
+        "-- Provided child→parent edges normalised to the platform columns.\n"
+        "SELECT\n"
+        f"    {rs.child_column} AS child_node_id,\n"
+        f"    {rs.parent_column} AS parent_node_id\n"
+        f"FROM {rs.edge_table}"
+    )
+
+
+def build_provided_node_master_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
+    """Node master for a provided hierarchy: operator nodes + injected leaves.
+
+    The operator supplies only the non-leaf nodes; every leaf is auto-injected
+    from the leaf dimension so the node master is self-contained (matching the
+    generated path). ``display_name`` is derived as a copy of ``node_name``.
+    """
+    rs = ragged_dim.ragged_source
+    if rs is None:
+        raise ValueError(f"Provided ragged dimension {ragged_dim.key} has no ragged_source")
+    leaf_dim = catalogue.dimensions.get(ragged_dim.leaf_dimension)
+    if not leaf_dim or not leaf_dim.source:
+        raise ValueError(f"Cannot resolve leaf dimension for {ragged_dim.key}")
+    leaf_src = leaf_dim.source.table
+    leaf_key = leaf_dim.source.key_column
+    leaf_name = f"toString({leaf_key})"
+    if leaf_dim.display_attribute:
+        disp = leaf_dim.source.attribute_mapping.get(leaf_dim.display_attribute, "")
+        if disp:
+            leaf_name = disp
+    return (
+        "-- Operator-provided nodes; display_name derived as node_name.\n"
+        "SELECT\n"
+        "    node_id,\n"
+        "    node_name,\n"
+        "    node_name AS display_name,\n"
+        "    node_type\n"
+        f"FROM {rs.node_table}\n"
+        "UNION ALL\n"
+        f"-- Auto-injected leaf nodes ({ragged_dim.leaf_dimension}).\n"
+        "SELECT\n"
+        f"    toString({leaf_key}) AS node_id,\n"
+        f"    {leaf_name} AS node_name,\n"
+        f"    {leaf_name} AS display_name,\n"
+        f"    '{ragged_dim.leaf_dimension}' AS node_type\n"
+        f"FROM {leaf_src}"
+    )
 
 
 def build_ragged_views(catalogue: Catalogue) -> list[tuple[str, str]]:
-    """Return ``(view_name, sql_body)`` for every generated ragged dimension.
+    """Return ``(view_name, sql_body)`` for every ragged dimension.
 
-    Two entries per dimension: the ``*_rollup`` mapping view and the flattened
-    node-list view. ``sql_body`` is bare SQL (no ``CREATE OR REPLACE VIEW``
-    wrapper — the caller wraps). Provided ragged dimensions are skipped.
+    ``sql_body`` is bare SQL (no ``CREATE OR REPLACE VIEW`` wrapper — the caller
+    wraps). Both paths emit three views — the ``*_edges`` relationships, the
+    node master, and the recursive ``*_rollup`` — and share one rollup code
+    path (``build_rollup_sql``). Only how the edges and node master are derived
+    differs:
+
+    - **generated**: edges from the leaf table's ancestor columns; node master
+      is the flattened, prefixed hierarchy list (with the ``all`` root).
+    - **provided**: edges normalised from the operator edge table; node master
+      is the operator nodes plus auto-injected leaves.
+
+    Edges are emitted before the rollup that reads them (CH validates refs at
+    CREATE VIEW time).
     """
     views: list[tuple[str, str]] = []
     for dim in catalogue.dimensions.values():
-        if not _is_generated(dim):
+        if not dim.is_ragged or not dim.leaf_dimension:
             continue
-        leaf = dim.leaf_dimension
-        views.append((f"dim_{leaf}_{dim.key}_rollup", build_rollup_sql(dim, catalogue)))
-        views.append((f"dim_{leaf}_{dim.key}", build_hierarchy_sql(dim, catalogue)))
+        stem = f"dim_{dim.leaf_dimension}_{dim.key}"
+        rs = dim.ragged_source
+        if rs and rs.type == "provided":
+            views.append((f"{stem}_edges", build_provided_edges_sql(dim, catalogue)))
+            views.append((stem, build_provided_node_master_sql(dim, catalogue)))
+        else:
+            views.append((f"{stem}_edges", build_generated_edges_sql(dim, catalogue)))
+            views.append((stem, build_hierarchy_sql(dim, catalogue)))
+        views.append((f"{stem}_rollup", build_rollup_sql(dim, catalogue)))
     return views

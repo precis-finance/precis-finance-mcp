@@ -438,6 +438,31 @@ table. The result is one dimension key, `org_structure`, that a client slices to
 see every level of the org at once. Model a SKU rollup (All → Category →
 Subcategory → SKU) or sales geography (All → Country → Region → POS) the same way.
 
+**Provided hierarchies (relationships, not levels).** When the hierarchy isn't a
+clean set of columns on the leaf's master data — a node rolls up into *more than
+one* parent, or branches reach different depths — supply the topology as two
+tables instead: a **node master** (`node_id, node_name, node_type`) and a
+**child→parent edge table**. Land both like any other master data, add a one-line
+pass-through view for each, and point the dimension at them:
+
+```yaml
+solution_portfolio:
+  label: Solution Portfolio
+  ragged: true
+  leaf_dimension: cost_centre
+  source:
+    type: provided
+    node_table: portfolio_nodes     # your node master
+    edge_table: portfolio_edges     # your child→parent edges
+    child_column: child_node_id     # columns on the edge table
+    parent_column: parent_node_id
+```
+
+You supply only the non-leaf nodes — the platform injects the leaf members
+automatically. A provided hierarchy is the form that lets one member roll up into
+several parents (a shared team reported under two portfolios) and lets a member
+attach directly to a top node.
+
 A domain's `dimensions:` block (in `pnl.yml`) is the subset of these you can slice
 *that view* by. The registry defines all dimensions; each domain opts into the
 ones its view supports.

@@ -147,6 +147,61 @@ class TestSingleMetricUnchanged:
 
 
 # ---------------------------------------------------------------------------
+# statement crosstab (kind="statement") — dim-combo columns, grouped by
+# scenario count (two-tier when >1 scenario, flat when 1)
+# ---------------------------------------------------------------------------
+
+class TestStatementCrosstabColumns:
+    def test_multi_scenario_two_tier_combo_group_scenario_leaf(self):
+        scen = [{"alias": "Actuals"}, {"alias": "Budget"}]
+        rows = [
+            _row("grand_total", {},
+                 _item("rev", "Revenue"), {"Actuals": 300.0, "Budget": 290.0}),
+            _row("detail", {"division": "Tech"},
+                 _item("rev", "Revenue"), {"Actuals": 200.0, "Budget": 190.0}),
+            _row("detail", {"division": "Advisory"},
+                 _item("rev", "Revenue"), {"Actuals": 100.0, "Budget": 100.0}),
+        ]
+        cols = _block(_result(scen, ["division"], rows, kind="statement"))["columns"]
+        assert cols[0]["key"] == "label"
+        # dim-combo spans the top row (group), each scenario sits beneath it;
+        # grand total first (user preference).
+        assert [(c["group"], c["label"]) for c in cols[1:]] == [
+            ("Total", "Actuals"), ("Total", "Budget"),
+            ("Tech", "Actuals"), ("Tech", "Budget"),
+            ("Advisory", "Actuals"), ("Advisory", "Budget"),
+        ]
+        # no flattened "combo — scenario" labels anymore
+        assert all("—" not in c["label"] for c in cols[1:])
+
+    def test_single_scenario_stays_flat_no_group(self):
+        scen = [{"alias": "Actuals"}]
+        rows = [
+            _row("grand_total", {}, _item("rev", "Revenue"), {"Actuals": 300.0}),
+            _row("detail", {"division": "Tech"}, _item("rev", "Revenue"), {"Actuals": 200.0}),
+            _row("detail", {"division": "Advisory"}, _item("rev", "Revenue"), {"Actuals": 100.0}),
+        ]
+        cols = _block(_result(scen, ["division"], rows, kind="statement"))["columns"]
+        assert [c["label"] for c in cols] == ["Line", "Total", "Tech", "Advisory"]
+        assert all("group" not in c for c in cols)
+
+    def test_total_column_flagged_is_total(self):
+        """The grand-total column (both scenario leaves) carries is_total so
+        renderers can shade it; detail combos and the label column do not."""
+        scen = [{"alias": "Actuals"}, {"alias": "Budget"}]
+        rows = [
+            _row("grand_total", {}, _item("rev", "Revenue"), {"Actuals": 300.0, "Budget": 290.0}),
+            _row("detail", {"division": "Tech"}, _item("rev", "Revenue"), {"Actuals": 200.0, "Budget": 190.0}),
+        ]
+        by = {c["key"]: c for c in _block(_result(scen, ["division"], rows, kind="statement"))["columns"]}
+        assert by["Total|Actuals"].get("is_total") is True
+        assert by["Total|Budget"].get("is_total") is True
+        assert "is_total" not in by["Tech|Actuals"]
+        assert "is_total" not in by["Tech|Budget"]
+        assert "is_total" not in by["label"]
+
+
+# ---------------------------------------------------------------------------
 # for_excel=True — resolved `nf` per value column + sparse per-row `alerts`
 # (the add-in enrichment, docs/precis-excel-addin-spec.md §5)
 # ---------------------------------------------------------------------------

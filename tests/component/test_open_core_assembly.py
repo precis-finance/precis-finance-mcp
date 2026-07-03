@@ -32,9 +32,9 @@ from tests.factories.auth import (
 OPEN_TOOLS = {
     "run_statement", "run_metric", "list_scenarios", "list_kpis",
     "list_inspection_sources", "get_inspection_schema", "inspect_rows",
-    "search_hierarchy", "list_variants", "resolve_to_cc_list",
-    "reload_catalogue", "list_load_history", "get_load_status",
-    "list_bindings", "get_binding", "reload_integrations",
+    "search_hierarchy", "list_dimensions", "list_variants",
+    "resolve_to_cc_list", "reload_catalogue", "list_load_history",
+    "get_load_status", "list_bindings", "get_binding", "reload_integrations",
 }
 
 # A sample of Précis platform tools that must be ABSENT from the open assembly.
@@ -84,6 +84,29 @@ def test_open_dispatch_assembles_exactly_the_open_tool_set(open_only, catalogue)
     assert all(
         d.access not in {"write", "plan_manager"} for d in descriptors.values()
     )
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("precis") is None,
+    reason="Précis-monorepo-only: web_fetch is a commercial base tool, absent "
+    "from the open export tree — nothing binds it without the Précis loader",
+)
+def test_commercial_assembly_binds_web_fetch(catalogue):
+    """Regression: web_fetch is a commercial base tool and must be bound in the
+    full (Précis-loader-installed) assembly.
+
+    It was catalogued in COMMERCIAL_CATALOGUE but its factory was never called
+    from the open-core split (af6abd5) until it was wired into
+    register_commercial_tools — so it silently never bound, and the agent
+    reported it unavailable. build_descriptors' forward-drift guard now fails
+    loud if any catalogue entry lacks a registered function.
+    """
+    from precis_mcp.dispatch import build_descriptors
+
+    descriptors = build_descriptors(_MockRef(catalogue))
+    assert "web_fetch" in descriptors
+    assert descriptors["web_fetch"].access == "read"
+    assert not descriptors["web_fetch"].skills  # base tool — always visible
 
 
 @pytest.mark.skipif(
