@@ -1,6 +1,10 @@
+---
+description: Run Précis Finance MCP locally with Docker, load the sample finance model, and connect an MCP client using a development key.
+---
+
 # Quickstart — local, single-user
 
-The fastest way to see Précis-MCP working: a server on your own machine,
+The fastest way to see Précis Finance MCP working: a server on your own machine,
 authenticated with a single static key. Use it for a trial, a local demo, or to
 check your catalogue before exposing the server to other people.
 
@@ -20,7 +24,7 @@ published image**, which already contains the demo model, so there is nothing
 to build and no instance to supply:
 
 ```bash
-curl -O https://raw.githubusercontent.com/precis-finance/precis-mcp/main/deploy/docker-compose.local.yml
+curl -O https://raw.githubusercontent.com/precis-finance/precis-finance-mcp/main/deploy/docker-compose.local.yml
 export MCP_DEV_KEY=$(openssl rand -hex 32)
 docker compose -f docker-compose.local.yml up -d
 ```
@@ -135,7 +139,7 @@ download the instance overlay alongside the compose file, set
 the overlay bind-mounts your model over the bundled one:
 
 ```bash
-curl -O https://raw.githubusercontent.com/precis-finance/precis-mcp/main/deploy/docker-compose.instance.yml
+curl -O https://raw.githubusercontent.com/precis-finance/precis-finance-mcp/main/deploy/docker-compose.instance.yml
 PRECIS_INSTANCE_DIR=/path/to/your/instance docker compose \
   -f docker-compose.local.yml -f docker-compose.instance.yml up -d
 ```
@@ -180,7 +184,7 @@ Docker-less is for serving a model you populate by other means.
 
 ## Next steps
 
-- Understand the moving parts → [How Précis-MCP works](concepts.md)
+- Understand the moving parts → [How Précis Finance MCP works](concepts.md)
 - Describe your own metrics → [Catalogue & semantic model](../configuration/catalogue-and-semantic.md)
 - Load your own data → [Ingestion & data sources](../configuration/ingestion.md)
 - Open it to other users → [Remote access](../deployment/oauth-keycloak.md)

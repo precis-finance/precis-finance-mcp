@@ -72,7 +72,7 @@ if $RUN_ALL; then
 fi
 
 echo "╔══════════════════════════════════════════╗"
-echo "║  Précis-MCP (open) Server Install        ║"
+echo "║  Précis Finance MCP Server Install       ║"
 echo "║  Server: ${SERVER}                       ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""

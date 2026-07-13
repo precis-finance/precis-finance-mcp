@@ -71,6 +71,32 @@ ingestion pipeline stamps; the views drop them.)
 
 (Views are unaffected — `CREATE OR REPLACE VIEW` always re-applies.)
 
+### Calendar dimensions for sub-month grains
+
+Filtering or grouping by a grain finer than month (week, day) needs a calendar
+table the engine reads to resolve *prior period*. It's a flat snapshot table —
+the period code plus a dense integer `seq`:
+
+```sql
+-- instance/live/dim_week.sql   (dim_date is the same shape with a `day` column)
+(
+    week          String,
+    seq           UInt32,
+    _load_id      String,
+    _ingested_at  DateTime DEFAULT now()
+)
+ENGINE = MergeTree
+ORDER BY week
+```
+
+`seq` is a **contract**: it must be a dense, gap-free ordinal over the codes in
+chronological order, because the engine reads the predecessor of a period as
+`seq - 1`. That is how "the week before" is found across the 52/53-week year
+boundary, where there is no arithmetic answer. Materialise it at ingestion in the
+snapshot binding's extract — `row_number() OVER (ORDER BY week) AS seq`. Month,
+quarter, and fiscal year need no calendar table: their predecessor is closed-form
+arithmetic.
+
 ---
 
 ## `semantic.*` — the views the engine reads
@@ -147,7 +173,7 @@ declared value or a default:
 | `status` | no | `DRAFT` | lifecycle state (mutated at runtime by the platform) |
 | `description` | no | `''` | free text |
 | `horizon_start` / `horizon_end` | no | `''` | the period range the scenario covers, `YYYY-MM` |
-| `actuals_cutoff` | no | `null` | last actuals period for a forecast that splices actuals + plan |
+| `actuals_cutoff` | no | `null` | reserved forecast metadata retained for schema compatibility; the open engine does not compose actuals and plan automatically |
 | `granularity` | no | `monthly` | period grain |
 | `variant_of` | no | `null` | parent scenario for what-if variants |
 | `owner_user_id`, `created_by`, `created_at`, `updated_at`, `locked_at`, `locks` | no | system-managed | ownership / audit / locking — set by the platform, not normally seeded |

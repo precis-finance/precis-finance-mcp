@@ -526,7 +526,9 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         """
         from precis_mcp.auth import get_auth_context
         from precis_mcp.engine.scenario_registry import (
+            filter_reporting_vocabulary,
             load_scenario_registry,
+            readable_scenario_ids,
         )
 
         registry_payload: dict = {
@@ -542,45 +544,11 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
             logger.warning("Could not query semantic.scenarios table", exc_info=True)
 
         permissions = get_auth_context().permissions
-
-        def _visible(sid: str) -> bool:
-            if permissions.is_admin:
-                return True
-            sp = permissions.scenarios.get(sid)
-            return sp is not None and "read" in sp.tool_scopes
-
-        real_rows = [
-            row for row in registry_payload.get("real", [])
-            if _visible(row["scenario_id"])
-        ]
-        shifted_rows = [
-            row for row in registry_payload.get("shifted", [])
-            if _visible(row["base_scenario_id"])
-        ]
-        comparison_rows = [
-            row for row in registry_payload.get("comparisons", [])
-            if all(_visible(sid) for sid in row.get("scenario_ids", []))
-        ]
-        # Compatibility aliases map an old key to a canonical real scenario_id
-        # *or* alias. We keep an alias only if it resolves to a visible real
-        # scenario; resolution goes through the registry.
-        visible_real_keys = {row["scenario"] for row in real_rows}
-        visible_real_aliases = {row["alias"] for row in real_rows}
-        visible_real_ids = {row["scenario_id"] for row in real_rows}
-        compat_rows = [
-            row for row in registry_payload.get("compatibility_aliases", [])
-            if row.get("resolves_to") in (
-                visible_real_keys | visible_real_aliases | visible_real_ids
-            )
-        ]
-
         return {
-            "registry": {
-                "real": real_rows,
-                "shifted": shifted_rows,
-                "comparisons": comparison_rows,
-                "compatibility_aliases": compat_rows,
-            },
+            "registry": filter_reporting_vocabulary(
+                registry_payload,
+                readable_scenario_ids(permissions),
+            ),
         }
 
     @mcp.tool()
@@ -849,8 +817,18 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                 model description (real, shifted, and generated comparison
                 types). If a key is not recognised, call ``list_scenarios``
                 to discover valid keys. Defaults from report context.
-            period_start: Range start (YYYY-MM). Defaults from report context.
-            period_end: Range end (YYYY-MM). Defaults from report context.
+            period_start: Range start as a grain-tagged period code — the code
+                shape sets the grain: ``2025-06`` month, ``2025-Q2`` quarter,
+                ``2025`` fiscal year, ``2025-W37`` week, ``2025-06-14`` day.
+                Both bounds must be the same grain. Month/quarter/fiscal-year work
+                on every domain; week/day only on domains whose data carries them
+                (``list_dimensions`` shows each dimension's grain, and an
+                unsupported grain is rejected with the domain's supported set).
+                Prior-year / prior-period comparisons work at any grain, and
+                sum / avg / closing metrics roll up correctly at each grain.
+                Defaults from report context.
+            period_end: Range end — same grain as period_start. Defaults from
+                report context.
             filters: Dimension filters. Defaults from report context.
                 Pass {} to explicitly clear all filters.
             dimensions: Optional dimension keys to break by — the same
@@ -1115,8 +1093,18 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                 model description (real, shifted, and generated comparison
                 types). If a key is not recognised, call ``list_scenarios``
                 to discover valid keys. Defaults from report context.
-            period_start: Range start (YYYY-MM). Defaults from report context.
-            period_end: Range end (YYYY-MM). Defaults from report context.
+            period_start: Range start as a grain-tagged period code — the code
+                shape sets the grain: ``2025-06`` month, ``2025-Q2`` quarter,
+                ``2025`` fiscal year, ``2025-W37`` week, ``2025-06-14`` day.
+                Both bounds must be the same grain. Month/quarter/fiscal-year work
+                on every domain; week/day only on domains whose data carries them
+                (``list_dimensions`` shows each dimension's grain, and an
+                unsupported grain is rejected with the domain's supported set).
+                Prior-year / prior-period comparisons work at any grain, and
+                sum / avg / closing metrics roll up correctly at each grain.
+                Defaults from report context.
+            period_end: Range end — same grain as period_start. Defaults from
+                report context.
             filters: Dimension filters. Defaults from report context.
                 Pass {} to explicitly clear all filters.
             dimensions: Dimension keys for row breakdown — the same catalogue
@@ -1601,6 +1589,13 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
           dimension's master data), or 'ragged' (multi-level rollup hierarchy).
         - **leaf_dimension**: ragged entries only — the leaf dimension the
           hierarchy aggregates.
+        - **grain**: time dimensions only — the period grain this dimension
+          carries ('date', 'week', 'month', 'quarter', 'year'). A period filter
+          (``period_start`` / ``period_end``) is expressed at one of these grains
+          by its code shape (``2025-06`` month, ``2025-Q2`` quarter, ``2025-W37``
+          week, ``2025-06-14`` day, ``2025`` fiscal year); which grains a given
+          report accepts depends on the columns its domain carries, and an
+          unsupported grain is rejected with the domain's supported set named.
         """
         dimensions = []
         for key, dim in ref.current.dimensions.items():
@@ -1612,6 +1607,8 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
             entry: dict = {"key": key, "label": dim.label, "kind": kind}
             if dim.is_ragged and dim.leaf_dimension:
                 entry["leaf_dimension"] = dim.leaf_dimension
+            if dim.grain is not None:
+                entry["grain"] = dim.grain.value
             dimensions.append(entry)
         return {"dimensions": dimensions}
 

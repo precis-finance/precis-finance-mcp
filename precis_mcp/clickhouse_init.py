@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Elastic-2.0
 # Copyright (c) 2026 Sergio Naval Marimont
-"""ClickHouse schema provisioner for precis-mcp — the CH analog of migrate.py.
+"""ClickHouse schema provisioner for precis-finance-mcp — the CH analog of migrate.py.
 
 Applies the configured instance to ClickHouse and seeds the package-owned
 ``semantic.scenarios``. **Schema-only**: it creates databases, tables, views,
@@ -383,7 +383,7 @@ def _describe(instance_dir: Path, scope: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Provision the ClickHouse schema for precis-mcp "
+        description="Provision the ClickHouse schema for precis-finance-mcp "
         "(schema-only; ingestion loads data separately)."
     )
     parser.add_argument(

@@ -92,7 +92,6 @@ _VALID_REPORT_CONTEXT_KEYS: frozenset[str] = frozenset({
     "period_start", "period_end",
 })
 
-
 # Canonical injection set for read-time tools (run_statement / run_metric).
 # Defined here so the catalogue stays terse and the two tools that share
 # this contract can't drift apart.
@@ -424,11 +423,12 @@ def build_descriptors(catalogue_ref) -> dict[str, ToolDescriptor]:
                 f"{sorted(unknown_keys)}. Allowed: "
                 f"{sorted(_VALID_REPORT_CONTEXT_KEYS)}"
             )
+        access = meta.get("access", "read")
         descriptors[name] = ToolDescriptor(
             name=name,
             func=func,
             skills=frozenset(meta.get("skills", set())),
-            access=meta.get("access", "read"),
+            access=access,
             mcp_read=meta.get("mcp_read", False),
             scenario_params=tuple(meta.get("scenario_params", ())),
             default_scenario=meta.get("default_scenario", ""),
@@ -556,7 +556,9 @@ def _coerce_list(val) -> list | None:
 
 
 # Params that should be lists — coerced before validation/execution
-_LIST_PARAMS = {"columns", "dimensions", "metrics", "scenarios"}
+_LIST_PARAMS = {
+    "columns", "dimensions", "metrics", "scenarios",
+}
 
 # Within _LIST_PARAMS, these must be list[str] (not list[dict]). LLMs
 # occasionally wrap entries — e.g. metrics=[{"metric": "gl_amount"}] —
@@ -570,8 +572,10 @@ _LIST_OF_STR_PARAMS: dict[str, str] = {
     "metrics": "metric",
 }
 
-# Params that should be dicts — coerced before validation/execution
-_DICT_PARAMS = {"filters", "chart_spec", "commit_scope", "discard_scope"}
+# Params that should be dicts — coerced before validation/execution.
+_DICT_PARAMS = {
+    "filters", "chart_spec", "commit_scope", "discard_scope",
+}
 
 
 def _normalise_list_of_str(

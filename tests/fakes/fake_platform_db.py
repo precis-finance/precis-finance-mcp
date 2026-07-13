@@ -139,7 +139,7 @@ class FakePlatformDB:
         if "conversations" in sql_lower and "set deleted_at" in sql_lower:
             return self._delete_conversation(params)
         if "conversations" in sql_lower and "set title" in sql_lower:
-            return self._update_conversation_title(params)
+            return self._update_conversation_title(sql_lower, params)
         if sql_lower.startswith("update conversations set"):
             return self._update_conversation(sql_lower, params)
         if sql_lower.startswith("insert into workstreams"):
@@ -444,10 +444,15 @@ class FakePlatformDB:
                 return {"id": conv_id}
         return None
 
-    def _update_conversation_title(self, params) -> dict | None:
+    def _update_conversation_title(self, sql_lower: str, params) -> dict | None:
         title, conv_id, user_id = params[0], params[1], params[2]
+        # Guarded variant (set_default_conversation_title): a trailing
+        # `AND title = %s` param restricts the write to rows still holding it.
+        required_title = params[3] if "and title = %s" in sql_lower else None
         for r in self.conversations:
             if r["id"] == conv_id and r["user_id"] == user_id and r["deleted_at"] is None:
+                if required_title is not None and r["title"] != required_title:
+                    return None
                 r["title"] = title
                 r["updated_at"] = datetime.now(timezone.utc)
                 return {"id": conv_id}

@@ -5,7 +5,7 @@
 Synthetic sample-data generator — a populated demo model for evaluation.
 Seed: 42 (fully reproducible).
 
-Generates 36 months of internally consistent FP&A data for a fictional IT
+Generates 44 months of internally consistent FP&A data for a fictional IT
 consultancy, lands it in the mock customer Postgres, drives every ingestion
 binding end-to-end so `live.*` is populated through the same pipeline a real
 deployment runs, and seeds the plan scenarios:
@@ -15,10 +15,10 @@ deployment runs, and seeds the plan scenarios:
   3. Employee master data + cost history
   4. Client list
   5. Project master data + assignments
-  6. Timesheets (36 months)
-  7. Payroll (36 months)
-  8. Revenue recognition (36 months, in-memory)
-  9. Journal entries (36 months) + validation
+  6. Timesheets (44 months)
+  7. Payroll (44 months)
+  8. Revenue recognition (44 months, in-memory)
+  9. Journal entries (44 months) + validation
  10. Budget scenario BUD-2026 + Forecast scenario FC-2026-Q1
  11. CRM accounts + opportunities (file-drop CSVs)
  12. Ingestion run (PG → ClickHouse `live.*`) + semantic views
@@ -137,7 +137,7 @@ def ensure_environment() -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 ENTITY_ID = "ENT-001"
 ACTUALS_START = datetime.date(2023, 1, 1)
-ACTUALS_END = datetime.date(2026, 5, 31)
+ACTUALS_END = datetime.date(2026, 8, 31)
 BUDGET_YEAR = 2026
 
 DE_HOLIDAYS = hol.Germany(prov="NW")  # use NRW as representative state
@@ -209,20 +209,24 @@ def last_business_day(year: int, month: int) -> datetime.date:
     return d
 
 
-def business_days_in_month(year: int, month: int) -> int:
-    """Count business days (Mon-Fri, excl. DE public holidays)."""
+def business_days_of_month(year: int, month: int) -> list[datetime.date]:
+    """Business days (Mon-Fri, excl. DE public holidays) of a month, in order."""
     if month == 12:
         next_m = datetime.date(year + 1, 1, 1)
     else:
         next_m = datetime.date(year, month + 1, 1)
-    start = datetime.date(year, month, 1)
-    count = 0
-    d = start
+    days: list[datetime.date] = []
+    d = datetime.date(year, month, 1)
     while d < next_m:
         if d.weekday() < 5 and d not in DE_HOLIDAYS:
-            count += 1
+            days.append(d)
         d += datetime.timedelta(days=1)
-    return count
+    return days
+
+
+def business_days_in_month(year: int, month: int) -> int:
+    """Count business days (Mon-Fri, excl. DE public holidays)."""
+    return len(business_days_of_month(year, month))
 
 
 def holiday_factor(month: int) -> float:
@@ -550,7 +554,7 @@ def generate_employees():
             "fte": 1.00,
             "start_date": start,
             "end_date": end_date,
-            "is_active": end_date is None or end_date > datetime.date(2026, 3, 20),
+            "is_active": end_date is None or end_date > datetime.date(2026, 8, 31),
             "currency": "EUR",
             "created_at": datetime.datetime(start.year, start.month, start.day, 9, 0, 0),
             "updated_at": datetime.datetime(start.year, start.month, start.day, 9, 0, 0),
@@ -714,7 +718,7 @@ def generate_projects(employees, clients):
             actual_end = planned_end
 
         # Status based on end date
-        today = datetime.date(2026, 3, 20)
+        today = datetime.date(2026, 8, 31)
         if actual_end < today:
             status = "COMPLETED"
         elif start_date > today:
@@ -869,15 +873,19 @@ def generate_timesheets(employees, assignments):
 
     now = datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
 
+    # Outer cadence stays monthly (seasonal/holiday factors and assignment
+    # windows are month-keyed); each month's hours are then spread across that
+    # month's business days, one timesheet row per employee per business day
+    # (a billable row per active project + a non-billable row). Daily
+    # availability is ~8h, so each day's billable + non-billable ≈ a full day.
     for year, month in months_in_range(ACTUALS_START, ACTUALS_END):
         period = period_str(year, month)
-        bdays = business_days_in_month(year, month)
+        bdays = business_days_of_month(year, month)
         hfactor = holiday_factor(month)
         seasonal = SEASONAL_MULTIPLIER[month]
-        avail_hours = bdays * 8.0 * hfactor
+        daily_avail = 8.0 * hfactor
 
         for emp in employees:
-            # Active this month?
             month_start = datetime.date(year, month, 1)
             month_end = last_business_day(year, month)
             if emp["start_date"] > month_end:
@@ -885,70 +893,81 @@ def generate_timesheets(employees, assignments):
             if emp["end_date"] and emp["end_date"] < month_start:
                 continue
 
+            # Business days the employee is actually active within this month.
+            emp_days = [
+                d for d in bdays
+                if d >= emp["start_date"] and (not emp["end_date"] or d <= emp["end_date"])
+            ]
+            if not emp_days:
+                continue
+
             grade = emp["grade"]
             util_target, util_std = GRADE_UTIL[grade]
             util_target_adj = util_target * seasonal
 
-            # Actual utilisation
+            # Actual utilisation → billable hours PER DAY.
             actual_util = rng_normal_clipped(util_target_adj, util_std, 0.0, 1.0)
-            billable_hours = actual_util * avail_hours
+            billable_per_day = actual_util * daily_avail
 
-            # Get project assignments active this month
             active_assigns = [
                 (pj, mh) for (pj, a_start, a_end, mh) in emp_assignments.get(emp["employee_id"], [])
                 if a_start <= month_end and a_end >= month_start
             ]
 
             if not active_assigns or grade == "ADMIN":
-                billable_hours = 0.0
+                billable_per_day = 0.0
 
-            # Distribute billable hours across projects
-            if active_assigns and billable_hours > 0:
+            # Per-project daily billable hours (project shares of the day).
+            proj_day_hours: list[tuple[int, float]] = []
+            if active_assigns and billable_per_day > 0:
                 total_target = sum(mh for _, mh in active_assigns)
                 for proj_id, mh in active_assigns:
                     share = mh / total_target if total_target > 0 else 1 / len(active_assigns)
-                    proj_hours = round(billable_hours * share, 2)
-                    if proj_hours <= 0:
-                        continue
+                    ph = round(billable_per_day * share, 2)
+                    if ph > 0:
+                        proj_day_hours.append((proj_id, ph))
+
+            non_bill_day = round(daily_avail - sum(ph for _, ph in proj_day_hours), 2)
+
+            for d in emp_days:
+                for proj_id, ph in proj_day_hours:
                     timesheets.append({
                         "timesheet_id": ts_id,
                         "employee_id": emp["employee_id"],
                         "project_id": proj_id,
                         "cost_centre_id": emp["cost_centre_id"],
                         "period": period,
-                        "hours_worked": proj_hours,
-                        "hours_billable": proj_hours,
+                        "period_start_date": d,
+                        "hours_worked": ph,
+                        "hours_billable": ph,
                         "activity_type": "PROJECT",
                         "created_at": now,
                     })
                     ts_id += 1
 
-            # Non-billable row
-            non_bill = round(avail_hours - billable_hours, 2)
-            if non_bill > 0:
-                # Split into categories (we record one aggregated non-billable row)
-                # Use a dominant category
-                if billable_hours == 0 and grade != "ADMIN":
-                    act = "BENCH"
-                elif grade == "ADMIN":
-                    act = "INTERNAL"
-                else:
-                    act = random.choices(
-                        ["INTERNAL", "TRAINING", "ADMIN", "BENCH"],
-                        weights=[20, 15, 12, 3]
-                    )[0]
-                timesheets.append({
-                    "timesheet_id": ts_id,
-                    "employee_id": emp["employee_id"],
-                    "project_id": None,
-                    "cost_centre_id": emp["cost_centre_id"],
-                    "period": period,
-                    "hours_worked": non_bill,
-                    "hours_billable": 0.0,
-                    "activity_type": act,
-                    "created_at": now,
-                })
-                ts_id += 1
+                if non_bill_day > 0:
+                    if not proj_day_hours and grade != "ADMIN":
+                        act = "BENCH"
+                    elif grade == "ADMIN":
+                        act = "INTERNAL"
+                    else:
+                        act = random.choices(
+                            ["INTERNAL", "TRAINING", "ADMIN", "BENCH"],
+                            weights=[20, 15, 12, 3]
+                        )[0]
+                    timesheets.append({
+                        "timesheet_id": ts_id,
+                        "employee_id": emp["employee_id"],
+                        "project_id": None,
+                        "cost_centre_id": emp["cost_centre_id"],
+                        "period": period,
+                        "period_start_date": d,
+                        "hours_worked": non_bill_day,
+                        "hours_billable": 0.0,
+                        "activity_type": act,
+                        "created_at": now,
+                    })
+                    ts_id += 1
 
     return timesheets
 
@@ -1931,7 +1950,6 @@ def generate_forecast_entries(budget_entries):
     return forecast
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 # DDL helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -2343,6 +2361,18 @@ CREATE TABLE gl.dim_period (
 ) ENGINE = ReplacingMergeTree()
 ORDER BY (period);
 
+DROP TABLE IF EXISTS gl.dim_date;
+CREATE TABLE gl.dim_date (
+    day  String
+) ENGINE = ReplacingMergeTree()
+ORDER BY (day);
+
+DROP TABLE IF EXISTS gl.dim_week;
+CREATE TABLE gl.dim_week (
+    week  String
+) ENGINE = ReplacingMergeTree()
+ORDER BY (week);
+
 DROP TABLE IF EXISTS gl.dim_account;
 CREATE TABLE gl.dim_account (
     account_code   String,
@@ -2649,6 +2679,20 @@ def load_postgres(clients, employees, projects, timesheets, payroll, entries, li
     conn.commit()
     print(f"  Inserted {len(period_dim_rows())} gl.dim_period rows")
 
+    # 1d. gl.dim_date / gl.dim_week — day & ISO-week calendars owned by the
+    # customer warehouse (the dim_date / dim_week bindings project them into
+    # live.*, materialising the dense `seq` prior-period ordinal on the way).
+    cur.execute("""
+        DROP TABLE IF EXISTS gl.dim_date;
+        CREATE TABLE gl.dim_date (day VARCHAR(10) PRIMARY KEY);
+        DROP TABLE IF EXISTS gl.dim_week;
+        CREATE TABLE gl.dim_week (week VARCHAR(8) PRIMARY KEY);
+    """)
+    cur.executemany("INSERT INTO gl.dim_date (day) VALUES (%s)", date_dim_rows())
+    cur.executemany("INSERT INTO gl.dim_week (week) VALUES (%s)", week_dim_rows())
+    conn.commit()
+    print(f"  Inserted {len(date_dim_rows())} gl.dim_date, {len(week_dim_rows())} gl.dim_week rows")
+
     # 2. employees (reset sequence)
     cur.execute("SELECT setval('hr.employees_employee_id_seq', 1, false)")
     cur.executemany(
@@ -2701,7 +2745,7 @@ def load_postgres(clients, employees, projects, timesheets, payroll, entries, li
            (employee_id,project_id,cost_centre_id,period_start_date,hours_worked,hours_billable,activity_type,created_at)
            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
         [(t["employee_id"],t["project_id"],t["cost_centre_id"],
-          datetime.date(int(t["period"][:4]), int(t["period"][5:]), 1),
+          t["period_start_date"],
           t["hours_worked"],t["hours_billable"],t["activity_type"],t["created_at"]) for t in timesheets],
     )
     conn.commit()
@@ -2873,6 +2917,43 @@ def period_dim_rows() -> list[list[str]]:
     return rows
 
 
+_CAL_START = datetime.date(2023, 1, 1)
+_CAL_END = datetime.date(2026, 12, 31)
+
+
+def date_dim_rows() -> list[list[str]]:
+    """Day calendar rows (business days only, YYYY-MM-DD) across 2023-2026.
+
+    Business days only, matching where timesheets exist, so prior-period at day
+    grain (seq - 1) resolves to the previous *working* day. `seq` is a dense
+    ordinal materialised by the dim_date binding via row_number() OVER (ORDER BY
+    day); it is the prior-period authority (weekends/holidays skipped)."""
+    rows: list[list[str]] = []
+    d = _CAL_START
+    while d <= _CAL_END:
+        if d.weekday() < 5 and d not in DE_HOLIDAYS:
+            rows.append([d.isoformat()])
+        d += datetime.timedelta(days=1)
+    return rows
+
+
+def week_dim_rows() -> list[list[str]]:
+    """ISO-week calendar rows (YYYY-Www) across 2023-2026.
+
+    The distinct ISO weeks that contain a business day, so the calendar aligns
+    with the weeks present in the timesheet data. `seq` is materialised by the
+    dim_week binding; the 52/53-week year boundary has no closed form, so the
+    dense ordinal is the prior-period authority."""
+    weeks: set[str] = set()
+    d = _CAL_START
+    while d <= _CAL_END:
+        if d.weekday() < 5 and d not in DE_HOLIDAYS:
+            iso = d.isocalendar()
+            weeks.add(f"{iso[0]:04d}-W{iso[1]:02d}")
+        d += datetime.timedelta(days=1)
+    return [[w] for w in sorted(weeks)]
+
+
 def land_plan_fact_plan(ch, plan_entries) -> None:
     """Open-tier plan landing: static amounts in `live.fact_plan`.
 
@@ -2910,7 +2991,9 @@ def land_plan_fact_plan(ch, plan_entries) -> None:
     print(f"  Inserted {len(rows)} live.fact_plan rows (static amounts)")
 
 
-def load_clickhouse(budget_entries, forecast_entries, land_plan):
+def load_clickhouse(
+    budget_entries, forecast_entries, land_plan, plan_extension=None,
+):
     print("Loading ClickHouse...")
     ch = ch_client()
 
@@ -2934,10 +3017,20 @@ def load_clickhouse(budget_entries, forecast_entries, land_plan):
     )
     print(f"  Inserted {len(period_rows)} gl.dim_period rows")
 
+    # gl.dim_date / gl.dim_week — day & ISO-week calendars (config copy).
+    date_rows = date_dim_rows()
+    ch.insert("gl.dim_date", date_rows, column_names=["day"])
+    week_rows = week_dim_rows()
+    ch.insert("gl.dim_week", week_rows, column_names=["week"])
+    print(f"  Inserted {len(date_rows)} gl.dim_date, {len(week_rows)} gl.dim_week rows")
+
     # Plan scenarios (budget + forecast) — where they land is the
     # seam to the Précis platform; see the module docstring.
     all_plan = budget_entries + forecast_entries
-    land_plan(ch, all_plan)
+    if plan_extension is None:
+        land_plan(ch, all_plan)
+    else:
+        land_plan(ch, all_plan, plan_extension)
     print(
         f"  Landed {len(all_plan)} plan entries "
         f"({len(budget_entries)} budget, {len(forecast_entries)} forecast)"
@@ -3183,13 +3276,13 @@ CRM_NUM_OPPORTUNITIES = 300
 # Opportunity status mix: ~60% open, ~25% won, ~15% lost.
 CRM_STATUS_MIX = ["Open"] * 60 + ["Closed-Won"] * 25 + ["Closed-Lost"] * 15
 
-# CRM time horizon: opportunities created between 2023-06-01 and 2026-05-31.
-# Open opps close in the future (2026-06 .. 2027-06); closed opps closed in
+# CRM time horizon: opportunities created between 2023-06-01 and 2026-08-31.
+# Open opps close in the future (2026-09 .. 2027-09); closed opps closed in
 # the past (anywhere from creation to today).
 CRM_CREATED_FROM = datetime.date(2023, 6, 1)
-CRM_CREATED_TO   = datetime.date(2026, 5, 31)
-CRM_OPEN_CLOSE_FROM = datetime.date(2026, 6, 1)
-CRM_OPEN_CLOSE_TO   = datetime.date(2027, 6, 30)
+CRM_CREATED_TO   = datetime.date(2026, 8, 31)
+CRM_OPEN_CLOSE_FROM = datetime.date(2026, 9, 1)
+CRM_OPEN_CLOSE_TO   = datetime.date(2027, 9, 30)
 
 
 def _crm_segment_amount_band(segment: str) -> tuple[float, float]:
@@ -3214,7 +3307,7 @@ def generate_crm_accounts():
         # Created any time in the last ~5 years.
         created = fake.date_between(
             start_date=datetime.date(2021, 1, 1),
-            end_date=datetime.date(2026, 4, 30),
+            end_date=datetime.date(2026, 7, 31),
         )
         accounts.append({
             "account_id": f"ACC-{i:04d}",
@@ -3275,7 +3368,7 @@ def _generate_one_opportunity(opp_idx: int, accounts: list[dict]) -> dict:
     if stage_category in ("Won", "Lost"):
         last_stage_change = close_date
     else:
-        today_bound = datetime.date(2026, 5, 14)
+        today_bound = datetime.date(2026, 8, 14)
         if created_date >= today_bound:
             last_stage_change = created_date
         else:
@@ -3385,7 +3478,7 @@ def synth_period_provider(binding) -> list[Optional[str]]:
 
     Deliberately bypasses `period_selection` (the BAU strategy used by the
     cron / push triggers): a fresh dev box has no watermark and binding
-    `lookback_periods` are tuned for steady-state, not for a 36-month
+    `lookback_periods` are tuned for steady-state, not for a 44-month
     backfill. The synth generator wrote rows across `ACTUALS_START`..
     `ACTUALS_END`; this provider lands every one of them.
 
@@ -3506,9 +3599,9 @@ def trigger_ingestion() -> None:
 # Main
 # ──────────────────────────────────────────────────────────────────────────────
 
-def main(land_plan=land_plan_fact_plan):
+def main(land_plan=land_plan_fact_plan, build_plan_extension=None):
     print("=== FP&A Synthetic Data Generator ===")
-    print(f"Seed: {SEED}  |  Actuals: 2023-2025  |  Budget/Forecast: 2026\n")
+    print(f"Seed: {SEED}  |  Actuals: 2023-01 → 2026-08  |  Budget/Forecast: 2026\n")
 
     print("Step 0: Bootstrapping Postgres (mock-source DB + platform schema)...")
     ensure_environment()
@@ -3552,6 +3645,11 @@ def main(land_plan=land_plan_fact_plan):
     print("Step 10: Generating forecast (FC-2026-Q1)...")
     forecast_entries = generate_forecast_entries(budget_entries)
     print(f"  {len(forecast_entries)} forecast rows")
+    plan_extension = (
+        build_plan_extension(employees, projects)
+        if build_plan_extension is not None
+        else None
+    )
 
     print("Step 13: Generating CRM accounts + opportunities...")
     crm_accounts = generate_crm_accounts()
@@ -3567,7 +3665,7 @@ def main(land_plan=land_plan_fact_plan):
     load_postgres(clients, employees, projects, timesheets, payroll, entries_je, lines_all, subledger, intercompany)
 
     print("\nLoading data into ClickHouse (config dims + plan only)...")
-    load_clickhouse(budget_entries, forecast_entries, land_plan)
+    load_clickhouse(budget_entries, forecast_entries, land_plan, plan_extension)
 
     trigger_ingestion()
 

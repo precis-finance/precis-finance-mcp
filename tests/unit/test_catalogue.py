@@ -1174,6 +1174,59 @@ class TestDimensionAttributes:
         }
         assert dim.display_attribute == "name"
 
+    def test_planner_member_constraints_are_parsed(self, tmp_path):
+        write_yml(tmp_path, "dimensions.yml", """
+            dimensions:
+              employee_type:
+                label: Employee Type
+                source:
+                  table: dim_employee_type
+                  key_column: employee_type
+              employee:
+                label: Employee
+                extendability: planner-extendable
+                attributes:
+                  code: {label: Code, unique: true}
+                  type:
+                    label: Type
+                    values: [SERVICES, SUPPORT]
+                  canonical_type:
+                    label: Canonical Type
+                    references: employee_type
+                source:
+                  table: dim_employee
+                  key_column: employee_id
+                  attribute_mapping:
+                    code: employee_code
+                    type: employee_type
+                    canonical_type: employee_type
+        """)
+        employee = load_catalogue(str(tmp_path)).dimensions["employee"]
+        assert employee.attributes["code"].unique is True
+        assert employee.attributes["type"].values == ["SERVICES", "SUPPORT"]
+        assert employee.attributes["canonical_type"].references == "employee_type"
+
+    def test_attribute_cannot_mix_values_and_reference(self, tmp_path):
+        write_yml(tmp_path, "dimensions.yml", """
+            dimensions:
+              employee_type:
+                label: Employee Type
+                source: {table: dim_employee_type, key_column: employee_type}
+              employee:
+                label: Employee
+                attributes:
+                  type:
+                    label: Type
+                    values: [SERVICES]
+                    references: employee_type
+                source:
+                  table: dim_employee
+                  key_column: employee_id
+                  attribute_mapping: {type: employee_type}
+        """)
+        with pytest.raises(CatalogueError, match="values or references"):
+            load_catalogue(str(tmp_path))
+
 
 # ---------------------------------------------------------------------------
 # Plan Datasets — Loading
@@ -1217,7 +1270,66 @@ class TestPlanDatasetLoading:
 
     def test_plan_dataset_count(self):
         cat = load_catalogue(str(CATALOGUE_DIR))
-        assert len(cat.plan_datasets) == 1
+        assert set(cat.plan_datasets) == {
+            "gl_plan", "workforce_plan", "project_plan",
+        }
+
+    def test_long_form_demo_datasets(self):
+        cat = load_catalogue(str(CATALOGUE_DIR))
+        workforce = cat.plan_datasets["workforce_plan"]
+        project = cat.plan_datasets["project_plan"]
+
+        assert [d.key for d in workforce.dimensions] == [
+            "employee", "cost_centre", "metric",
+        ]
+        assert workforce.metric_metadata["fte"].unit == "FTE"
+        assert workforce.metric_metadata["fte"].contributes_to == ["gl"]
+        assert workforce.metric_metadata["available_hours"].contributes_to == ["gl"]
+        assert workforce.metric_metadata["staff_gross_cost"].contributes_to == ["gl"]
+        assert [d.key for d in project.dimensions] == [
+            "project", "cost_centre", "metric",
+        ]
+        assert project.metric_metadata["billable_hours"].contributes_to == ["gl"]
+        assert project.metric_metadata["tm_revenue"].unit == "EUR"
+
+    def test_mapping_and_extendability_catalogue(self):
+        cat = load_catalogue(str(CATALOGUE_DIR))
+        assert set(cat.mapping_datasets) == {
+            "workforce_to_gl", "project_to_gl",
+        }
+        assert cat.mapping_datasets["workforce_to_gl"].source_coordinates == [
+            "metric", "employee.employee_type",
+        ]
+        workforce_seeds = {
+            (row["scenario"], row["metric"], row["employee.employee_type"], row["account"])
+            for row in cat.mapping_datasets["workforce_to_gl"].seed_rows
+        }
+        project_seeds = {
+            (row["scenario"], row["metric"], row["project.project_type"], row["account"])
+            for row in cat.mapping_datasets["project_to_gl"].seed_rows
+        }
+        for scenario in ("BUD-2026", "FC-2026-Q1"):
+            assert (scenario, "fte", "SERVICES", "9200") in workforce_seeds
+            assert (scenario, "fte", "SUPPORT", "9210") in workforce_seeds
+            assert (scenario, "available_hours", "SERVICES", "9110") in workforce_seeds
+            assert (scenario, "available_hours", "SUPPORT", "9110") in workforce_seeds
+            for project_type in ("T&M", "FIXED_FEE", "MILESTONE"):
+                assert (scenario, "billable_hours", project_type, "9100") in project_seeds
+        assert cat.dimensions["employee"].extendability == "planner-extendable"
+        assert cat.dimensions["project"].extendability == "planner-extendable"
+        assert cat.dimensions["employee"].attributes["employee_type"].values == [
+            "SERVICES", "SUPPORT",
+        ]
+        assert cat.dimensions["employee"].attributes["cost_centre"].references == (
+            "cost_centre"
+        )
+        assert cat.dimensions["project"].attributes["code"].unique is True
+
+    def test_payroll_headcount_key_uses_additive_fte(self):
+        cat = load_catalogue(str(CATALOGUE_DIR))
+        metric = cat.metrics["headcount"]
+        assert metric.label == "Average FTE"
+        assert metric.source_column == "fte"
 
 
 # ---------------------------------------------------------------------------
@@ -1390,6 +1502,84 @@ class TestPlanDatasetValidation:
         assert dim.values == ["tm", "fixed_fee", "retainer"]
         assert dim.source == ""
 
+    def test_metric_metadata_for_inline_metric_dimension(self, tmp_path):
+        self._base_yml(tmp_path)
+        write_yml(tmp_path, "plan_datasets.yml", """
+            plan_datasets:
+              test_plan:
+                label: Test Plan
+                table: planning.test
+                value_column: delta_value
+                value_type: "Decimal(18,4)"
+                dimensions:
+                  - key: metric
+                    values: [hours, revenue]
+                metric_metadata:
+                  hours:
+                    label: Hours
+                    unit: hours
+                    precision: 2
+                    contributes_to: []
+                  revenue:
+                    label: Revenue
+                    unit: EUR
+                    precision: 2
+                    contributes_to: []
+        """)
+        cat = load_catalogue(str(tmp_path))
+        metadata = cat.plan_datasets["test_plan"].metric_metadata
+        assert metadata["hours"].unit == "hours"
+        assert metadata["revenue"].label == "Revenue"
+
+    def test_metric_metadata_must_cover_declared_members(self, tmp_path):
+        self._base_yml(tmp_path)
+        write_yml(tmp_path, "plan_datasets.yml", """
+            plan_datasets:
+              bad:
+                label: Bad
+                table: planning.test
+                value_column: delta_value
+                dimensions:
+                  - key: metric
+                    values: [hours, revenue]
+                metric_metadata:
+                  hours: {label: Hours, unit: hours}
+        """)
+        with pytest.raises(CatalogueError, match="missing metadata"):
+            load_catalogue(str(tmp_path))
+
+    def test_metric_metadata_requires_metric_dimension(self, tmp_path):
+        self._base_yml(tmp_path)
+        write_yml(tmp_path, "plan_datasets.yml", """
+            plan_datasets:
+              bad:
+                label: Bad
+                table: planning.test
+                value_column: delta_value
+                dimensions:
+                  - key: measure
+                    values: [hours]
+                metric_metadata:
+                  hours: {label: Hours, unit: hours}
+        """)
+        with pytest.raises(CatalogueError, match="inline 'metric' dimension"):
+            load_catalogue(str(tmp_path))
+
+    def test_inline_values_must_be_unique(self, tmp_path):
+        self._base_yml(tmp_path)
+        write_yml(tmp_path, "plan_datasets.yml", """
+            plan_datasets:
+              bad:
+                label: Bad
+                table: planning.test
+                value_column: delta_value
+                dimensions:
+                  - key: metric
+                    values: [hours, hours]
+        """)
+        with pytest.raises(CatalogueError, match="must be unique"):
+            load_catalogue(str(tmp_path))
+
     def test_level_override_valid(self, tmp_path):
         self._base_yml(tmp_path)
         write_yml(tmp_path, "plan_datasets.yml", """
@@ -1461,6 +1651,33 @@ class TestPlanDatasetValidation:
                     source: cost_centre
         """)
         with pytest.raises(CatalogueError, match="Duplicate plan dataset key"):
+            load_catalogue(str(tmp_path))
+
+    def test_duplicate_mapping_seed_coordinates_raise(self, tmp_path):
+        self._base_yml(tmp_path)
+        write_yml(tmp_path, "plan_datasets.yml", """
+            plan_datasets:
+              workforce_plan:
+                label: Workforce Plan
+                table: planning.entries_workforce
+                value_column: delta_value
+                dimensions:
+                  - key: metric
+                    values: [fte]
+                metric_metadata:
+                  fte: {label: FTE, unit: FTE}
+            mapping_datasets:
+              workforce_to_gl:
+                label: Workforce to GL
+                table: planning.map_workforce_to_gl
+                source_dataset: workforce_plan
+                source_coordinates: [metric]
+                target_columns: {account: String}
+                seed_rows:
+                  - {scenario: BUD-2026, metric: fte, account: "9200"}
+                  - {scenario: BUD-2026, metric: fte, account: "9210"}
+        """)
+        with pytest.raises(CatalogueError, match="duplicate scenario/source"):
             load_catalogue(str(tmp_path))
 
 

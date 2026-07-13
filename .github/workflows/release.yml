@@ -1,4 +1,4 @@
-# release.yml — publish the open `precis-mcp` application image to GHCR.
+# release.yml — publish the open `precis-finance-mcp` application image to GHCR.
 #
 # Staged at deploy/ci/release.yml; published to
 # .github/workflows/release.yml (GitHub Actions only runs workflows under
@@ -6,7 +6,7 @@
 #
 # Cutting a release is pushing a `v*` tag on the mirror (e.g. `v0.1.0`). This
 # builds the single app image from the repo Dockerfile and pushes it to
-# ghcr.io/precis-finance/precis-mcp tagged with the version and `latest`. The
+# ghcr.io/precis-finance/precis-finance-mcp tagged with the version and `latest`. The
 # compose stack (deploy/docker-compose.yml) pulls this image by default and
 # falls back to a local build when it is absent — so the same six app services
 # (server, migrate/realm one-shots, ingestion and backup daemons) share one
@@ -51,7 +51,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/precis-finance/precis-mcp
+          images: ghcr.io/precis-finance/precis-finance-mcp
           # latest=auto: `latest` and the {{major}}.{{minor}} alias track real
           # releases only — a prerelease tag (v0.1.0-rc.1, used to rehearse this
           # workflow) publishes just its own version and never moves `latest`.
@@ -61,7 +61,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
           labels: |
             org.opencontainers.image.licenses=Elastic-2.0
-            io.modelcontextprotocol.server.name=io.github.precis-finance/precis-mcp
+            io.modelcontextprotocol.server.name=io.github.precis-finance/precis-finance-mcp
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -99,8 +99,8 @@ jobs:
           # Never publish a real release bodyless: fall back to auto notes if the
           # section is missing or blank (a forgotten CHANGELOG close).
           if grep -q '[^[:space:]]' notes.md; then
-            gh release create "$TAG" --title "precis-mcp $version" --notes-file notes.md
+            gh release create "$TAG" --title "Précis Finance MCP $version" --notes-file notes.md
           else
             echo "::warning::no CHANGELOG section for $version — using auto-generated notes"
-            gh release create "$TAG" --title "precis-mcp $version" --generate-notes
+            gh release create "$TAG" --title "Précis Finance MCP $version" --generate-notes
           fi

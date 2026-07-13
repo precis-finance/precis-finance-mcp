@@ -1,3 +1,7 @@
+---
+description: Reference the PRECIS Excel custom functions for governed financial statements, metrics, scenarios, hierarchies, and drill-down.
+---
+
 # Excel function reference
 
 All functions live in the **`PRECIS`** namespace and **spill** their result into

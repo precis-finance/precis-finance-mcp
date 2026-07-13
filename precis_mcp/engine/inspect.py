@@ -19,6 +19,37 @@ class InspectionError(ValueError):
     """Raised when an inspection request cannot be planned safely."""
 
 
+def _inspect_period_column(
+    catalogue: Catalogue,
+    source_key: str,
+    period_start: str | None,
+    period_end: str | None,
+) -> str:
+    """Resolve the fact column the period range filters, from the code's grain.
+
+    Mirrors the read path's domain-aware grain resolution so inspecting by a
+    week/day range targets the week/day column, not the month ``period``
+    column. Month (and no bound) resolve to ``period``, unchanged."""
+    from precis_mcp.engine.period_codes import Grain, detect_grain
+    from precis_mcp.engine.resolver import ResolverError, _period_column_for_grain
+
+    code = period_start or period_end
+    if code is None:
+        return "period"
+    grain = detect_grain(code)
+    if grain is None:
+        raise InspectionError(f"Invalid period format: {code!r}")
+    if (period_start and period_end
+            and detect_grain(period_start) is not detect_grain(period_end)):
+        raise InspectionError("period_start and period_end must be the same grain")
+    if grain is Grain.MONTH:
+        return "period"
+    try:
+        return _period_column_for_grain(catalogue, source_key, grain)
+    except ResolverError as exc:
+        raise InspectionError(str(exc)) from exc
+
+
 def list_inspection_sources(catalogue: Catalogue) -> list[dict[str, Any]]:
     """Return inspect-enabled catalogue domains."""
     sources: list[dict[str, Any]] = []
@@ -67,6 +98,7 @@ def inspect_rows(
     domain = _inspect_domain(catalogue, source_key)
     projected_columns = _project_columns(domain, columns)
     effective_limit = _effective_limit(limit)
+    period_column = _inspect_period_column(catalogue, source_key, period_start, period_end)
     dimension_filters = _resolve_dimension_filters(
         catalogue,
         source_key,
@@ -85,6 +117,7 @@ def inspect_rows(
             period_start,
             period_end,
             ibis_backends,
+            period_column,
         )
     else:
         rows, query_metadata = _inspect_clickhouse_rows(
@@ -96,6 +129,7 @@ def inspect_rows(
             period_start,
             period_end,
             ch_client,
+            period_column,
         )
 
     truncated = len(rows) > effective_limit
@@ -250,6 +284,7 @@ def _inspect_clickhouse_rows(
     period_start: str | None,
     period_end: str | None,
     ch_client,
+    period_column: str = "period",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if ch_client is None:
         raise InspectionError("A ClickHouse client is required for this source")
@@ -262,6 +297,7 @@ def _inspect_clickhouse_rows(
         scenario_id,
         period_start,
         period_end,
+        period_column,
     )
     result = ch_client.query(sql, parameters=params)
     rows = [dict(zip(result.column_names, row)) for row in result.result_rows]
@@ -282,6 +318,7 @@ def _clickhouse_sql(
     scenario_id: str | None,
     period_start: str | None,
     period_end: str | None,
+    period_column: str = "period",
 ) -> tuple[str, dict[str, Any]]:
     params: dict[str, Any] = {"inspect_limit": limit}
     conditions = _base_conditions(
@@ -290,6 +327,7 @@ def _clickhouse_sql(
         period_start,
         period_end,
         params,
+        period_column,
     )
     if domain.versioned:
         conditions.append("commit_id != '__uncommitted__'")
@@ -308,17 +346,20 @@ def _base_conditions(
     period_start: str | None,
     period_end: str | None,
     params: dict[str, Any],
+    period_column: str = "period",
 ) -> list[str]:
+    if not _SAFE_COLUMN_RE.match(period_column):
+        raise InspectionError(f"Invalid period column name: {period_column!r}")
     conditions: list[str] = []
     if scenario_id is not None:
         params["scenario_id"] = scenario_id
         conditions.append("scenario = {scenario_id:String}")
     if period_start is not None:
         params["period_start"] = period_start
-        conditions.append("period >= {period_start:String}")
+        conditions.append(f"{period_column} >= {{period_start:String}}")
     if period_end is not None:
         params["period_end"] = period_end
-        conditions.append("period <= {period_end:String}")
+        conditions.append(f"{period_column} <= {{period_end:String}}")
     if dimension_filters:
         # Empty value list = resolved deny-all scope — emit the predicate so
         # it matches nothing; skipping it would invert deny into allow-all.
@@ -340,6 +381,7 @@ def _inspect_ibis_rows(
     period_start: str | None,
     period_end: str | None,
     ibis_backends: dict[str, object] | None,
+    period_column: str = "period",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if ibis_backends is None or domain.backend not in ibis_backends:
         raise InspectionError(
@@ -354,9 +396,9 @@ def _inspect_ibis_rows(
     if scenario_id is not None:
         exprs.append(table["scenario"] == scenario_id)
     if period_start is not None:
-        exprs.append(table["period"] >= period_start)
+        exprs.append(table[period_column] >= period_start)
     if period_end is not None:
-        exprs.append(table["period"] <= period_end)
+        exprs.append(table[period_column] <= period_end)
     if dimension_filters:
         # Empty value list = resolved deny-all scope; isin([]) matches nothing.
         for col, values in sorted(dimension_filters.items()):

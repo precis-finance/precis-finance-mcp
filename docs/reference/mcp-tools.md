@@ -98,7 +98,9 @@ is returned only if at least one readable scenario allows it.
 
 No parameters. The dimension catalogue as metadata — each entry carries `key`
 (valid in `filters` and `dimensions`), `label`, `kind` (`leaf`, `derived`, or
-`ragged`), and, for ragged hierarchies, the `leaf_dimension` they aggregate.
+`ragged`), for ragged hierarchies the `leaf_dimension` they aggregate, and for
+time dimensions a `grain` (`date`, `week`, `month`, `quarter`, `year`) — the
+period grain that dimension carries.
 It never returns members — that is `search_hierarchy`'s job; use this tool
 only to discover which dimension keys exist.
 
@@ -121,7 +123,7 @@ scenarios, optionally crossed with a dimension breakdown.
 |---|---|---|
 | `statement` | string | Statement key from the catalogue (defaults to `pnl`). |
 | `scenarios` | list of objects | Each `{"scenario": "<key>", "alias": "<display label>"}` — registry keys, variance keys, shifted views. Scenario-gated. |
-| `period_start` / `period_end` | string | `YYYY-MM` range. |
+| `period_start` / `period_end` | string | Grain-tagged period range; the code shape sets the grain — `2025-06` month, `2025-Q2` quarter, `2025` fiscal year, `2025-W37` week, `2025-06-14` day. Both bounds must be the same grain. Month/quarter/fiscal-year work everywhere; week/day only where the domain's data carries them. |
 | `filters` | object | Dimension key → member id(s). Keys from `dimension_keys`; member ids from `search_hierarchy`. |
 | `dimensions` | list of strings | Breakdown dimension keys — the same `dimension_keys` (e.g. `["period"]`, `["cost_centre"]`). |
 | `scale` | int | Currency scaling power: `0` units, `3` thousands, `6` millions. |
@@ -172,7 +174,7 @@ The drill-through from a figure to the rows behind it.
 | `filters` | object | Semantic dimension keys from the source's schema. |
 | `columns` | list of strings | Restrict output columns (must be within the source's configured `inspect_columns`). |
 | `limit` | int | Row cap; the server enforces a hard ceiling (`INSPECTION_ROW_CAP`, default 10 000). |
-| `period_start` / `period_end` | string | `YYYY-MM` range. |
+| `period_start` / `period_end` | string | Grain-tagged period range; the code shape sets the grain — `2025-06` month, `2025-Q2` quarter, `2025` fiscal year, `2025-W37` week, `2025-06-14` day. Both bounds must be the same grain. Month/quarter/fiscal-year work everywhere; week/day only where the domain's data carries them. |
 
 Returns a capped sample of rows plus the inspection grid for rendering
 hosts. Profile scope applies to the rows themselves.

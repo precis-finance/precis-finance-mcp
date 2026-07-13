@@ -15,8 +15,8 @@ Apply order
 -----------
 Dims first, then views — views may reference dims via
 `semantic.dim_<x>`, and CH validates the references at view-creation
-time. Within each directory, files are applied in sorted order
-(deterministic).
+time. Files are sorted for deterministic installation. Embedding applications
+may register a dependency-priority function before applying their views.
 
 File convention
 ---------------
@@ -31,11 +31,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from precis_mcp.observability import get_logger
 
 _logger = get_logger("ingestion.semantic_runner")
+
+_file_priority: Callable[[Path], int] | None = None
+
+
+def register_semantic_file_priority(priority: Callable[[Path], int]) -> None:
+    """Register an embedding application's semantic-file dependency order."""
+    global _file_priority
+    _file_priority = priority
 
 
 @dataclass
@@ -111,7 +119,7 @@ def apply_all(
 
 
 def _apply_sql_dir(path: Path, ch_client: Any, schema: str, report: AppliedReport) -> None:
-    """Apply every `*.sql` file under `path` (sorted) as a CH view."""
+    """Apply every ``*.sql`` file under ``path`` in deterministic order."""
     if not path.exists():
         _logger.warning(
             "ingestion.semantic.subdir_missing",
@@ -119,7 +127,14 @@ def _apply_sql_dir(path: Path, ch_client: Any, schema: str, report: AppliedRepor
             path=str(path),
         )
         return
-    for sql_file in sorted(path.glob("*.sql")):
+    sql_files = sorted(
+        path.glob("*.sql"),
+        key=lambda sql_file: (
+            _file_priority(sql_file) if _file_priority is not None else 0,
+            sql_file.name,
+        ),
+    )
+    for sql_file in sql_files:
         name = sql_file.stem
         body = _read_body(sql_file)
         stmt = f"CREATE OR REPLACE VIEW {schema}.{name} AS\n{body}"

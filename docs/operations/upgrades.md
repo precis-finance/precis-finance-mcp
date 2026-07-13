@@ -1,6 +1,24 @@
 # Upgrading
 
-Précis-MCP ships as a rolling `main`: the public repository advances by sync
+## Artifact rename in 0.2.4
+
+Release 0.2.4 moves globally published artifacts to the collision-free
+`precis-finance-mcp` name. Compose files in the release already use
+`ghcr.io/precis-finance/precis-finance-mcp`; `PRECIS_MCP_TAG`, Compose service
+names, and the `precis_mcp` Python import stay unchanged.
+
+If you installed the Python distribution directly, remove the old
+Précis-built distribution before installing the new one:
+
+```sh
+pip uninstall precis-mcp
+pip install precis-finance-mcp
+```
+
+The installed admin commands are now `precis-finance-mcp-admin` and
+`precis-finance-mcp-clickhouse-init`.
+
+Précis Finance MCP ships as a rolling `main`: the public repository advances by sync
 commits from the internal repository, each sync is tagged, and
 `CHANGELOG.md` in the repository root answers the only question that matters
 before you upgrade — **does this sync break my compose stack, my `instance/`
@@ -66,10 +84,10 @@ set `PRECIS_MCP_TAG` to a published image version and bring the stack up
 *without* `--build`:
 
 ```bash
-PRECIS_MCP_TAG=0.2.3 docker compose -f deploy/docker-compose.yml up -d
+PRECIS_MCP_TAG=0.2.4 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-Compose pulls `ghcr.io/precis-finance/precis-mcp:<tag>` (falling back to a
+Compose pulls `ghcr.io/precis-finance/precis-finance-mcp:<tag>` (falling back to a
 source build only if the tag is absent). Upgrading is then bumping
 `PRECIS_MCP_TAG` to a newer release and re-running `up -d` — no rebuild. The
 bundled Postgres / ClickHouse / Keycloak images are unaffected either way; they
@@ -89,7 +107,7 @@ hashed lockfile (`requirements.lock`), and the bundled Postgres / ClickHouse
 / Keycloak images are digest-pinned (`tag@sha256:…`) in the compose files,
 so an upstream re-tag can't change your stack silently. The precis-mcp
 application image follows the same principle — published to
-`ghcr.io/precis-finance/precis-mcp` and selected by `PRECIS_MCP_TAG` (a release
+`ghcr.io/precis-finance/precis-finance-mcp` and selected by `PRECIS_MCP_TAG` (a release
 version by default, pinnable to a `@sha256:` digest), or built from the synced
 source when you run `up --build`. The flip side is
 that base-image and dependency security fixes do **not** arrive by

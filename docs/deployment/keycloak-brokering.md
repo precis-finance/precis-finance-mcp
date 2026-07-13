@@ -3,7 +3,7 @@
 Mode B runs the bundled Keycloak as the OAuth issuer. **Brokering** points its
 sign-in at your corporate IdP: users authenticate with their normal corporate
 credentials — your SSO, your MFA, your session policies — and Keycloak
-re-issues the token Précis-MCP verifies. Nothing changes on the Précis-MCP
+re-issues the token Précis Finance MCP verifies. Nothing changes on the Précis Finance MCP
 side: `PRECIS_AUTH_MODE=keycloak`, the token check, and provisioning are
 exactly as in [Remote access](oauth-keycloak.md). Everything on this page is
 Keycloak configuration.
@@ -16,7 +16,7 @@ This is your path when:
   bundled Keycloak supplies both, while your IdP still authenticates every
   user. If you're on one of these IdPs, this is the standard setup, not a
   workaround — the [decision matrix](external-idp-recipes.md) explains why.
-- **Your IdP is SAML-only.** The Précis-MCP verifier speaks OIDC; Keycloak
+- **Your IdP is SAML-only.** The Précis Finance MCP verifier speaks OIDC; Keycloak
   brokers SAML upstream.
 - You want the sign-in stack self-contained, with your IdP as the source of
   credentials.
@@ -47,7 +47,7 @@ Per-IdP notes:
   (`https://login.microsoftonline.com/<tenant-id>/v2.0/.well-known/openid-configuration`),
   not `common`.
 - **Okta** — an *OIDC Web Application*; assign the users/groups who should
-  reach Précis-MCP. The **org authorization server is fine here** — Keycloak
+  reach Précis Finance MCP. The **org authorization server is fine here** — Keycloak
   only needs a standard login, so the custom-AS licensing question from the
   [mode-C recipe](external-idp-recipes.md#32-okta-mode-b-for-public-connectors)
   doesn't arise.
@@ -142,7 +142,7 @@ Verify end to end:
    `run_statement` (a partial list with only master-data and ops tools
    means no profile is assigned), and a report query returns data.
 4. A colleague who exists in your IdP but is **not provisioned** in
-   Précis-MCP signs in successfully and is still refused (`403`, not
+   Précis Finance MCP signs in successfully and is still refused (`403`, not
    provisioned) — that's the provisioning gate doing its job.
 
 ## The DCR and admin surfaces
@@ -152,7 +152,7 @@ per-deploy reconcile removes Keycloak's anonymous-DCR-blocking policies
 (Trusted Hosts, Consent Required, Allowed Client Scopes) so that claude.ai and
 ChatGPT can self-register. Registering a client grants **no access to data**:
 a registered client still has to send a real user through your brokered
-sign-in, and that user must exist in Précis-MCP with a profile. Keycloak's
+sign-in, and that user must exist in Précis Finance MCP with a profile. Keycloak's
 remaining anonymous-registration limits (such as the max-clients cap) stay in
 place. It is still an unauthenticated write surface. The reference nginx
 config (`deploy/nginx/`) ships the edge mitigations; if you write your own

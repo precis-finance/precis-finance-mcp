@@ -1,11 +1,11 @@
 # External IdP integration recipes (mode C / federated mode B)
 
-> Per-IdP configuration recipes for connecting Précis-MCP to **Auth0, Okta,
+> Per-IdP configuration recipes for connecting Précis Finance MCP to **Auth0, Okta,
 > Microsoft Entra ID, and Ping** as the OIDC issuer, plus the DCR support matrix
 > that decides which identity mode fits which IdP. Companion to
 > [Remote access — sign-in & identity modes](oauth-keycloak.md).
 >
-> Mode C (direct external OIDC trust) is fully supported on the Précis-MCP
+> Mode C (direct external OIDC trust) is fully supported on the Précis Finance MCP
 > side — issuer/JWKS/audience override, claim→column mapping, pre-registered
 > client, and the boot-time conformance check (`PRECIS_AUTH_PREFLIGHT`). These
 > recipes describe what an operator must configure **on the IdP side** to
@@ -54,12 +54,12 @@ stamps the `aud`.
 | **Anonymous DCR (RFC 7591)** | **Yes**, but off by default + operational prereqs | **No** (needs SSWS/`okta.clients.manage`) | **No** (Graph/portal only) | **Yes** (`/as/clients.oauth2`, optional IAT + policies) | **No** (Worker-token API) |
 | **Discovery / JWKS / RS256** | Yes | Yes | Yes (issuer quirk, below) | Yes (use a **JWT** ATM, not reference) | Yes |
 | **Keycloak can broker to it (mode B)** | Yes (OIDC) | Yes (OIDC) | Yes (built-in `MicrosoftIdentityProvider`, OIDC/SAML) | Yes (OIDC/SAML) | Yes (OIDC) |
-| **Recommended Précis-MCP posture** | **Mode C** viable (DCR + 8707 both configurable) | **Mode B** for public connectors; mode C only for pre-registered clients + proxy/relaxed aud | **Mode B** for public connectors; mode C needs scope-rewrite + `oid` join | **Mode C** viable (DCR + 8707 both native) | **Mode B** (no DCR, no 8707) |
+| **Recommended Précis Finance MCP posture** | **Mode C** viable (DCR + 8707 both configurable) | **Mode B** for public connectors; mode C only for pre-registered clients + proxy/relaxed aud | **Mode B** for public connectors; mode C needs scope-rewrite + `oid` join | **Mode C** viable (DCR + 8707 both native) | **Mode B** (no DCR, no 8707) |
 
 ## 3. Per-IdP recipes
 
 Each recipe has three parts: what to configure in the IdP, the matching
-`deploy/.env` block on the Précis-MCP side (mode C — set
+`deploy/.env` block on the Précis Finance MCP side (mode C — set
 `PRECIS_AUTH_MODE=oidc` and drop `bundled-keycloak` from `COMPOSE_PROFILES`),
 and verification. Verification is the same everywhere:
 
@@ -85,7 +85,7 @@ mode-C surface, public connectors included.
    `api.accessToken.setCustomClaim('https://precis/precis_user_id', event.user.app_metadata.precis_user_id)`.
    **Namespacing is mandatory** on API-audience tokens — a non-namespaced
    claim is silently dropped; the namespace URL is opaque. Store each user's
-   Précis-MCP id in `app_metadata` at provisioning. You cannot overwrite
+   Précis Finance MCP id in `app_metadata` at provisioning. You cannot overwrite
    `sub`/`aud` — emit a dedicated claim and have the verifier read it.
 3. **Enable RFC 8707** via the **Resource Parameter Compatibility Profile**
    so Auth0 honours `resource=<identifier>`; otherwise clients must send the
@@ -102,7 +102,7 @@ mode-C surface, public connectors included.
 5. **Pre-register a client** for any first-party frontend or static client;
    note its client id (and secret, if confidential).
 
-**Précis-MCP side:**
+**Précis Finance MCP side:**
 
 ```bash
 PRECIS_AUTH_MODE=oidc
@@ -147,7 +147,7 @@ Claude Code with a configured client id).
    (`/oauth2/v1/clients`) requires an org credential (SSWS token or
    `okta.clients.manage`) — public connectors cannot self-register.
 
-**Précis-MCP side:**
+**Précis Finance MCP side:**
 
 ```bash
 PRECIS_AUTH_MODE=oidc
@@ -196,7 +196,7 @@ is the mode-C path for pre-registered clients.
    **claims-mapping policy** (`acceptMappedClaims: true`, **single-tenant
    only** — never set it on a multitenant app).
 
-**Précis-MCP side:**
+**Précis Finance MCP side:**
 
 ```bash
 PRECIS_AUTH_MODE=oidc
@@ -244,7 +244,7 @@ Attributes** (built-in `openid`/`PingOne API` resources can't be modified),
 Application API only), **RFC 8707 not documented** — route public connectors
 through [brokering](keycloak-brokering.md).
 
-**Précis-MCP side (PingFederate):**
+**Précis Finance MCP side (PingFederate):**
 
 ```bash
 PRECIS_AUTH_MODE=oidc
@@ -262,13 +262,13 @@ Sources: [PF access-token mapping](https://docs.pingidentity.com/pingfederate/12
 
 When the IdP has no anonymous DCR (Okta / Entra / PingOne) or the client is a
 first-party frontend, the OAuth client is **registered manually** in the IdP and
-its id configured into Précis-MCP + the client. This is the supported
+its id configured into Précis Finance MCP + the client. This is the supported
 alternative to DCR:
 
 1. **Register a client in the IdP** — confidential (with a secret) or
    public+PKCE. Note its `client_id` (and secret if confidential). Set the
    redirect URI(s) for the SPA browser flow.
-2. **Tell Précis-MCP the pre-registered client** — set `OIDC_CLIENT_ID` (and
+2. **Tell Précis Finance MCP the pre-registered client** — set `OIDC_CLIENT_ID` (and
    `OIDC_CLIENT_SECRET` for a confidential client) on the deployment. These
    override the bundled-Keycloak default (`precis-spa`).
 3. **Configure the MCP client / first-party frontend** with that same
@@ -338,7 +338,7 @@ identifier, which differs per IdP: Entra **`oid`** (and assert `tid`), Okta a
 UD attribute emitted via a custom-AS claim, Auth0 a stored `app_metadata` id
 emitted as a namespaced claim, Ping a datastore/adapter attribute. Email is
 the wrong choice everywhere — it is mutable and reassignable. When the claim
-value differs from your Précis-MCP user ids, set
+value differs from your Précis Finance MCP user ids, set
 `PRECIS_IDENTITY_COLUMN=external_id` and store the IdP value at provisioning
 with `create-user --external-id` (see
 [Remote access](oauth-keycloak.md)).

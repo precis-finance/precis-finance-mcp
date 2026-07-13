@@ -1,8 +1,12 @@
+---
+description: Review the Précis Finance MCP trust model, read-only enforcement, authentication, authorisation, data flows, and deployment responsibilities.
+---
+
 # Security model
 
 The trust model in one place, for a security review: what this server can
 never do, who is authenticated and authorised by what, where data flows, and
-which surfaces need hardening attention. Précis-MCP serves **financial data
+which surfaces need hardening attention. Précis Finance MCP serves **financial data
 to AI clients**, so the review questions are predictable — this page answers
 them in order.
 
@@ -112,7 +116,7 @@ tool failures return generic messages while detail goes to the server log.
 
 ## Container posture
 
-The `precis-mcp` image runs as a non-root user (uid 10001), and both compose
+The `precis-finance-mcp` image runs as a non-root user (uid 10001), and both compose
 bundles drop all Linux capabilities and set `no-new-privileges` on every
 service built from it. Two consequences to know about:
 

@@ -1,4 +1,4 @@
-# Précis-MCP — remote / multi-user bundle (OAuth2 + Keycloak).
+# Précis Finance MCP — remote / multi-user bundle (OAuth2 + Keycloak).
 #
 # A shared server real users sign in to. MCP clients authenticate with
 # OAuth 2.1 + PKCE and discover the sign-in endpoint via RFC 9728, so the
@@ -39,7 +39,7 @@
 #
 #   BACKUP (optional, additive): include `backup` to run the scheduler sidecar
 #   that executes the backup config in instance/backup.yml on its cron. Configure
-#   first with `precis-mcp-admin backup init` — see
+#   first with `precis-finance-mcp-admin backup init` — see
 #   docs/operations/backups.md.
 #
 #   INGESTION (optional, additive): include `ingestion` to run the scheduler
@@ -125,7 +125,7 @@ x-precis-env: &precis-env
 # release — bump it with each release, or override to a digest for re-pull
 # immutability matching the upstream-image policy below.
 x-precis-image: &precis-image
-  image: ghcr.io/precis-finance/precis-mcp:${PRECIS_MCP_TAG:-0.2.3}
+  image: ghcr.io/precis-finance/precis-finance-mcp:${PRECIS_MCP_TAG:-0.2.4}
   build:
     context: ..
     dockerfile: Dockerfile

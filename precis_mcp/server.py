@@ -5,7 +5,7 @@
 The "instant local" on-ramp for the open package: a FastMCP Streamable HTTP
 server exposing ONLY the open read surface (metric/statement/inspect/list/
 search, ingestion reads) behind a single shared dev key. No OAuth, no Keycloak
-— the dominant open-source adoption path. For a multi-user remote
+— the direct source-available adoption path. For a multi-user remote
 server use the OAuth2 transport in ``app_open`` instead.
 
 This is the open counterpart to the Précis dev server: same dev-key
@@ -35,7 +35,7 @@ from precis_mcp.catalogue_ref import _catalogue_ref as catalogue_ref  # noqa: E4
 from precis_mcp.mcp_external.instructions import build_mcp_instructions  # noqa: E402
 
 mcp = FastMCP(
-    "Précis-MCP (open)",
+    "Précis Finance MCP",
     # No host/port here: the dev SSE server binds via uvicorn.run(host=_bind_host,
     # port=_bind_port) below, which defaults to 127.0.0.1. A constructor host here
     # is dead but reads as a 0.0.0.0 exposure to an auditor — keep it absent.

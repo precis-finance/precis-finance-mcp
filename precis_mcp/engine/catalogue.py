@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import Any, Literal, Optional, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+
+from precis_mcp.engine.period_codes import Grain
 
 
 class CatalogueError(Exception):
@@ -32,6 +34,7 @@ PredicateOp = Literal[
     "eq", "neq", "in", "not_in", "gt", "gte", "lt", "lte", "is_null", "is_not_null",
 ]
 RaggedSourceType = Literal["generated", "provided"]
+DimensionExtendability = Literal["source-mastered", "admin", "planner-extendable"]
 
 _PREDICATE_VALUE_OPS = {"eq", "neq", "gt", "gte", "lt", "lte"}
 _PREDICATE_VALUES_OPS = {"in", "not_in"}
@@ -105,10 +108,20 @@ Metric = Union[BaseMetric, DerivedMetric]
 # ---------------------------------------------------------------------------
 
 class DimensionAttribute(BaseModel):
-    """An attribute on a dimension (e.g. name, code)."""
+    """An attribute on a dimension (e.g. name, code).
+
+    Optional constraints apply to planner-created members. ``values`` is a
+    small instance-owned controlled vocabulary, ``references`` points at a
+    first-class leaf/derived dimension, and ``unique`` requires the value to be
+    absent from the owning dimension's semantic master (apart from the member
+    currently being amended).
+    """
     model_config = ConfigDict(extra="forbid")
 
     label: str
+    values: list[str] = Field(default_factory=list)
+    references: str = ""
+    unique: bool = False
 
 
 class DimensionSource(BaseModel):
@@ -200,9 +213,14 @@ class Dimension(BaseModel):
 
     key: str
     label: str
+    grain: Optional[Grain] = None  # calendar grain (month/quarter/year/…) for
+                                   # time dimensions; None for non-time dimensions
     attributes: dict[str, DimensionAttribute] = Field(default_factory=dict)
     display_attribute: str = ""
     sort_attribute: str = ""
+    extendability: DimensionExtendability = "source-mastered"
+    member_table: str = "planning.dimension_members"
+    required_member_attributes: list[str] = Field(default_factory=list)
     # --- Leaf dimensions ---
     source: Optional[DimensionSource] = None
     # --- Derived dimensions ---
@@ -293,6 +311,10 @@ class DomainCatalogue(BaseModel):
     metrics: list[Metric]
     dimensions: list[CubeDimension] = Field(default_factory=list)
     versioned: bool = False                 # opt in with versioned: true for commit-aware plan domains (source view must carry commit_id)
+    # The fact's native time-grain column — its true row grain, and the axis for
+    # avg (COUNT DISTINCT) and closing (argmax/last) rollups. Must be the real
+    # row grain, or closing ties on a coarser column and picks arbitrarily.
+    native_grain_column: str = "period"
     backend: str = "clickhouse_default"
     backend_kind: BackendKind = "clickhouse"
     inspect_enabled: bool = False
@@ -319,6 +341,22 @@ class PlanDatasetDimension(BaseModel):
     values: list[str] = Field(default_factory=list)
 
 
+class PlanMetricMetadata(BaseModel):
+    """Presentation and semantic-routing metadata for a plan metric member.
+
+    This deliberately carries no formula or dependency information. Business
+    relationships between metric members remain prompt guidance; the catalogue
+    only describes how a stored value should be validated, displayed and routed
+    into semantic targets.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    unit: str
+    precision: int = Field(default=2, ge=0, le=12)
+    contributes_to: list[str] = Field(default_factory=list)
+
+
 class PlanDataset(BaseModel):
     """A writable plan dataset — defines the grain and storage for plan entries.
 
@@ -333,8 +371,49 @@ class PlanDataset(BaseModel):
     table: str
     value_column: str
     value_type: str
+    unit: str = ""
+    precision: int = Field(default=2, ge=0, le=12)
     domain: str = ""
     dimensions: list[PlanDatasetDimension] = Field(default_factory=list)
+    metric_metadata: dict[str, PlanMetricMetadata] = Field(default_factory=dict)
+
+
+class MappingDataset(BaseModel):
+    """Scenario-scoped current-state mapping from a plan leg to targets."""
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    label: str
+    table: str
+    source_dataset: str
+    source_coordinates: list[str]
+    target_columns: dict[str, str]
+    seed_rows: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_seed_rows(self) -> "MappingDataset":
+        required = {
+            "scenario", *self.source_coordinates, *self.target_columns,
+        }
+        seen_coordinates: dict[tuple[str, ...], int] = {}
+        for index, row in enumerate(self.seed_rows):
+            missing = required - set(row)
+            if missing:
+                raise ValueError(
+                    f"seed row {index} missing {sorted(missing)}"
+                )
+            identity = tuple(
+                str(row[column])
+                for column in ("scenario", *self.source_coordinates)
+            )
+            previous = seen_coordinates.get(identity)
+            if previous is not None:
+                raise ValueError(
+                    f"seed rows {previous} and {index} duplicate "
+                    "scenario/source coordinates"
+                )
+            seen_coordinates[identity] = index
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +429,7 @@ class Catalogue(BaseModel):
     domains: dict[str, DomainCatalogue]  # domain name -> DomainCatalogue
     dimensions: dict[str, Dimension] = Field(default_factory=dict)
     plan_datasets: dict[str, PlanDataset] = Field(default_factory=dict)
+    mapping_datasets: dict[str, MappingDataset] = Field(default_factory=dict)
     planning_context: Optional[dict[str, Any]] = None
 
 
@@ -513,11 +593,20 @@ def _parse_statement(name: str, raw: dict) -> Statement:
 
 def _parse_dimension(key: str, raw: dict) -> Dimension:
     try:
+        # --- Calendar grain (time dimensions only) ---
+        grain_raw = raw.get("grain")
+        grain = Grain(grain_raw) if grain_raw else None
+
         # --- Attributes ---
         attributes: dict[str, DimensionAttribute] = {}
         for attr_key, attr_raw in raw.get("attributes", {}).items():
             if isinstance(attr_raw, dict):
-                attributes[attr_key] = DimensionAttribute(label=attr_raw.get("label", attr_key))
+                attributes[attr_key] = DimensionAttribute(
+                    label=attr_raw.get("label", attr_key),
+                    values=attr_raw.get("values", []),
+                    references=attr_raw.get("references", ""),
+                    unique=attr_raw.get("unique", False),
+                )
             else:
                 attributes[attr_key] = DimensionAttribute(label=str(attr_raw))
 
@@ -576,9 +665,13 @@ def _parse_dimension(key: str, raw: dict) -> Dimension:
         return Dimension(
             key=key,
             label=raw["label"],
+            grain=grain,
             attributes=attributes,
             display_attribute=raw.get("display_attribute", ""),
             sort_attribute=raw.get("sort_attribute", ""),
+            extendability=raw.get("extendability", "source-mastered"),
+            member_table=raw.get("member_table", "planning.dimension_members"),
+            required_member_attributes=raw.get("required_member_attributes", []),
             source=source,
             derived_from=derived_from,
             parents=parents,
@@ -640,8 +733,11 @@ def _parse_plan_dataset(key: str, raw: dict) -> PlanDataset:
             table=raw["table"],
             value_column=raw["value_column"],
             value_type=raw.get("value_type", "Decimal(18,2)"),
+            unit=raw.get("unit", ""),
+            precision=raw.get("precision", 2),
             domain=raw.get("domain", ""),
             dimensions=dims,
+            metric_metadata=raw.get("metric_metadata", {}),
         )
     except CatalogueError:
         raise
@@ -649,6 +745,25 @@ def _parse_plan_dataset(key: str, raw: dict) -> PlanDataset:
         raise CatalogueError(f"Plan dataset {key!r} missing required field: {exc}") from exc
     except Exception as exc:
         raise CatalogueError(f"Invalid plan dataset {key!r}: {exc}") from exc
+
+
+def _parse_mapping_dataset(key: str, raw: dict) -> MappingDataset:
+    try:
+        return MappingDataset(
+            key=key,
+            label=raw["label"],
+            table=raw["table"],
+            source_dataset=raw["source_dataset"],
+            source_coordinates=raw["source_coordinates"],
+            target_columns=raw["target_columns"],
+            seed_rows=raw.get("seed_rows", []),
+        )
+    except KeyError as exc:
+        raise CatalogueError(
+            f"Mapping dataset {key!r} missing required field: {exc}"
+        ) from exc
+    except Exception as exc:
+        raise CatalogueError(f"Invalid mapping dataset {key!r}: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +792,7 @@ def load_catalogue(
     all_domains: dict[str, DomainCatalogue] = {}
     all_dimensions: dict[str, Dimension] = {}
     all_plan_datasets: dict[str, PlanDataset] = {}
+    all_mapping_datasets: dict[str, MappingDataset] = {}
     planning_context: dict | None = None
 
     # Two-pass: first pass collects master dimensions and domain cube-dimensions
@@ -728,6 +844,7 @@ def load_catalogue(
                     metrics=domain_metrics,
                     dimensions=cube_dims,
                     versioned=data.get("versioned", False),
+                    native_grain_column=data.get("native_grain_column", "period"),
                     backend=data.get("backend", "clickhouse_default"),
                     backend_kind=data.get("backend_kind", "clickhouse"),
                     inspect_enabled=data.get("inspect_enabled", False),
@@ -750,6 +867,17 @@ def load_catalogue(
                     )
                 all_plan_datasets[key] = _parse_plan_dataset(key, raw_ds)
 
+        if "mapping_datasets" in data:
+            for key, raw_mapping in data["mapping_datasets"].items():
+                if key in all_mapping_datasets:
+                    raise CatalogueError(
+                        f"Duplicate mapping dataset key {key!r} "
+                        f"(found in {yml_file.name})"
+                    )
+                all_mapping_datasets[key] = _parse_mapping_dataset(
+                    key, raw_mapping,
+                )
+
         # --- Planning context (at most one across all YAML files) ---
         if "planning_context" in data:
             planning_context = data["planning_context"]
@@ -761,6 +889,7 @@ def load_catalogue(
         domains=all_domains,
         dimensions=all_dimensions,
         plan_datasets=all_plan_datasets,
+        mapping_datasets=all_mapping_datasets,
         planning_context=planning_context,
     )
     _normalize_semantic_refs(catalogue)
@@ -1078,6 +1207,49 @@ def validate_catalogue(catalogue: Catalogue) -> None:
                 f"Dimension {key!r}: sort_attribute {dim.sort_attribute!r} "
                 f"is not a defined attribute"
             )
+        unknown_required = set(dim.required_member_attributes) - set(dim.attributes)
+        if unknown_required:
+            raise CatalogueError(
+                f"Dimension {key!r}: required_member_attributes contains "
+                f"unknown attributes {sorted(unknown_required)}"
+            )
+        if dim.extendability != "source-mastered" and not dim.is_leaf:
+            raise CatalogueError(
+                f"Dimension {key!r}: only leaf dimensions can be extendable"
+            )
+        for attr_key, attribute in dim.attributes.items():
+            if len(set(attribute.values)) != len(attribute.values):
+                raise CatalogueError(
+                    f"Dimension {key!r} attribute {attr_key!r}: values must be unique"
+                )
+            if attribute.values and attribute.references:
+                raise CatalogueError(
+                    f"Dimension {key!r} attribute {attr_key!r}: declare values "
+                    "or references, not both"
+                )
+            if attribute.references:
+                target = dimensions.get(attribute.references)
+                if target is None:
+                    raise CatalogueError(
+                        f"Dimension {key!r} attribute {attr_key!r}: references "
+                        f"unknown dimension {attribute.references!r}"
+                    )
+                if target.is_ragged:
+                    raise CatalogueError(
+                        f"Dimension {key!r} attribute {attr_key!r}: references "
+                        "must target a leaf or derived dimension"
+                    )
+            if attribute.unique:
+                if not dim.is_leaf or dim.source is None:
+                    raise CatalogueError(
+                        f"Dimension {key!r} attribute {attr_key!r}: unique is "
+                        "supported only on leaf dimensions"
+                    )
+                if attr_key not in dim.source.attribute_mapping:
+                    raise CatalogueError(
+                        f"Dimension {key!r} attribute {attr_key!r}: unique "
+                        "requires an attribute_mapping column"
+                    )
 
         # Derived dimension checks
         if dim.is_derived:
@@ -1263,6 +1435,17 @@ def validate_catalogue(catalogue: Catalogue) -> None:
                     f"Plan dataset {ds_key!r}, dimension {dim.key!r}: "
                     f"cannot have both 'source' and 'values'"
                 )
+            if has_values:
+                if any(not str(value).strip() for value in dim.values):
+                    raise CatalogueError(
+                        f"Plan dataset {ds_key!r}, dimension {dim.key!r}: "
+                        "inline values must be non-empty strings"
+                    )
+                if len(set(dim.values)) != len(dim.values):
+                    raise CatalogueError(
+                        f"Plan dataset {ds_key!r}, dimension {dim.key!r}: "
+                        "inline values must be unique"
+                    )
             if has_source and dim.source not in dimensions:
                 raise CatalogueError(
                     f"Plan dataset {ds_key!r}, dimension {dim.key!r}: "
@@ -1275,6 +1458,98 @@ def validate_catalogue(catalogue: Catalogue) -> None:
                         f"Plan dataset {ds_key!r}, dimension {dim.key!r}: "
                         f"level {dim.level!r} not found as a dimension"
                     )
+
+        if ds.metric_metadata:
+            metric_dim = next(
+                (dim for dim in ds.dimensions if dim.key == "metric"), None,
+            )
+            if metric_dim is None or not metric_dim.values:
+                raise CatalogueError(
+                    f"Plan dataset {ds_key!r}: metric_metadata requires an "
+                    "inline 'metric' dimension"
+                )
+
+            declared = set(metric_dim.values)
+            described = set(ds.metric_metadata)
+            missing = sorted(declared - described)
+            unknown = sorted(described - declared)
+            if missing or unknown:
+                detail = []
+                if missing:
+                    detail.append(f"missing metadata for {missing}")
+                if unknown:
+                    detail.append(f"metadata for undeclared members {unknown}")
+                raise CatalogueError(
+                    f"Plan dataset {ds_key!r}: metric_metadata does not match "
+                    f"the metric dimension ({'; '.join(detail)})"
+                )
+
+            for metric_key, metadata in ds.metric_metadata.items():
+                if not metadata.label.strip() or not metadata.unit.strip():
+                    raise CatalogueError(
+                        f"Plan dataset {ds_key!r}, metric {metric_key!r}: "
+                        "label and unit must be non-empty"
+                    )
+                unknown_targets = sorted(
+                    set(metadata.contributes_to) - set(catalogue.domains)
+                )
+                if unknown_targets:
+                    raise CatalogueError(
+                        f"Plan dataset {ds_key!r}, metric {metric_key!r}: "
+                        f"unknown contributes_to domains {unknown_targets}"
+                    )
+
+    # --- Mapping dataset checks ---
+    for mapping_key, mapping in catalogue.mapping_datasets.items():
+        source = catalogue.plan_datasets.get(mapping.source_dataset)
+        if source is None:
+            raise CatalogueError(
+                f"Mapping dataset {mapping_key!r} references unknown plan "
+                f"dataset {mapping.source_dataset!r}"
+            )
+        if not mapping.source_coordinates:
+            raise CatalogueError(
+                f"Mapping dataset {mapping_key!r} needs source_coordinates"
+            )
+        if len(set(mapping.source_coordinates)) != len(mapping.source_coordinates):
+            raise CatalogueError(
+                f"Mapping dataset {mapping_key!r} has duplicate source coordinates"
+            )
+        source_dims = {d.key: d for d in source.dimensions}
+        for coordinate in mapping.source_coordinates:
+            if coordinate in source_dims:
+                continue
+            dimension_key, dot, attribute = coordinate.partition(".")
+            plan_dim = source_dims.get(dimension_key)
+            master = (
+                catalogue.dimensions.get(plan_dim.source)
+                if plan_dim and plan_dim.source else None
+            )
+            if not dot or master is None or attribute not in master.attributes:
+                raise CatalogueError(
+                    f"Mapping dataset {mapping_key!r}: source coordinate "
+                    f"{coordinate!r} is not a plan dimension or declared "
+                    "member attribute"
+                )
+            if (
+                master.extendability == "planner-extendable"
+                and attribute not in master.required_member_attributes
+            ):
+                raise CatalogueError(
+                    f"Mapping dataset {mapping_key!r}: attribute coordinate "
+                    f"{coordinate!r} must be required for planner-created "
+                    f"{master.key!r} members"
+                )
+        if not mapping.target_columns:
+            raise CatalogueError(
+                f"Mapping dataset {mapping_key!r} needs target_columns"
+            )
+        for column in [*mapping.source_coordinates, *mapping.target_columns]:
+            sql_column = column.replace(".", "__")
+            if not _SAFE_IDENTIFIER_RE.match(sql_column):
+                raise CatalogueError(
+                    f"Mapping dataset {mapping_key!r}: unsafe column {column!r}"
+                )
 
 
 def resolve_statement(catalogue: Catalogue, statement_name: str) -> list[str]:

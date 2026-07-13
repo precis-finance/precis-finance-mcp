@@ -1,6 +1,6 @@
 # ClickHouse: bundled or your own (data modes)
 
-Précis-MCP reads your financial model from ClickHouse. You make two decisions
+Précis Finance MCP reads your financial model from ClickHouse. You make two decisions
 about that ClickHouse: **where it runs** (a bundled one this stack starts for you,
 or your own cluster) and **what's in it** (an empty schema you'll feed with your
 own ingestion, or the synthetic demo data for a trial). Those two decisions are
@@ -88,7 +88,7 @@ pointing you at `--teardown` instead of silently creating a mismatch.
 Two things you provide:
 
 1. **Connection** — set `CHHOST` (and `CHPORT`/`CHUSER`/`CHPASSWORD` as needed) in
-   `deploy/.env` to a ClickHouse reachable from the Précis-MCP container. The
+   `deploy/.env` to a ClickHouse reachable from the Précis Finance MCP container. The
    bundled `clickhouse` service is **not** started in this mode. `deploy-mcp.sh`
    refuses to provision `byo` until `CHHOST` is set. **TLS:** if your cluster is
    remote, managed, or **ClickHouse Cloud**, set `CHSECURE=true` (the default

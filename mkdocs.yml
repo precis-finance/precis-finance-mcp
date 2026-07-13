@@ -1,4 +1,4 @@
-# MkDocs configuration for the published `precis-mcp` mirror. In the mirror,
+# MkDocs configuration for the published `precis-finance-mcp` mirror. In the mirror,
 # `open_docs/` *is* `docs/` (the MkDocs default), so no `docs_dir` override is
 # needed.
 #
@@ -6,7 +6,7 @@
 # Build site:     mkdocs build     (output in ./site)
 # The tooling ships in the dev extra:  pip install -e ".[dev]"
 
-site_name: Précis-MCP
+site_name: Précis Finance MCP
 site_url: https://docs.precis.finance/
 site_description: >-
   Self-hostable, read-only financial-model access over the Model Context
@@ -59,7 +59,7 @@ nav:
   - Home: README.md
   - Getting started:
       - Quickstart (local, dev-key): getting-started/quickstart.md
-      - How Précis-MCP works: getting-started/concepts.md
+      - How Précis Finance MCP works: getting-started/concepts.md
   - Excel add-in:
       - Overview & setup: excel/index.md
       - Function reference: excel/functions.md

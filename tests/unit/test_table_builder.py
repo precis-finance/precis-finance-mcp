@@ -203,7 +203,6 @@ class TestStatementCrosstabColumns:
 
 # ---------------------------------------------------------------------------
 # for_excel=True — resolved `nf` per value column + sparse per-row `alerts`
-# (the add-in enrichment, docs/precis-excel-addin-spec.md §5)
 # ---------------------------------------------------------------------------
 
 class TestForExcelEnrichment:

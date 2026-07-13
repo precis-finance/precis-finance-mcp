@@ -1,6 +1,6 @@
 # Adding read tools
 
-Précis-MCP exposes your financial model to MCP clients through a small set of
+Précis Finance MCP exposes your financial model to MCP clients through a small set of
 read-only tools — `run_statement`, `run_metric`, `inspect_rows`, the
 discovery tools, and the ingestion-status reads (the advertised set is
 catalogued in the [MCP tool reference](../reference/mcp-tools.md)). This
@@ -8,7 +8,7 @@ guide is the contract for adding a tool of your own: where the function
 lives, how it gets registered and advertised, what the permission gate does
 for you, and what your tool must still do itself.
 
-Everything here stays inside the `precis_mcp` package. Précis-MCP is read-only
+Everything here stays inside the `precis_mcp` package. Précis Finance MCP is read-only
 by design — a new tool may query ClickHouse, the catalogue, or the platform
 database, but it must not write to or mutate any of them.
 
@@ -327,10 +327,12 @@ emitters and richer output modes — that machinery is out of scope here.)
   catalogue if the tool reads scenario-bearing data, then enforce the scope
   against the query. Declaring the param without the catalogue entry means the
   gate never runs and nothing is injected — a silent authorization hole.
-- Filter visibility yourself when returning per-scenario metadata: the gate
-  only checks scenarios named in the *arguments*. `list_scenarios` in
-  `read_tools.py` shows the pattern — it drops rows the caller's
-  `permissions.scenarios[sid].tool_scopes` doesn't grant `read` on.
+- Filter visibility when returning per-scenario metadata: the gate only checks
+  scenarios named in the *arguments*. Reuse
+  `scenario_registry.readable_scenario_ids(permissions)` for the readable real
+  IDs and `filter_reporting_vocabulary(...)` when the result also contains
+  shifted/comparison keys. `list_scenarios` in `read_tools.py` is the canonical
+  pattern; do not reimplement the membership/dependency rules in each tool.
 - Use `@register_mcp_tool(mcp)` for any function with a `_`-prefixed
   parameter.
 
@@ -339,7 +341,7 @@ emitters and richer output modes — that machinery is out of scope here.)
 - Call `get_auth_context()` / `get_call_scope()` for things the injected
   params already give you — the contextvars are transport plumbing, set per
   request and cleared in the transport's `finally` block. (Reading
-  `get_auth_context().permissions` for visibility filtering, as
+  `get_auth_context().permissions` to feed the shared visibility helpers, as
   `list_scenarios` does, is the one legitimate direct use.)
 - Cache scope or identity across calls in module state.
 - Accept `user_id` or `_scope` from the client — you can't; the schema
@@ -450,5 +452,5 @@ passed as `_scope` actually constrains the result.
 - **Standing up the transports** — [quickstart](../getting-started/quickstart.md)
   for the dev server, [remote access](../deployment/oauth-keycloak.md) for the
   authenticated `/mcp` endpoint.
-- **Anything that writes.** Précis-MCP is the read surface; there is no
+- **Anything that writes.** Précis Finance MCP is the read surface; there is no
   supported path for a write tool in this package.

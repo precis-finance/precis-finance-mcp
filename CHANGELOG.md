@@ -1,6 +1,6 @@
 # Changelog
 
-Notable changes to the `precis-mcp` open package. Format follows
+Notable changes to the `precis-finance-mcp` open package. Format follows
 [Keep a Changelog](https://keepachangelog.com/); the question every entry
 answers is *"does this sync break my compose stack, my `instance/` files, or
 my client integration?"*
@@ -10,6 +10,40 @@ my client integration?"*
      the sync is pushed to the mirror. -->
 
 ## [Unreleased]
+
+## [0.2.4] - 2026-07-13
+
+### Added
+
+- **Grain-aware period queries.** Period bounds can use month, quarter, fiscal
+  year, week, or day codes where the selected domain declares that grain.
+  Prior-period queries use declared calendar dimensions for irregular week/day
+  boundaries, and average/closing rollups follow each domain's native grain.
+
+### Changed
+
+- **Published artifact names now match the renamed repository.** The Python
+  distribution is `precis-finance-mcp`, the image is
+  `ghcr.io/precis-finance/precis-finance-mcp`, and the installed admin commands
+  are `precis-finance-mcp-admin` and `precis-finance-mcp-clickhouse-init`. The
+  Python import namespace (`precis_mcp`), `PRECIS_MCP_TAG`, Compose project and
+  service names, OAuth scope, and telemetry service name remain stable.
+  **Upgrade action:** direct-install users should uninstall the Précis-built
+  `precis-mcp` distribution before installing `precis-finance-mcp`; package
+  managers treat them as two distributions even though both use the stable
+  `precis_mcp` import namespace. Update automation that invokes the renamed
+  admin commands, and pull the image from its new GHCR path.
+- The MCP Registry manifest advertises the credential-gated Précis demo as a
+  Streamable HTTP remote and directs prospective users to the demo access form.
+  The hosted demo contains synthetic data and is not anonymous access to a
+  user's own finance environment.
+
+### Fixed
+
+- The exported demo instance no longer carries integrated-planning catalogue or
+  semantic-view references that require the commercial writeback tier.
+- The package-only local Compose quickstart now tracks the current release tag
+  instead of pulling the older `0.2.1` image.
 
 ## [0.2.3] - 2026-07-03
 

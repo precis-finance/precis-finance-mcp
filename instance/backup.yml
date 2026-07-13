@@ -1,6 +1,6 @@
 # Declarative backup config — the single source of truth for the backup
 # subsystem. The ClickHouse backup-disk XML drop-in is GENERATED from this
-# file by `precis-mcp-admin backup init`; never hand-edit the rendered XML.
+# file by `precis-finance-mcp-admin backup init`; never hand-edit the rendered XML.
 #
 # This file holds credential REFERENCES (env-var prefixes), never values.
 # See operations/backups.md for the s3 variant and the

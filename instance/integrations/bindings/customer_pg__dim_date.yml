@@ -1,0 +1,28 @@
+# customer_pg × dim_date — day (business-day) calendar snapshot.
+#
+# Reads `gl.dim_date` from the customer's Postgres warehouse. Snapshot
+# binding — each load replaces the full `live.dim_date` content via
+# `EXCHANGE TABLES`. `seq` is materialised here as a dense global ordinal
+# over ordered days (row_number() OVER (ORDER BY day)); because `day` is
+# YYYY-MM-DD it sorts chronologically, so the ordinal is the prior-period
+# authority (predecessor = seq - 1) — the previous business day, since the
+# calendar holds business days only.
+
+id: customer_pg__dim_date
+target: live.dim_date
+source: customer_pg
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+
+extract:
+  query: |
+    SELECT
+        day,
+        row_number() OVER (ORDER BY day) AS seq
+    FROM gl.dim_date

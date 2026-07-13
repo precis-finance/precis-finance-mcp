@@ -127,7 +127,7 @@ Mode C: the IdP isn't emitting the claim — per-IdP setup in the
 
 ### 403 "User '…' not provisioned"
 
-Sign-in succeeded; the user doesn't exist in Précis-MCP. This is the
+Sign-in succeeded; the user doesn't exist in Précis Finance MCP. This is the
 provisioning gate working — existence in the IdP grants nothing. Create the
 user and assign a profile
 ([Remote access](../deployment/oauth-keycloak.md#create-the-first-admin-and-provision-users)).
@@ -210,7 +210,7 @@ reference.
 
 The source's `kind` (Snowflake, BigQuery, Databricks, MSSQL) needs a driver
 that ships as an optional extra. Install it where the load runs — `pip install
-'precis-mcp[snowflake]'` (or `[bigquery]` / `[databricks]` / `[mssql]`) — then
+'precis-finance-mcp[snowflake]'` (or `[bigquery]` / `[databricks]` / `[mssql]`) — then
 restart the process (server, scheduler, or watcher). In a compose deployment,
 add the extra to the image and rebuild. Postgres and file-drop sources need no
 extra.

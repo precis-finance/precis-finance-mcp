@@ -91,8 +91,8 @@ def test_all_five_tools_register(tools):
 def _seed_load_history(fake_db: FakePlatformDB, rows: list[dict]) -> None:
     """Inject pre-populated load_history rows into the FakePlatformDB.
 
-    FakePlatformDB doesn't natively know about load_history (the fake
-    predates Phase 0), so we route the seed through INSERT statements that
+    FakePlatformDB doesn't natively know about load_history, so we route the
+    seed through INSERT statements that
     its `_route_execute` handler will land into a generic table dict —
     or, simpler, attach a custom rows attribute the query stub can read.
     Tests treat the seed as a one-shot setup helper.

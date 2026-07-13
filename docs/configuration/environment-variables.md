@@ -1,6 +1,6 @@
 # Environment variable reference
 
-Every knob in precis-mcp is an environment variable — there is no config file
+Every knob in Précis Finance MCP is an environment variable — there is no config file
 beyond your model in `instance/` and the Compose bundles in `deploy/`. The
 deploy bundles read variables from `deploy/.env` (copy `deploy/.env.example`
 in the repository and edit); outside Compose, export them in the service's
@@ -32,7 +32,7 @@ by the server process itself.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PRECIS_MCP_TAG` | current release | Tag of `ghcr.io/precis-finance/precis-mcp` the app services pull. Compose uses this image when present and falls back to building from source when it is absent (or on `up --build`). Pin a version or a `@sha256:` digest for an immutable re-pull — see [Upgrading](../operations/upgrades.md#dependency-and-image-pinning). |
+| `PRECIS_MCP_TAG` | current release | Tag of `ghcr.io/precis-finance/precis-finance-mcp` the app services pull. Compose uses this image when present and falls back to building from source when it is absent (or on `up --build`). Pin a version or a `@sha256:` digest for an immutable re-pull — see [Upgrading](../operations/upgrades.md#dependency-and-image-pinning). |
 | `PRECIS_EXTRAS` | empty | Optional warehouse drivers baked into the image **at build time** (comma-separated: `bigquery,snowflake,mssql,databricks`). Only used on the build-from-source path; the published image is the core build without extras. |
 
 ## ClickHouse (the read layer)
@@ -172,7 +172,7 @@ A `Source` names a `secret_ref`; credentials are read from `<SECRET_REF>_*`
 Example: `secret_ref: customer_pg` (kind `postgres`) → `CUSTOMER_PG_HOST`,
 `CUSTOMER_PG_DATABASE`, `CUSTOMER_PG_USER`, `CUSTOMER_PG_PASSWORD`, … The
 non-Postgres kinds need their optional driver extra (`pip install
-'precis-mcp[snowflake]'`). See
+'precis-finance-mcp[snowflake]'`). See
 [Ingestion & data sources](ingestion.md#credentials).
 
 In both compose bundles the `CUSTOMER_PG_*` variables default to the bundled

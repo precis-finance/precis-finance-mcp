@@ -178,7 +178,7 @@ nothing else to register.
 
 Supported federated source kinds are `postgres`, `mssql`, `snowflake`,
 `bigquery`, and `databricks` (non-Postgres kinds need their optional driver
-extra, e.g. `pip install 'precis-mcp[snowflake]'`); the shared
+extra, e.g. `pip install 'precis-finance-mcp[snowflake]'`); the shared
 `precis_mcp/ingestion/ibis_backends.py::build_ibis_backend` factory is the
 extension point for new kinds. Only `postgres` is exercised end-to-end today.
 See
@@ -338,6 +338,52 @@ Either way, one ragged dimension expresses **one** hierarchy: to roll the same
 leaf up a different way — cost centres by organisation *and* by geography, SKUs by
 category *and* by brand — declare a **separate** ragged dimension; do not overload
 one dimension's `parents` chain to carry two trees.
+
+#### Time-grain dimensions (weekly / daily reporting)
+
+A period filter carries its grain in the code shape — `2025-06` (month),
+`2025-Q2` (quarter), `2025` (fiscal year), `2025-W37` (week), `2025-06-14` (day).
+Month, quarter, and fiscal year work on every fact out of the box. To let users
+filter and group by a **finer** grain (week or day), do four things:
+
+1. **Declare a leaf dimension with a `grain`** over a calendar table:
+
+   ```yaml
+   week:
+     label: Week
+     grain: week          # or: date  (for a day-grain dimension)
+     source:
+       table: dim_week
+       key_column: week
+   ```
+
+   `grain` is what the engine reads to route a period code (`2025-W37`) to this
+   dimension.
+
+2. **Add the calendar table** `dim_<grain>` — the code column plus a dense `seq`
+   ordinal (`week String, seq UInt32`, flat MergeTree `ORDER BY week`). `seq` is
+   the prior-period authority: the week before a week is `seq - 1`, which is the
+   only way to resolve "the previous week" across the 52/53-week year boundary
+   (month/quarter/year need no `seq` — their predecessor is arithmetic).
+   Materialise `seq` at ingestion with a snapshot binding whose extract computes
+   `row_number() OVER (ORDER BY week) AS seq`.
+
+3. **Project the grain column on the fact's semantic view** and bind it as a cube
+   dimension on the domain (`- key: week` / `source: week`). A finer grain is
+   queryable **only where its column is projected** — the engine reads the
+   column, it never derives one grain from another. That means you also decide how
+   a row maps up (a week's month, etc.) in your view SQL.
+
+4. **Set `native_grain_column` on the domain** to the fact's *true row grain* —
+   the finest grain at which each row is one observation (e.g. `day` for a daily
+   fact; the default is `period`). Average and closing metrics roll up on this
+   axis, so a month-filtered closing on a daily fact returns the last day of the
+   month. Declare the real row grain: a coarser mis-declaration makes `closing`
+   pick an arbitrary row.
+
+`sum` metrics need only steps 1–3. One current limit: a prior-year / prior-period
+comparison broken down by a grain finer than the filter grain is refused — filter
+at the breakdown grain (e.g. by week) to compare week-over-week.
 
 ### Step 3: Bind dimensions and metrics in a domain file
 

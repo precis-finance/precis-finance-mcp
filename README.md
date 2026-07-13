@@ -1,8 +1,8 @@
-# precis-mcp
+# Précis Finance MCP
 
 [![License: Elastic 2.0](https://img.shields.io/badge/license-Elastic%202.0-0D9488)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-server-0D9488)](https://modelcontextprotocol.io)
-[![CI](https://github.com/precis-finance/precis-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/precis-finance/precis-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/precis-finance/precis-finance-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/precis-finance/precis-finance-mcp/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-precis.finance-0D9488)](https://docs.precis.finance/)
 
 A read-only, self-hosted [MCP](https://modelcontextprotocol.io) server for FP&A
@@ -48,7 +48,7 @@ identity, and the MCP transport — and depends on nothing outside it.
   add-in at `/excel`; enable its OAuth client when you want live read-only
   workbook functions.
 
-## What precis-mcp looks like
+## What Précis Finance MCP looks like
 
 ![Claude, connected to Précis over MCP, rendering a governed P&L with comparatives and then drilling Revenue down to cost-centre level — sample data](docs/assets/precis-mcp-demo.gif)
 
@@ -83,7 +83,7 @@ centre."* · *"Show utilisation by month for the Digital Transformation team."*
 Full walkthrough, including the demo data and bringing your own model:
 [docs/getting-started/quickstart.md](docs/getting-started/quickstart.md).
 
-Rather do this on a call? We pair with early adopters to stand precis-mcp up
+Rather do this on a call? We pair with early adopters to stand Précis Finance MCP up
 against their own warehouse — [precis.finance](https://precis.finance) or
 [hello@precis.finance](mailto:hello@precis.finance).
 
@@ -144,7 +144,7 @@ Start with the mechanisms, not the promise.
   your warehouse, under your own access controls.
 - **Identity** — a local dev key, the bundled Keycloak (optionally federated to
   your IdP), or a direct external OIDC provider (Auth0 / Okta / Entra / Ping).
-- **Operator responsibility** — precis-mcp is designed to expose governed read
+- **Operator responsibility** — Précis Finance MCP is designed to expose governed read
   operations; you still deploy and operate it under your own security model.
   Disclosure policy: [SECURITY.md](SECURITY.md).
 
@@ -162,7 +162,7 @@ Full documentation: [docs.precis.finance](https://docs.precis.finance/).
 | Development | [adding read tools](docs/development/adding-read-tools.md) |
 | Security | [SECURITY.md](SECURITY.md) |
 
-## precis-mcp vs Précis
+## Précis Finance MCP vs Précis
 
 The deployment and data model you build here are the foundation the full
 [**Précis**](https://precis.finance) platform runs on. Précis is currently
@@ -173,7 +173,7 @@ prepares; the finance professional decides.
 
 ### What ships — and what doesn't
 
-**Ships in precis-mcp (Elastic License 2.0):** the MCP server and transport ·
+**Ships in Précis Finance MCP (Elastic License 2.0):** the MCP server and transport ·
 metric engine · financial-statement layouts · semantic SQL view pattern · YAML
 metric catalogue · sample finance model · ingestion path · hosted read-only
 Excel add-in · ClickHouse analytical store · PostgreSQL platform state · local
@@ -191,7 +191,7 @@ commercial support (unless separately agreed).
 
 ## Support and services
 
-precis-mcp is built to be self-serve, and the [documentation](https://docs.precis.finance/) aims to be
+Précis Finance MCP is built to be self-serve, and the [documentation](https://docs.precis.finance/) aims to be
 enough. If you'd like help beyond it — configuring your data model, a guided
 deployment, ongoing support, or a demo environment to evaluate against realistic
 data — book a setup session at [precis.finance](https://precis.finance) or write

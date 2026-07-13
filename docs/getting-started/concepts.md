@@ -1,4 +1,8 @@
-# How Précis-MCP works
+---
+description: Understand how Précis Finance MCP combines governed semantic views, a YAML finance catalogue, read-only tools, and identity controls.
+---
+
+# How Précis Finance MCP works
 
 One page on the moving parts and how they fit, before the per-topic guides go
 deep. The mental model: **you bring data and a description of your financial
@@ -38,7 +42,7 @@ metrics, dimensions, and statements (`catalogue/`), the ingestion
 configuration (`integrations/`), and the dataset registry
 (`scenarios.yml`). The repository ships a complete demo instance showing the
 shape; deployments mount their own over it. If you remember one thing: **code
-is the engine, `instance/` is the model** — adapting Précis-MCP to your
+is the engine, `instance/` is the model** — adapting Précis Finance MCP to your
 business means editing `instance/`, not Python.
 
 ## ClickHouse — the read layer
@@ -147,7 +151,7 @@ the [MCP tool reference](../reference/mcp-tools.md).
 
 ## What this package deliberately is not
 
-Précis-MCP is the **read-only access surface** of the Précis platform. It
+Précis Finance MCP is the **read-only access surface** of the Précis platform. It
 never writes to your data, and the agent runtime, planning and write-back,
 charts, Excel export, and report building live in the full platform, not
 here. The extension seams those features plug into are

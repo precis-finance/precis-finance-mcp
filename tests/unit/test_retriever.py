@@ -721,12 +721,13 @@ class TestPayrollDomain:
         sql, _ = results[0]
         assert "semantic.v_payroll" in sql
 
-    def test_headcount_uses_avg_rollup(self, catalogue):
-        """Headcount has rollup_method=avg, so aggregate mode should produce an avg query."""
+    def test_headcount_compat_key_uses_additive_fte_with_avg_rollup(self, catalogue):
+        """The legacy key now averages additive FTE rather than commit rows."""
         dq = _make_query(["headcount"], domain="payroll")
         results = generate_sql(dq, catalogue, [], None)
         assert len(results) == 1
         sql, _ = results[0]
+        assert "t.fte" in sql
         assert "NULLIF(COUNT(DISTINCT t.period), 0)" in sql
 
     def test_payroll_cost_metrics(self, catalogue):
@@ -738,7 +739,7 @@ class TestPayrollDomain:
         assert "total_payroll_cost" in sql
 
     def test_payroll_mixed_rollup(self, catalogue):
-        """headcount (avg) + salary (sum) should produce 2 queries in aggregate."""
+        """FTE via the legacy key (avg) + salary (sum) needs two queries."""
         dq = _make_query(["headcount", "gross_salary"], domain="payroll")
         results = generate_sql(dq, catalogue, [], None)
         assert len(results) == 2
@@ -773,7 +774,7 @@ class TestVersionedFlag:
 
     def test_unversioned_aggregate_no_commit_id(self, catalogue):
         """Aggregate mode on unversioned domain should also omit commit_id."""
-        dq = _make_query(["total_payroll_cost"], domain="payroll")
+        dq = _make_query(["hours_worked"], domain="timesheets")
         results = generate_sql(dq, catalogue, [], None)
         for sql, _ in results:
             assert "commit_id" not in sql

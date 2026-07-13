@@ -50,6 +50,11 @@ def _to_retriever_query(resolver_query: resolver.DataQuery) -> retriever.DataQue
         domain=resolver_query.domain,
         modifiers=resolver_query.modifiers,
         time_offset=resolver_query.time_offset,
+        period_column=resolver_query.period_column,
+        native_column=resolver_query.native_column,
+        calendar_table=resolver_query.calendar_table,
+        calendar_key=resolver_query.calendar_key,
+        query_extension=resolver_query.query_extension,
     )
 
 

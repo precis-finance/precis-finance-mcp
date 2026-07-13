@@ -2,10 +2,6 @@
 -- (from live.fact_plan) plus four statistical-account sections
 -- sourced from live.fact_timesheets + live.fact_payroll.
 --
--- OPEN TIER variant: identical to the Précis view except the plan leg
--- reads scenarios from live.fact_plan (static amounts) instead of the
--- Précis planning.entries delta table.
---
 -- Statistical accounts (9xxx) carry non-currency quantities — hours
 -- and FTEs — that need P&L-style rollup semantics so they appear
 -- alongside revenue / cost in summary reports:
@@ -47,24 +43,24 @@ WITH unified AS (
 
     UNION ALL
 
-    -- Plan / Budget / Forecast scenarios — open tier: from live.fact_plan
+    -- Plan / Budget / Forecast scenarios — static open-tier snapshots
     SELECT
         'ENT-001'                   AS entity_id,
-        p.account_code              AS account,
-        p.cost_centre               AS cost_centre,
-        p.period                    AS period,
-        p.scenario                  AS scenario,
-        SUM(p.amount)               AS amount,
-        CASE WHEN p.account_code IN ('9200', '9210') THEN 'avg'
+        e.account_code                   AS account,
+        e.cost_centre               AS cost_centre,
+        e.period                    AS period,
+        e.scenario                  AS scenario,
+        SUM(e.amount)         AS amount,
+        CASE WHEN e.account_code IN ('9200', '9210') THEN 'avg'
              ELSE 'sum'
         END                         AS rollup_method,
         '__plan__'                  AS commit_id,
         CAST(NULL AS Nullable(String)) AS hardcoded_account_name,
         CAST(NULL AS Nullable(String)) AS hardcoded_account_type,
         CAST(NULL AS Nullable(String)) AS hardcoded_fs_line
-    FROM live.fact_plan p
-    WHERE p.scenario != 'ACTUALS'
-    GROUP BY p.account_code, p.cost_centre, p.period, p.scenario
+    FROM live.fact_plan e
+    WHERE e.scenario != 'ACTUALS'
+    GROUP BY e.account_code, e.cost_centre, e.period, e.scenario
 
     UNION ALL
 
@@ -125,15 +121,15 @@ WITH unified AS (
 )
 
 SELECT
-    concat(u.entity_id, u.account, u.cost_centre, u.period, u.scenario) AS pk,
     u.entity_id,
     u.account,
     coalesce(u.hardcoded_account_name, ad.account_name, 'Unknown') AS account_name,
     coalesce(u.hardcoded_account_type, ad.account_type, 'Unknown') AS account_type,
     coalesce(u.hardcoded_fs_line,      ad.fs_line,      'Unknown') AS fs_line,
     u.cost_centre                  AS cost_centre,
-    coalesce(cc.department, '')    AS department,
-    coalesce(cc.division, '')      AS division,
+    -- Cost-centre hierarchy parents (department/division) are resolved by the
+    -- engine via a leaf-dimension join at query time, so they are not
+    -- denormalised here. account_type/fs_line stay (metric `where:` + display).
     u.period                       AS period,
     coalesce(pd.quarter, '')       AS quarter,
     coalesce(pd.fiscal_year, '')   AS fiscal_year,
@@ -143,7 +139,6 @@ SELECT
     u.commit_id                    AS commit_id
 FROM unified u
 LEFT JOIN live.dim_account     ad ON u.account     = ad.account_code
-LEFT JOIN live.dim_cost_centre cc ON u.cost_centre = cc.cost_centre
 LEFT JOIN live.dim_period      pd ON u.period      = pd.period
 -- Exclude BS lines from the actuals slice only (plan can include BS).
 -- Statistical sections set hardcoded_fs_line='Statistical' so they

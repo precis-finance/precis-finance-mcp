@@ -2,10 +2,11 @@
 # Copyright (c) 2026 Sergio Naval Marimont
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from precis_mcp.engine.period_codes import Grain, detect_grain
+from precis_mcp.engine.query_extensions import scenario_query_data
 from precis_mcp.engine.catalogue import (
     BaseMetric,
     Catalogue,
@@ -44,12 +45,20 @@ class DataQuery:
     """A query to execute against ClickHouse."""
     scenario_key: str               # scenario alias/key (e.g. 'actuals', 'actuals_py')
     scenario_id: str                # ClickHouse scenario value (e.g. 'ACTUALS')
-    period_start: str               # YYYY-MM
-    period_end: str                 # YYYY-MM
+    period_start: str               # period code at the filter grain (e.g. '2025-01', '2025-Q1')
+    period_end: str                 # period code at the filter grain
     metric_keys: list[str]          # base metric keys needed from this query
     domain: str = "pnl"            # catalogue domain
     modifiers: dict[str, str] = field(default_factory=dict)  # e.g. {"uncommitted": "", "commit": "abc123"} (inferred from base metrics)
     time_offset: int = 0            # shifted scenario offset in months (e.g. -12 for prior_year)
+    period_column: str = "period"   # fact-view column the range filter targets (grain-dependent)
+    native_column: str = "period"   # fact's native time-grain column — avg/closing rollup axis
+    # Irregular-grain prior-period (week/date): the predecessor has no closed
+    # form, so the retriever resolves it via the calendar's dense seq. These name
+    # the calendar to join; empty means a normal (arithmetic) window shift.
+    calendar_table: str = ""        # e.g. 'semantic.dim_week'
+    calendar_key: str = ""          # its key column, e.g. 'week'
+    query_extension: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -98,14 +107,54 @@ class ResolverError(Exception):
 # Period helpers
 # ---------------------------------------------------------------------------
 
-_PERIOD_RE = re.compile(r"^\d{4}-\d{2}$")
+def _period_column_for_grain(catalogue: Catalogue, domain: str, grain: Grain) -> str:
+    """Map a filter grain to its fact-view column for a domain.
+
+    Resolution is domain-aware: the universal period hierarchy (the ``period``
+    leaf plus its denormalised ``quarter`` / ``fiscal_year`` parents, present on
+    every fact view) is always available, but a finer grain such as ``week`` only
+    resolves when the domain declares a cube dimension bound to a master
+    dimension carrying that grain.
+
+    Month is not resolved here — it is always the ``period`` leaf column, a
+    platform-wide invariant, so callers short-circuit it before calling this.
+    """
+    # column -> grain, from the universal period hierarchy + this domain's
+    # declared grain columns.
+    options: dict[str, Grain] = {}
+    period_dim = catalogue.dimensions.get("period")
+    if period_dim:
+        if period_dim.grain:
+            options["period"] = period_dim.grain
+        for parent_key in period_dim.parents:
+            parent = catalogue.dimensions.get(parent_key)
+            if parent and parent.grain:
+                options[parent_key] = parent.grain
+    domain_cat = catalogue.domains.get(domain)
+    if domain_cat:
+        for cd in domain_cat.dimensions:
+            dim = catalogue.dimensions.get(cd.key)
+            if dim and dim.grain:
+                options[cd.source or cd.key] = dim.grain
+
+    for column, column_grain in options.items():
+        if column_grain == grain:
+            return column
+    supported = sorted({g.value for g in options.values()})
+    raise ResolverError(
+        f"Period filter grain {grain.value!r} is not supported for domain "
+        f"{domain!r}. Supported grains: {', '.join(supported) or 'none'}."
+    )
 
 
-def _validate_period_format(period: str, field_name: str) -> None:
-    if not _PERIOD_RE.match(period):
-        raise ResolverError(
-            f"Invalid period format for {field_name!r}: {period!r}. Expected YYYY-MM."
-        )
+def _calendar_for_grain(catalogue: Catalogue, grain: Grain) -> tuple[str, str] | None:
+    """The (table, key_column) of the leaf calendar dimension for an irregular
+    grain — the retriever joins it to resolve prior-period via its dense ``seq``.
+    Returns None if no calendar dimension carries the grain."""
+    for dim in catalogue.dimensions.values():
+        if dim.grain == grain and dim.source is not None:
+            return dim.source.table, dim.source.key_column
+    return None
 
 
 def shift_period(period: str, months: int) -> str:
@@ -114,6 +163,44 @@ def shift_period(period: str, months: int) -> str:
     total_months = year * 12 + (month - 1) + months
     new_year, new_month = divmod(total_months, 12)
     return f"{new_year:04d}-{new_month + 1:02d}"
+
+
+def shift_year(code: str, years: int) -> str:
+    """Shift the year component of a period code, grain-preserving (prior year
+    uses years=-1). Only the leading 4-digit year token changes, so this is
+    correct for every grain: 2025-06 -> 2024-06, 2025-Q2 -> 2024-Q2, 2025 -> 2024.
+    """
+    return f"{int(code[:4]) + years:04d}{code[4:]}"
+
+
+# Whole-months in one step of each regular grain, for the month-equivalent shift
+# the retriever's inverse remap consumes. Irregular grains (week/date) have no
+# constant month-equivalent and are handled via a declared calendar dimension.
+_STEP_MONTHS: dict[Grain, int] = {Grain.MONTH: 1, Grain.QUARTER: 3, Grain.YEAR: 12}
+
+# Grain fineness (finest = 0), for the shifted-scenario breakdown guard below.
+_GRAIN_RANK: dict[Grain, int] = {
+    Grain.DATE: 0, Grain.WEEK: 1, Grain.MONTH: 2, Grain.QUARTER: 3, Grain.YEAR: 4,
+}
+
+
+def step_period(code: str, grain: Grain, steps: int) -> str:
+    """Step a period code by whole periods at its grain (prior period uses
+    steps=-1). Regular grains only — month/quarter/year have a closed-form
+    predecessor with a clean year-borrow. Week/date use calendar-based
+    resolution and therefore raise when passed to this arithmetic helper.
+    """
+    if grain is Grain.MONTH:
+        return shift_period(code, steps)
+    if grain is Grain.QUARTER:
+        year, quarter = int(code[:4]), int(code[6])  # 'YYYY-QN'
+        new_year, new_q = divmod(year * 4 + (quarter - 1) + steps, 4)
+        return f"{new_year:04d}-Q{new_q + 1}"
+    if grain is Grain.YEAR:
+        return f"{int(code) + steps:04d}"
+    raise ResolverError(
+        f"Prior-period at {grain.value!r} grain requires calendar-based resolution."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -340,9 +427,20 @@ def resolve(
     else:
         raise ResolverError("Request must have a 'context' dict (or legacy 'filters' dict)")
 
-    # 1b. Validate period format
-    _validate_period_format(period_start, "period_start")
-    _validate_period_format(period_end, "period_end")
+    # 1b. Detect and validate the filter grain. A period code self-describes its
+    # grain (period_codes); both bounds must share one. Column resolution and
+    # domain compatibility checks happen below, once metrics are known.
+    filter_grain = detect_grain(period_start)
+    grain_end = detect_grain(period_end)
+    if filter_grain is None:
+        raise ResolverError(f"Invalid period format for 'period_start': {period_start!r}.")
+    if grain_end is None:
+        raise ResolverError(f"Invalid period format for 'period_end': {period_end!r}.")
+    if filter_grain is not grain_end:
+        raise ResolverError(
+            f"period_start and period_end must be the same grain: got "
+            f"{filter_grain.value!r} and {grain_end.value!r}."
+        )
 
     if period_start > period_end:
         raise ResolverError(
@@ -554,16 +652,64 @@ def resolve(
                 period_end=period_end,
                 metric_keys=[],
                 modifiers=modifiers,
+                query_extension=scenario_query_data(scenario, scenario_registry),
             )
         elif isinstance(scenario, ShiftedScenarioRef):
+            # A shifted scenario (PY/PP) broken down by a time
+            # grain FINER than the filter grain would shift at the filter grain
+            # and misalign the comparison (e.g. filter by month, break by week —
+            # the shifted window covers a different set of weeks). Refuse the
+            # incompatible shape; a same-grain or coarser breakdown is valid.
+            for _dn in dimensions:
+                _bd = catalogue.dimensions.get(_dn)
+                if (_bd is not None and _bd.grain is not None
+                        and _GRAIN_RANK[_bd.grain] < _GRAIN_RANK[filter_grain]):
+                    raise ResolverError(
+                        f"Prior-period / prior-year with a {_bd.grain.value!r} "
+                        f"breakdown needs the period filter at {_bd.grain.value!r} "
+                        f"grain (the bounds are {filter_grain.value!r}) so the "
+                        f"comparison aligns period-over-period. Filter at "
+                        f"{_bd.grain.value} grain, or drop the {_bd.grain.value} "
+                        f"breakdown."
+                    )
+            # Grain-aware shift. year_shift (PY) decrements the year token and is
+            # closed-form at every grain. period_step (PP) is closed-form for the
+            # regular grains (month/quarter/year) but not for the irregular ones
+            # (week/date), whose predecessor across the 52/53-week or month-length
+            # boundary is only known from the calendar — so those keep the
+            # original window and carry the calendar for the retriever to resolve
+            # via seq. time_offset stays the month-equivalent the arithmetic
+            # inverse remap consumes (0 for the calendar path — no remap).
+            cal_table = cal_key = ""
+            if scenario.shift_op == "year_shift":
+                shifted_start = shift_year(period_start, -1)
+                shifted_end = shift_year(period_end, -1)
+                month_equiv = -12
+            elif filter_grain in (Grain.WEEK, Grain.DATE):
+                calendar = _calendar_for_grain(catalogue, filter_grain)
+                if calendar is None:
+                    raise ResolverError(
+                        f"Prior-period at {filter_grain.value!r} grain needs a "
+                        f"calendar dimension with a seq column, but none is declared."
+                    )
+                cal_table, cal_key = calendar
+                shifted_start, shifted_end = period_start, period_end
+                month_equiv = 0
+            else:  # regular-grain period_step
+                shifted_start = step_period(period_start, filter_grain, -1)
+                shifted_end = step_period(period_end, filter_grain, -1)
+                month_equiv = -_STEP_MONTHS.get(filter_grain, 1)
             data_queries_map[key] = DataQuery(
                 scenario_key=key,
                 scenario_id=scenario.base.scenario_id,
-                period_start=shift_period(period_start, scenario.time_offset_months),
-                period_end=shift_period(period_end, scenario.time_offset_months),
+                period_start=shifted_start,
+                period_end=shifted_end,
                 metric_keys=[],
                 modifiers=modifiers,
-                time_offset=scenario.time_offset_months,
+                time_offset=month_equiv,
+                calendar_table=cal_table,
+                calendar_key=cal_key,
+                query_extension=scenario_query_data(scenario, scenario_registry),
             )
         else:
             raise ResolverError(f"Scenario {base!r} does not resolve to a data query")
@@ -598,6 +744,18 @@ def resolve(
         first_base = catalogue.metrics[all_base_metric_keys[0]]
         if isinstance(first_base, BaseMetric):
             domain = first_base.domain
+
+    # Resolve the fact-view column the range filter targets. Month is always the
+    # period leaf; other grains resolve via the catalogue's calendar dimensions.
+    # (No additive-only guard: avg/closing are grain-aware — the retriever keys
+    # them off the domain's native grain column, see native_column below.)
+    period_column = "period"
+    if filter_grain is not Grain.MONTH:
+        period_column = _period_column_for_grain(catalogue, domain, filter_grain)
+
+    # The domain's native time-grain column — the avg/closing rollup axis.
+    _domain_cat = catalogue.domains.get(domain)
+    native_column = _domain_cat.native_grain_column if _domain_cat else "period"
 
     # ------------------------------------------------------------------
     # Validate dimensions against domain
@@ -671,17 +829,24 @@ def resolve(
     for dq in data_queries_map.values():
         dq.metric_keys = list(all_base_metric_keys)
         dq.domain = domain
+        dq.period_column = period_column
+        dq.native_column = native_column
 
     # Deduplicate DataQuery: if two scenario_keys produce identical
     # (scenario_id, period_start, period_end, modifiers), merge into one.
     # Modifiers must be part of the key — same base scenario with different
-    # modifiers produces different SQL and different data.
+    # modifiers produces different SQL and different data. The calendar
+    # (irregular-grain prior-period) must be part of the key too: a calendar-
+    # shift PP keeps the *original* window and its base scenario_id, so without
+    # it the PP query collides with the base actuals query and is dropped —
+    # different SQL (seq-join predecessors), different data.
     dedup_map: dict[tuple, DataQuery] = {}
     data_queries: list[DataQuery] = []
     for key in sorted(data_queries_map.keys()):
         dq = data_queries_map[key]
         modifiers_frozen = tuple(sorted(dq.modifiers.items()))
-        dedup_key = (dq.scenario_id, dq.period_start, dq.period_end, modifiers_frozen)
+        dedup_key = (dq.scenario_id, dq.period_start, dq.period_end,
+                     modifiers_frozen, dq.calendar_table, dq.calendar_key)
         if dedup_key not in dedup_map:
             dedup_map[dedup_key] = dq
             data_queries.append(dq)

@@ -14,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 
 COMPATIBILITY_ALIASES = {
@@ -24,6 +24,69 @@ COMPATIBILITY_ALIASES = {
 
 RESERVED_ALIAS_FRAGMENTS = ("_vs_",)
 RESERVED_ALIAS_SUFFIXES = ("_py", "_pp", "_pct")
+
+
+def readable_scenario_ids(permissions: Any | None) -> frozenset[str] | None:
+    """Return readable real scenario IDs, or ``None`` for an unfiltered view.
+
+    ``permissions=None`` is the explicit dev/test harness mode. Administrators
+    retain the existing all-scenarios discovery behaviour. A non-admin with no
+    readable scenarios returns an empty set and therefore sees no vocabulary.
+    """
+    if permissions is None or bool(getattr(permissions, "is_admin", False)):
+        return None
+    scenarios = getattr(permissions, "scenarios", {}) or {}
+    return frozenset(
+        scenario_id
+        for scenario_id, scenario_permissions in scenarios.items()
+        if "read" in (getattr(scenario_permissions, "tool_scopes", {}) or {})
+    )
+
+
+def filter_reporting_vocabulary(
+    vocabulary: dict[str, Any],
+    allowed_scenario_ids: frozenset[str] | set[str] | None,
+) -> dict[str, Any]:
+    """Apply one real-scenario visibility policy to prompt and discovery data."""
+    if allowed_scenario_ids is None:
+        return vocabulary
+
+    allowed = set(allowed_scenario_ids)
+    real_rows = [
+        row for row in vocabulary.get("real", [])
+        if row.get("scenario_id") in allowed
+    ]
+    shifted_rows = [
+        row for row in vocabulary.get("shifted", [])
+        if row.get("base_scenario_id") in allowed
+    ]
+    comparison_rows = []
+    for row in vocabulary.get("comparisons", []):
+        dependencies = set(row.get("scenario_ids", []))
+        if dependencies and dependencies.issubset(allowed):
+            comparison_rows.append(row)
+
+    visible_refs = {
+        value
+        for row in real_rows + shifted_rows
+        for value in (
+            row.get("scenario"),
+            row.get("alias"),
+            row.get("scenario_id"),
+        )
+        if value
+    }
+    compatibility_rows = [
+        row for row in vocabulary.get("compatibility_aliases", [])
+        if row.get("resolves_to") in visible_refs
+    ]
+
+    return {
+        "real": real_rows,
+        "shifted": shifted_rows,
+        "comparisons": comparison_rows,
+        "compatibility_aliases": compatibility_rows,
+    }
 
 
 class ScenarioRegistryError(Exception):
@@ -69,9 +132,12 @@ class RealScenarioRef:
 class ShiftedScenarioRef:
     key: str
     base: RealScenarioRef
-    time_offset_months: int
+    time_offset_months: int      # month-equivalent of the shift (compat/display)
     label: str
     description: str
+    # The shift operation, applied grain-aware by the resolver. year_shift =
+    # prior year (decrement the year token); period_step = prior period at grain.
+    shift_op: Literal["year_shift", "period_step"] = "year_shift"
     node_type: Literal["shifted"] = "shifted"
 
 
@@ -313,9 +379,9 @@ class ScenarioRegistry:
         }
 
     def _resolve_shifted(self, key: str) -> ShiftedScenarioRef | None:
-        for suffix, offset, label_suffix in (
-            ("_py", -12, "PY"),
-            ("_pp", -1, "PP"),
+        for suffix, offset, label_suffix, shift_op in (
+            ("_py", -12, "PY", "year_shift"),
+            ("_pp", -1, "PP", "period_step"),
         ):
             if not key.endswith(suffix):
                 continue
@@ -332,6 +398,7 @@ class ScenarioRegistry:
                     f"{base.name} shifted by {offset} month"
                     f"{'' if abs(offset) == 1 else 's'}."
                 ),
+                shift_op=cast(Literal["year_shift", "period_step"], shift_op),
             )
         return None
 

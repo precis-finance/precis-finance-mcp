@@ -1,4 +1,4 @@
-# Dockerfile.open — staged image build for the open `precis-mcp` package.
+# Dockerfile.open — staged image build for the open `precis-finance-mcp` package.
 #
 # The open compose bundles (deploy/docker-compose*.yml) build
 # with `context: ..` + `dockerfile: Dockerfile`, so they pick this up unchanged

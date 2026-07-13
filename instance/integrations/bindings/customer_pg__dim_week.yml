@@ -1,0 +1,28 @@
+# customer_pg × dim_week — ISO-week calendar snapshot.
+#
+# Reads `gl.dim_week` from the customer's Postgres warehouse. Snapshot
+# binding — each load replaces the full `live.dim_week` content via
+# `EXCHANGE TABLES`. `seq` is materialised here as a dense global ordinal
+# over ordered weeks (row_number() OVER (ORDER BY week)); because `week` is
+# zero-padded YYYY-Www it sorts chronologically, so the ordinal is the
+# prior-period authority (predecessor = seq - 1) across the 52/53-week
+# year boundary, which has no closed form.
+
+id: customer_pg__dim_week
+target: live.dim_week
+source: customer_pg
+scenario: ACTUALS
+kind: snapshot
+
+schedule:
+  mode: push
+  push_auth:
+    role: ingest_admin
+    binding_token_ref: customer_pg_token
+
+extract:
+  query: |
+    SELECT
+        week,
+        row_number() OVER (ORDER BY week) AS seq
+    FROM gl.dim_week

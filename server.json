@@ -1,11 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.precis-finance/precis-mcp",
-  "description": "Read-only MCP server for FP&A and management reporting — governed metrics, financial statements, and drill-down over your own SQL warehouse. The open core of Précis.",
-  "version": "0.2.3",
-  "websiteUrl": "https://precis.finance",
+  "name": "io.github.precis-finance/precis-finance-mcp",
+  "title": "Précis Finance MCP",
+  "description": "Credential-gated read-only demo of Précis Finance MCP using synthetic financial data. Request access on the Précis website.",
+  "version": "0.2.4",
+  "websiteUrl": "https://precis.finance/mcp",
   "repository": {
-    "url": "https://github.com/precis-finance/precis-mcp",
+    "url": "https://github.com/precis-finance/precis-finance-mcp",
     "source": "github"
-  }
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://mcp.precis.finance/mcp"
+    }
+  ]
 }

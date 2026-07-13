@@ -1,4 +1,4 @@
-# ci.yml — CI for the open `precis-mcp` repository.
+# ci.yml — CI for the open `precis-finance-mcp` repository.
 #
 # Staged at deploy/ci/ci.yml; published to
 # .github/workflows/ci.yml (GitHub Actions only runs workflows under
@@ -68,11 +68,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Build the image
-        run: docker build -t precis-mcp:scan .
+        run: docker build -t precis-finance-mcp:scan .
       - name: Trivy scan (fixable HIGH/CRITICAL gate)
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: precis-mcp:scan
+          image-ref: precis-finance-mcp:scan
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL

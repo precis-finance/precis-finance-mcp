@@ -394,6 +394,10 @@ def ensure_user_directory(user_id: str) -> str:
         <USER_DATA_DIR>/<user_id>/sandbox_outputs/   — per-run sandbox staging,
                                                        picked up by the API for
                                                        registration
+        <USER_DATA_DIR>/<user_id>/sandbox_staging/   — per-call input staging
+                                                       (data-ref payloads the
+                                                       API materialises for the
+                                                       runner)
 
     All metadata (credentials, permissions, profile, workstreams, memories,
     tasks, files registry) lives in PostgreSQL.
@@ -403,7 +407,7 @@ def ensure_user_directory(user_id: str) -> str:
     volume.
     """
     base = Path(_user_data_base()) / user_id
-    for subdir in ("", "blobs", "sandbox_outputs"):
+    for subdir in ("", "blobs", "sandbox_outputs", "sandbox_staging"):
         p = base / subdir
         p.mkdir(parents=True, exist_ok=True)
         chown_sandbox(p)

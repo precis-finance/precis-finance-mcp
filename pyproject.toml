@@ -1,5 +1,5 @@
 # pyproject-open.toml — staged standalone packaging metadata for the open
-# `precis-mcp` package.
+# `precis-finance-mcp` distribution.
 #
 # Why this name: in the Précis monorepo this cannot be `pyproject.toml` — that
 # name is taken by the root file carrying the import-linter boundary contract.
@@ -16,8 +16,8 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "precis-mcp"
-version = "0.2.3"
+name = "precis-finance-mcp"
+version = "0.2.4"
 description = "Read-only financial-data access over MCP — the open core of Précis (metric engine, semantic layer, ingestion, ClickHouse read layer, MCP transport, OIDC auth)."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -114,6 +114,8 @@ telemetry = [
 # (scripts/check_no_commercial_imports.py) is the boundary guard there.
 dev = [
     "pytest",
+    # Starlette 1.x moved TestClient onto the separate httpx2 package.
+    "httpx2>=2.0.0",
     "fakeredis",
     "mkdocs-material",
     "mkdocs-git-revision-date-localized-plugin",
@@ -122,8 +124,8 @@ dev = [
 ]
 
 [project.scripts]
-precis-mcp-admin = "precis_mcp.admin_cli:main"
-precis-mcp-clickhouse-init = "precis_mcp.clickhouse_init:main"
+precis-finance-mcp-admin = "precis_mcp.admin_cli:main"
+precis-finance-mcp-clickhouse-init = "precis_mcp.clickhouse_init:main"
 # The two servers run as modules, no console-script wrapper:
 #   single-user local trial : python -m precis_mcp.server
 #   multi-user remote (ASGI) : uvicorn precis_mcp.app_open:app

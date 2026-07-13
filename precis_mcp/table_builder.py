@@ -92,9 +92,9 @@ def _enrich_block_for_excel(block: dict) -> None:
 
     Off by default (see ``build_financial_table_block(for_excel=…)``) so the
     high-volume SSE / report paths stay lean; only the MCP render variant — the
-    surface the add-in calls — turns it on. See
-    docs/precis-excel-addin-spec.md §5 (the in-place enrichment supersedes the
-    separate ``grid`` projection the spec originally sketched in §5.1).
+    surface the add-in calls — turns it on. The existing ``columns`` and
+    ``rows`` remain authoritative; enrichment adds formatting metadata without
+    introducing a second grid representation.
     """
     columns = block.get("columns", [])
     value_cols = columns[1:] if columns else []

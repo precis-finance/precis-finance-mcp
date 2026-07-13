@@ -18,6 +18,15 @@ user needs:
 Figures default to thousands with one decimal place unless you pass `scale` /
 `decimals` explicitly.
 
+**Period filters are grain-tagged.** `period_start` / `period_end` take a period
+code whose shape sets the grain: `2025-06` (month), `2025-Q2` (quarter), `2025`
+(fiscal year), `2025-W37` (week), `2025-06-14` (day). Both bounds must share a
+grain. Month/quarter/fiscal-year work on every statement; week and day only where
+the domain's data carries them — `list_dimensions` reports each dimension's grain,
+and an unsupported grain is rejected with the supported set named. Prior-year and
+prior-period comparisons work at any grain, and sum / avg / closing metrics roll
+up correctly at each grain.
+
 Utility tools — `list_scenarios`, `list_kpis`, `list_dimensions`,
 `search_hierarchy`, `list_inspection_sources`, `get_inspection_schema`,
 `inspect_rows`, `list_variants` — discover valid scenario ids, metric keys,

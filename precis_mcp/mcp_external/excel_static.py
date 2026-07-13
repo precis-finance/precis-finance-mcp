@@ -58,8 +58,7 @@ def _issuer_origin() -> str | None:
 
 def _excel_headers() -> dict[str, str]:
     """Security headers for ``/excel``, set by the app so they are identical
-    behind any proxy (Caddy on the open server, hardened nginx on the commercial
-    demo, a customer's own ingress).
+    behind any proxy (the bundled Caddy service or a customer's own ingress).
 
     The add-in is a public, read-only static bundle that *must* be framable by
     Excel and load office.js cross-origin — the opposite of the SPA's posture —

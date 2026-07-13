@@ -165,4 +165,4 @@ def test_missing_extra_names_the_extra(monkeypatch):
     monkeypatch.setitem(sys.modules, "ibis", _NoDriver())
     with pytest.raises(IntegrationConfigError) as exc:
         build_ibis_backend(_source("snowflake"))
-    assert "precis-mcp[snowflake]" in str(exc.value)
+    assert "precis-finance-mcp[snowflake]" in str(exc.value)

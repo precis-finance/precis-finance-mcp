@@ -3,7 +3,7 @@
 When more than one person uses your server, you need real sign-in. MCP clients
 authenticate to a remote server with **OAuth 2.1 + PKCE** and discover the
 sign-in endpoint via [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728), so you
-need an OIDC authorization server in front of Précis-MCP.
+need an OIDC authorization server in front of Précis Finance MCP.
 
 You pick the sign-in posture at install with **one variable, `PRECIS_AUTH_MODE`**:
 
@@ -28,7 +28,7 @@ per-user permission model, and provisioning are identical across all three.
 
 ## Mode B — bundled Keycloak (`PRECIS_AUTH_MODE=keycloak`)
 
-Précis-MCP ships a ready-to-run Keycloak in the bundled `docker-compose`, with a
+Précis Finance MCP ships a ready-to-run Keycloak in the bundled `docker-compose`, with a
 committed realm (sign-in client, the `precis_user_id` user mapper, and the
 audience mapper for `/mcp`) plus a per-deploy reconcile. You don't configure OIDC
 by hand.
@@ -50,7 +50,7 @@ Bring it up:
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-This pulls the pinned published image (`ghcr.io/precis-finance/precis-mcp`,
+This pulls the pinned published image (`ghcr.io/precis-finance/precis-finance-mcp`,
 selected by `PRECIS_MCP_TAG`) and starts your data store, the bundled Keycloak
 with its seeded realm, and the server. Pulling a pinned release is the default;
 `docker compose … up -d --build` builds from source instead (rolling `main` /
@@ -72,7 +72,7 @@ baked into the published image and served at `/excel`; see
 ## Mode C — your own OIDC IdP (`PRECIS_AUTH_MODE=oidc`)
 
 No Keycloak runs. The verifier points straight at your IdP. Register a client in
-your IdP and tell Précis-MCP about the issuer:
+your IdP and tell Précis Finance MCP about the issuer:
 
 | Variable | Purpose |
 |---|---|
@@ -95,7 +95,7 @@ Two things to know:
   need DCR** — if your IdP doesn't offer it, use mode B (Keycloak brokering).
 - **Stable identity claim.** Map `PRECIS_IDENTITY_CLAIM` to a *stable, unique*
   claim (e.g. an immutable subject / `oid`), not a mutable email. If it differs
-  from your Précis-MCP user ids, set `PRECIS_IDENTITY_COLUMN=external_id` and
+  from your Précis Finance MCP user ids, set `PRECIS_IDENTITY_COLUMN=external_id` and
   store the IdP value with `create-user --external-id` (below).
 - **Excel add-in uses a separate public client.** If you enable the hosted Excel
   add-in in mode C, register a public PKCE client in your IdP with callback
@@ -107,7 +107,7 @@ Two things to know:
 ## Create the first admin and provision users
 
 Being signed in by the IdP grants nothing — each user must also exist in
-Précis-MCP with a profile, and the UI can't bootstrap itself. The simplest path
+Précis Finance MCP with a profile, and the UI can't bootstrap itself. The simplest path
 is to let the deploy create it — pass `--admin-id` on your `deploy-mcp.sh` run
 (or set `PRECIS_BOOTSTRAP_ADMIN_ID` in `deploy/.env`):
 

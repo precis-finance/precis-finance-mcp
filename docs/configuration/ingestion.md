@@ -1,10 +1,14 @@
+---
+description: Configure governed ingestion from finance source systems into the Précis Finance MCP ClickHouse read layer and validate each pipeline stage.
+---
+
 # Ingestion & data sources
 
 Ingestion loads your actuals and master data into the ClickHouse read layer the
 engine queries. If you already populate that layer yourself — your data team
 materialises the `live.*` tables and `semantic.*` views — you can skip this
 entirely and run [query-only](../getting-started/quickstart.md). This page is
-for letting Précis-MCP pull from your own sources.
+for letting Précis Finance MCP pull from your own sources.
 
 It applies to both [data modes](../deployment/clickhouse-data-modes.md) where
 you bring your own data: a bundled ClickHouse provisioned empty
@@ -35,8 +39,8 @@ files are a working reference configuration.
   Sources are read through [Ibis](https://ibis-project.org/). Postgres and file
   drops work out of the box; the other warehouses need their optional driver
   extra — the source factory raises naming the extra if it is absent. How you
-  install it depends on how you run Précis-MCP:
-    - **pip install** (single-user / local): `pip install 'precis-mcp[snowflake]'`
+  install it depends on how you run Précis Finance MCP:
+    - **pip install** (single-user / local): `pip install 'precis-finance-mcp[snowflake]'`
       (or `[bigquery]`, `[mssql]`, `[databricks]`).
     - **Docker** (the bundled stacks): bake the driver into the image at build
       with the `PRECIS_EXTRAS` build arg — `bash scripts/deploy-mcp.sh --extras bigquery`
@@ -203,7 +207,7 @@ with `from_service_account_info`.
 Omit it to fall back to Application Default Credentials
 (`GOOGLE_APPLICATION_CREDENTIALS`, `gcloud auth application-default login`, or a
 GCP metadata server). No `_SSLMODE` applies — BigQuery connects over
-Google-managed HTTPS. Install the driver with `pip install 'precis-mcp[bigquery]'`.
+Google-managed HTTPS. Install the driver with `pip install 'precis-finance-mcp[bigquery]'`.
 
 ## Describing a binding
 

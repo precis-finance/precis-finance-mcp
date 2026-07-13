@@ -7,7 +7,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from precis_mcp.engine.catalogue import BaseMetric, Catalogue, DerivedMetric, MetricPredicate
-from precis_mcp.engine.resolver import GrainSpec, shift_period
+from precis_mcp.engine.query_extensions import scenario_sql_scope
+from precis_mcp.engine.resolver import GrainSpec, shift_period, shift_year
 from precis_mcp.engine.types import ROLLED_UP, DimensionKey, RawResults
 
 # Column names in dimension filters must be valid SQL identifiers.
@@ -21,7 +22,9 @@ _FACT = "t"
 # Time-hierarchy dimensions are resolved as columns on the fact view, not via a
 # join. Their rollup lives in the semantic layer (period parents are
 # denormalised); a join would also entangle the non-additive closing-metric path.
-_TIME_HIERARCHY_DIMS = {"period", "quarter", "fiscal_year"}
+# week/day are finer grains denormalised on facts that declare them (their
+# prior-period join to the calendar is separate — see the calendar seq path).
+_TIME_HIERARCHY_DIMS = {"period", "quarter", "fiscal_year", "week", "day"}
 
 
 def _qualify(column: str) -> str:
@@ -51,6 +54,11 @@ class DataQuery:
     domain: str = "pnl"       # catalogue domain
     modifiers: dict[str, str] = field(default_factory=dict)  # e.g. {"uncommitted": ""}
     time_offset: int = 0       # shifted scenario offset in months (e.g. -12 for prior_year)
+    period_column: str = "period"  # fact-view column the range filter targets (grain-dependent)
+    native_column: str = "period"  # fact's native time-grain column — avg/closing rollup axis
+    calendar_table: str = ""   # irregular-grain PP: seq calendar to join (e.g. semantic.dim_week)
+    calendar_key: str = ""     # its key column (week/day); empty = arithmetic window shift
+    query_extension: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -151,13 +159,16 @@ def build_metric_expression(metric: BaseMetric) -> str:
     return f"SUM(CASE WHEN {filt} THEN {value_expr} ELSE 0 END)"
 
 
-def build_avg_metric_expression(metric: BaseMetric) -> str:
-    """Build avg-rollup expression: SUM(CASE WHEN ...) / COUNT(DISTINCT period).
+def build_avg_metric_expression(metric: BaseMetric, native_column: str = "period") -> str:
+    """Build avg-rollup expression: SUM(CASE WHEN ...) / COUNT(DISTINCT <native>).
 
-    NULLIF guards against zero period count (empty result set).
+    The denominator counts distinct periods at the fact's native grain, so the
+    average is per native period within each breakdown group — correct at any
+    query/breakdown grain, not just month. NULLIF guards a zero period count.
     """
     col = _qualify(metric.source_column)
     filt = compile_predicates_to_sql(metric.where)
+    native = _qualify(native_column)
 
     if metric.sign == "abs":
         value_expr = f"ABS({col})"
@@ -168,7 +179,7 @@ def build_avg_metric_expression(metric: BaseMetric) -> str:
 
     return (
         f"SUM(CASE WHEN {filt} THEN {value_expr} ELSE 0 END)"
-        f" / NULLIF(COUNT(DISTINCT {_FACT}.period), 0)"
+        f" / NULLIF(COUNT(DISTINCT {native}), 0)"
     )
 
 
@@ -286,6 +297,7 @@ def _select_cols(
     rollup_group: str | None,
     dimensions: list[str],
     name_to_expr: dict[str, str],
+    native_column: str = "period",
 ) -> str:
     """Build SELECT column list.
 
@@ -301,7 +313,7 @@ def _select_cols(
 
     for m in metrics:
         if rollup_group == "avg":
-            expr = build_avg_metric_expression(m)
+            expr = build_avg_metric_expression(m, native_column)
         else:
             expr = build_metric_expression(m)
         parts.append(f"{expr} AS {m.key}")
@@ -341,32 +353,84 @@ def _where_clause(
         "period_end": data_query.period_end,
     }
 
-    conditions.append(f"{_FACT}.scenario = {{scenario_id:String}}")
+    modifiers = data_query.modifiers if versioned else {}
+    delta_only = bool(
+        {"uncommitted_delta", "commit_delta"}.intersection(modifiers)
+    )
+    extension_scope = scenario_sql_scope(data_query, delta_only)
+    if extension_scope is not None:
+        params.update(extension_scope.params)
+        conditions.append(extension_scope.outer_condition)
+        inner_scenario_condition = extension_scope.inner_condition
+    else:
+        conditions.append(f"{_FACT}.scenario = {{scenario_id:String}}")
+        inner_scenario_condition = "scenario = {scenario_id:String}"
 
-    if closing_only and closing_time_dims and source_view:
-        # Full period range — the subquery below handles the per-group closing
-        # filter. Time-hierarchy dims are fact columns, so the outer reference is
-        # t-qualified while the self-contained subquery stays unqualified.
+    # The additive range filter targets the grain's column (period for month,
+    # quarter/fiscal_year for coarser grains). The closing paths below stay on
+    # `period` — the resolver guards non-month grain away from closing metrics.
+    period_col = _qualify(data_query.period_column)
+
+    if data_query.calendar_table and _SAFE_COLUMN_RE.match(data_query.calendar_key):
+        # Irregular-grain prior-period (week/day): filter to the predecessor of
+        # each period in the (unshifted) window, resolved via the calendar's
+        # dense seq (predecessor = seq - 1). Single fact query, calendar joined
+        # as a subquery — no extra round-trip, no in-memory calendar.
+        cal, key = data_query.calendar_table, data_query.calendar_key
         conditions.append(
-            f"{_FACT}.period >= {{period_start:String}} "
-            f"AND {_FACT}.period <= {{period_end:String}}"
-        )
-        outer_cols = ", ".join(f"{_FACT}.{d}" for d in closing_time_dims)
-        inner_cols = ", ".join(closing_time_dims)
-        conditions.append(
-            f"({outer_cols}, {_FACT}.period) IN ("
-            f"SELECT {inner_cols}, max(period) "
-            f"FROM {source_view} "
-            f"WHERE scenario = {{scenario_id:String}} "
-            f"AND period >= {{period_start:String}} AND period <= {{period_end:String}} "
-            f"GROUP BY {inner_cols})"
+            f"{period_col} IN (SELECT prev.{key} FROM {cal} cur "
+            f"INNER JOIN {cal} prev ON prev.seq = cur.seq - 1 "
+            f"WHERE cur.{key} >= {{period_start:String}} "
+            f"AND cur.{key} <= {{period_end:String}})"
         )
     elif closing_only:
-        conditions.append(f"{_FACT}.period = {{period_end:String}}")
+        # Closing = the value(s) at the last *native*-grain period within the
+        # window, per time-breakdown group. The window filter is on the filter
+        # grain (period_col); the argmax axis is the fact's native grain. For a
+        # monthly domain (native == 'period') this is byte-identical to the
+        # pre-grain behaviour.
+        native = data_query.native_column
+        if closing_time_dims and source_view:
+            # Per time-breakdown-group: last native period in each group. The
+            # outer reference is t-qualified; the self-contained subquery is not.
+            conditions.append(
+                f"{period_col} >= {{period_start:String}} "
+                f"AND {period_col} <= {{period_end:String}}"
+            )
+            outer_cols = ", ".join(f"{_FACT}.{d}" for d in closing_time_dims)
+            inner_cols = ", ".join(closing_time_dims)
+            conditions.append(
+                f"({outer_cols}, {_FACT}.{native}) IN ("
+                f"SELECT {inner_cols}, max({native}) "
+                f"FROM {source_view} "
+                f"WHERE {inner_scenario_condition} "
+                f"AND {data_query.period_column} >= {{period_start:String}} "
+                f"AND {data_query.period_column} <= {{period_end:String}} "
+                f"GROUP BY {inner_cols})"
+            )
+        elif native == "period":
+            # Monthly axis, no time breakdown: the last month is the filter end.
+            conditions.append(f"{_FACT}.period = {{period_end:String}}")
+        elif source_view:
+            # Finer native grain, no time breakdown: the single last native
+            # period in the window (e.g. last week of a month-filtered query).
+            conditions.append(
+                f"{period_col} >= {{period_start:String}} "
+                f"AND {period_col} <= {{period_end:String}}"
+            )
+            conditions.append(
+                f"{_FACT}.{native} = ("
+                f"SELECT max({native}) FROM {source_view} "
+                f"WHERE {inner_scenario_condition} "
+                f"AND {data_query.period_column} >= {{period_start:String}} "
+                f"AND {data_query.period_column} <= {{period_end:String}})"
+            )
+        else:
+            conditions.append(f"{_FACT}.{native} = {{period_end:String}}")
     else:
         conditions.append(
-            f"{_FACT}.period >= {{period_start:String}} "
-            f"AND {_FACT}.period <= {{period_end:String}}"
+            f"{period_col} >= {{period_start:String}} "
+            f"AND {period_col} <= {{period_end:String}}"
         )
 
     # rollup_group controls expression builder only — not a DB column, no WHERE filter
@@ -389,25 +453,23 @@ def _where_clause(
     # view includes a commit_id column — e.g. v_pnl, v_gl).  Actuals-only
     # domains (timesheets, payroll, utilisation) have no commit_id column.
     if versioned:
-        modifiers = data_query.modifiers
-
         if "uncommitted_delta" in modifiers:
             # Only uncommitted changes
-            conditions.append(f"{_FACT}.commit_id = '__uncommitted__'")
+            commit_condition = f"{_FACT}.commit_id = '__uncommitted__'"
         elif "uncommitted" in modifiers:
             # Include everything (committed + uncommitted) — no commit_id filter
-            pass
+            commit_condition = "1 = 1"
         elif "commit_delta" in modifiers:
             # Changes from a single commit only
             commit_id = modifiers["commit_delta"]
             params["mod_commit_id"] = commit_id
-            conditions.append(f"{_FACT}.commit_id = {{mod_commit_id:String}}")
+            commit_condition = f"{_FACT}.commit_id = {{mod_commit_id:String}}"
         elif "commit" in modifiers:
             # Time travel: state as of a specific commit (all commits up to and including)
             target_commit = modifiers["commit"]
             params["mod_target_commit"] = target_commit
             params["mod_scenario_id_commits"] = data_query.scenario_id
-            conditions.append(
+            commit_condition = (
                 f"{_FACT}.commit_id IN ("
                 "SELECT commit_id FROM planning.commits "
                 "WHERE scenario_id = {mod_scenario_id_commits:String} "
@@ -420,7 +482,15 @@ def _where_clause(
         else:
             # Default: committed-only (exclude uncommitted changes).
             # For actuals, commit_id = '__actuals__' so this is harmless.
-            conditions.append(f"{_FACT}.commit_id != '__uncommitted__'")
+            commit_condition = f"{_FACT}.commit_id != '__uncommitted__'"
+
+        if extension_scope is not None and extension_scope.commit_passthrough_condition:
+            conditions.append(
+                f"({extension_scope.commit_passthrough_condition} OR "
+                f"({commit_condition}))"
+            )
+        else:
+            conditions.append(commit_condition)
 
     where = "\nAND ".join(conditions)
     return where, params
@@ -507,15 +577,19 @@ def generate_sql(
 
     all_base = _base_metrics_for_query(data_query, catalogue)
 
-    # Detect which requested dimensions are period-hierarchy levels
-    # (e.g. quarter, fiscal_year) so closing metrics can pick the last
-    # period per group instead of the global period_end.
+    # Detect which requested dimensions are time-grain levels so closing metrics
+    # can pick the last native period per group instead of the global end. For a
+    # monthly domain this is period's parents (quarter, fiscal_year), unchanged;
+    # for a finer-native domain it is every time grain in the breakdown, so each
+    # week/day/month group gets its own last native period.
     closing_time_dims: list[str] = []
-    period_dim = catalogue.dimensions.get("period")
-    if period_dim:
-        # Parent dimensions of period (e.g. quarter, fiscal_year) are period hierarchy levels
-        period_parent_keys = set(period_dim.parents.keys())
-        closing_time_dims = [d for d in dimensions if d in period_parent_keys]
+    if domain.native_grain_column == "period":
+        period_dim = catalogue.dimensions.get("period")
+        if period_dim:
+            period_parent_keys = set(period_dim.parents.keys())
+            closing_time_dims = [d for d in dimensions if d in period_parent_keys]
+    else:
+        closing_time_dims = [d for d in dimensions if d in _TIME_HIERARCHY_DIMS]
 
     name_to_expr, joins = _resolve_breakdowns(dimensions, catalogue, domain)
 
@@ -681,6 +755,7 @@ def _closing_totals_query(
         dimension_filters=dimension_filters,
         closing_only=True,
         versioned=versioned,
+        source_view=source_view,
     )
 
     sql = (
@@ -735,7 +810,7 @@ def _generate_aggregate_sql(
     def _build(rollup_group: str, where_extra: dict, sets: list[list[str]]) -> None:
         select_cols = _select_cols(
             groups[rollup_group], rollup_group=rollup_group, dimensions=dimensions,
-            name_to_expr=name_to_expr,
+            name_to_expr=name_to_expr, native_column=data_query.native_column,
         )
         where, params = _where_clause(
             data_query,
@@ -767,16 +842,18 @@ def _generate_aggregate_sql(
         _build("avg", {}, requested_sets)
 
     if groups["closing"]:
-        # When 'period' is a dimension, each row is already a single period so
-        # the closing value is correct as-is. closing_only applies when period is
-        # aggregated away or when grouping by parent time dims (quarter, fiscal_year).
-        period_in_dims = "period" in dimensions
+        # When the *native* grain is itself a breakdown dimension, each row is
+        # already a single native period, so the closing value is correct as-is.
+        # closing_only applies when the native grain is aggregated away or when
+        # grouping by a coarser time dim (quarter, month, week over a day native).
+        native_col = data_query.native_column
+        native_in_dims = native_col in dimensions
         closing_where = {
-            "closing_only": not period_in_dims,
+            "closing_only": not native_in_dims,
             "closing_time_dims": closing_time_dims or None,
             "source_view": source_view,
         }
-        time_dims = list(closing_time_dims or []) + (["period"] if period_in_dims else [])
+        time_dims = list(closing_time_dims or []) + ([native_col] if native_in_dims else [])
         if not time_dims:
             _build("closing", closing_where, requested_sets)
         else:
@@ -878,8 +955,15 @@ _FISCAL_YEAR_RE = re.compile(r"^(\d{4})$")
 def _shift_time_value(value: str, dim_name: str, offset_months: int) -> str:
     """Shift a time dimension value by offset_months.
 
-    Supports period (YYYY-MM), quarter (YYYY-QN), and fiscal_year (YYYY).
+    Supports period (YYYY-MM), quarter (YYYY-QN), and fiscal_year (YYYY) by month
+    arithmetic. For the irregular grains week (YYYY-Www) and day (YYYY-MM-DD) only
+    prior-year remaps reach here (prior-period at those grains uses the calendar
+    seq and sets time_offset=0, so no remap fires); a prior-year offset is a whole
+    number of years, applied by shifting the year token.
     """
+    if dim_name in ("week", "day"):
+        return shift_year(value, offset_months // 12)
+
     if dim_name == "period":
         return shift_period(value, offset_months)
 
@@ -905,6 +989,29 @@ def _shift_time_value(value: str, dim_name: str, offset_months: int) -> str:
         return value
 
     return value
+
+
+def _successor_remap(ch_client, calendar_table: str, calendar_key: str,
+                     period_start: str, period_end: str) -> dict[str, str]:
+    """Map each predecessor code back to its current-axis successor for a
+    calendar prior-period breakdown: {predecessor -> original window period}.
+
+    Prior-period at an irregular grain filters the fact to the predecessor
+    (seq-1) of each period in the window, so a breakdown axis comes back labelled
+    with predecessor codes. This inverts that via the same calendar so a
+    day/week breakdown under PP aligns onto the requested axis. One small lookup,
+    only when the grain is actually a breakdown dimension (the aggregate PP path
+    stays a single query)."""
+    if ch_client is None or not _SAFE_COLUMN_RE.match(calendar_key):
+        return {}
+    sql = (
+        f"SELECT prev.{calendar_key} AS pred, cur.{calendar_key} AS orig "
+        f"FROM {calendar_table} cur "
+        f"INNER JOIN {calendar_table} prev ON prev.seq = cur.seq - 1 "
+        f"WHERE cur.{calendar_key} >= {{ps:String}} AND cur.{calendar_key} <= {{pe:String}}"
+    )
+    result = ch_client.query(sql, parameters={"ps": period_start, "pe": period_end})
+    return {row[0]: row[1] for row in result.result_rows}
 
 
 # ---------------------------------------------------------------------------
@@ -937,12 +1044,14 @@ def retrieve(
 
     # Track which scenarios need time dimension remapping (shifted scenarios)
     # Identify which dimensions in the plan are time-based (period, quarter, fiscal_year)
-    _TIME_DIMS = {"period", "quarter", "fiscal_year"}
+    _TIME_DIMS = {"period", "quarter", "fiscal_year", "week", "day"}
     time_dim_indices: list[tuple[int, str]] = [
         (i, dim) for i, dim in enumerate(plan.dimensions) if dim in _TIME_DIMS
     ]
 
-    time_remap: dict[str, int] = {}  # scenario_key -> inverse offset
+    time_remap: dict[str, int] = {}  # scenario_key -> inverse offset (arithmetic)
+    # scenario_key -> (breakdown dim, {predecessor -> current}) for calendar PP
+    calendar_remap: dict[str, tuple[str, dict[str, str]]] = {}
 
     for dq in plan.data_queries:
         scenario_key = dq.scenario_key
@@ -952,6 +1061,15 @@ def retrieve(
 
         if dq.time_offset != 0 and time_dim_indices:
             time_remap[scenario_key] = -dq.time_offset
+        elif dq.calendar_table and dq.calendar_key in plan.dimensions:
+            # Irregular-grain PP broken down by its own grain: fetch the
+            # predecessor -> current mapping so the axis aligns.
+            smap = _successor_remap(
+                ch_client, dq.calendar_table, dq.calendar_key,
+                dq.period_start, dq.period_end,
+            )
+            if smap:
+                calendar_remap[scenario_key] = (dq.calendar_key, smap)
 
         scenario_results = raw[scenario_key]
 
@@ -1006,15 +1124,21 @@ def retrieve(
     # Remap time dimension keys for shifted scenarios so they align
     # with the original requested period range (e.g. 2024-01 → 2025-01,
     # 2024-Q1 → 2025-Q1 for prior_year with time_offset=-12).
-    if time_remap:
-        for scenario_key, inverse_offset in time_remap.items():
+    if time_remap or calendar_remap:
+        for scenario_key in set(time_remap) | set(calendar_remap):
+            inverse_offset = time_remap.get(scenario_key)
+            cal = calendar_remap.get(scenario_key)  # (dim_name, {pred -> current})
             old_data = raw.get(scenario_key, {})
             new_data: dict[DimensionKey, dict[str, float | None]] = {}
             for dim_key, metrics in old_data.items():
                 parts = list(dim_key)
                 for idx, dim_name in time_dim_indices:
-                    if parts[idx] != ROLLED_UP:
+                    if parts[idx] == ROLLED_UP:
+                        continue
+                    if inverse_offset is not None:
                         parts[idx] = _shift_time_value(parts[idx], dim_name, inverse_offset)
+                    elif cal is not None and dim_name == cal[0]:
+                        parts[idx] = cal[1].get(parts[idx], parts[idx])
                 new_data[tuple(parts)] = metrics
             raw[scenario_key] = new_data
 

@@ -12,6 +12,7 @@ from here.
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,14 +23,42 @@ if TYPE_CHECKING:
 def render_scenarios_table(
     catalogue: Catalogue | None,
     scenario_registry: "ScenarioRegistry | None" = None,
+    readable_scenario_ids: frozenset[str] | set[str] | None = None,
 ) -> str:
-    """Render available reporting scenarios as a Markdown prompt section."""
+    """Render permission-filtered reporting scenarios for a model prompt."""
     del catalogue
+
+    if scenario_registry is None:
+        vocabulary = {
+            "real": [],
+            "shifted": [],
+            "comparisons": [],
+            "compatibility_aliases": [],
+        }
+    else:
+        from precis_mcp.engine.scenario_registry import filter_reporting_vocabulary
+
+        vocabulary = filter_reporting_vocabulary(
+            scenario_registry.to_reporting_vocabulary(),
+            readable_scenario_ids,
+        )
+
+    examples = [
+        {"scenario": row["scenario"]}
+        for row in vocabulary["real"][:2]
+    ]
+    example_text = (
+        json.dumps(examples)
+        if examples
+        else '[{"scenario": "<visible_scenario_key>"}]'
+    )
 
     lines = [
         "## Available Scenarios",
         "",
-        'Pass scenarios as objects whose `scenario` field holds the key, e.g. `[{"scenario": "actuals"}, {"scenario": "budget", "alias": "Budget"}]`. Real scenarios come from `semantic.scenarios`; shifted and comparison scenarios are generated.',
+        "Pass scenarios as objects whose `scenario` field holds a visible key, "
+        f"e.g. `{example_text}`. Real scenarios come from `semantic.scenarios`; "
+        "shifted and comparison scenarios are generated.",
         "",
         "### Data scenarios (stored data)",
         "",
@@ -39,8 +68,6 @@ def render_scenarios_table(
     if scenario_registry is None:
         lines.append("| _Scenario registry unavailable_ |  |  |  |  |")
         return "\n".join(lines)
-
-    vocabulary = scenario_registry.to_reporting_vocabulary()
     for row in vocabulary["real"]:
         lines.append(
             f"| `{row['scenario']}` | `{row['scenario_id']}` | {row['label']} | "
@@ -58,10 +85,21 @@ def render_scenarios_table(
         offset = f"{row['time_offset_months']:+d} months"
         lines.append(f"| `{row['scenario']}` | `{row['base']}` | {offset} | {row['label']} | {row['description']} |")
 
+    if vocabulary["shifted"]:
+        shifted_example = vocabulary["shifted"][0]["scenario"]
+        shifted_guidance = (
+            "**How shifted scenarios work:** Keep the requested period unchanged and use a "
+            f"visible shifted key such as `{shifted_example}`; the engine applies its offset."
+        )
+    else:
+        shifted_guidance = (
+            "**How shifted scenarios work:** Use only shifted keys listed above; none are "
+            "currently visible."
+        )
+
     lines.extend([
         "",
-        "**How shifted scenarios work:** When the period is Jan–Mar 2026 and you use `prior_year`, "
-        "the engine automatically queries Jan–Mar 2025. You do NOT need to change the period — just use the key.",
+        shifted_guidance,
         "",
         "### Computed scenarios (calculated from other scenarios)",
         "",
@@ -76,17 +114,23 @@ def render_scenarios_table(
             formula = f"`({row['left']} - {row['right']}) / abs({row['right']}) * 100`"
         lines.append(f"| `{row['scenario']}` | {formula} | {row['label']} | {row['description']} |")
 
+    compatibility_guidance = ""
+    if vocabulary["compatibility_aliases"]:
+        aliases = ", ".join(
+            f"`{row['scenario']}`"
+            for row in vocabulary["compatibility_aliases"]
+        )
+        compatibility_guidance = (
+            f" Visible compatibility aliases: {aliases}."
+        )
+
     lines.extend([
         "",
         "**Additional comparisons available on demand.** The table above is a curated default. "
-        "The engine resolves any `{left}_vs_{right}` or `{left}_vs_{right}_pct` key where each side "
-        "is a real alias, a shifted key (`{alias}_py`, `{alias}_pp`), or the compatibility aliases "
-        "`prior_year` / `prior_period`. Examples that work even though they aren't listed: "
-        "`budget_vs_forecast_q1_py` (current budget vs last year's forecast), "
-        "`actuals_vs_prior_year_pct` (YoY % via the compatibility alias), "
-        "`forecast_q1_vs_actuals_py` (current forecast vs last year's actuals). "
-        "Use these when the user's question implies a cross-scenario time-shifted comparison; "
-        "you do not need to confirm they exist first.",
+        "The engine resolves `{left}_vs_{right}` and `{left}_vs_{right}_pct` keys where each side "
+        "uses only a real or shifted scenario visible above."
+        f"{compatibility_guidance} "
+        "Use these when the user's question implies a cross-scenario time-shifted comparison.",
     ])
 
     return "\n".join(lines)

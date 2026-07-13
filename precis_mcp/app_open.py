@@ -77,7 +77,7 @@ async def lifespan(_app: FastAPI):
     close_platform_pool()
 
 
-app = FastAPI(title="Précis-MCP (open)", lifespan=lifespan)
+app = FastAPI(title="Précis Finance MCP", lifespan=lifespan)
 
 
 @app.get("/health")

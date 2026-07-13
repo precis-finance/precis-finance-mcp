@@ -1,4 +1,4 @@
-# Précis-MCP
+# Précis Finance MCP
 
 > Self-hostable, read-only financial-model access over the Model Context
 > Protocol: a metric engine driven by a declarative YAML catalogue over a SQL
@@ -6,7 +6,7 @@
 > backups, and an MCP tool surface for AI clients. The open core of the
 > Précis platform.
 
-Read "How Précis-MCP works" first — it defines the vocabulary (scenario,
+Read "How Précis Finance MCP works" first — it defines the vocabulary (scenario,
 domain, dimension, binding, profile, instance directory) the rest assumes.
 All numbers come from the operator's own model: the `instance/` directory
 (catalogue YAML + semantic SQL) defines what exists; the engine refuses to
@@ -14,7 +14,7 @@ serve an inconsistent model.
 
 ## Getting started
 
-- [How Précis-MCP works](getting-started/concepts/): the moving parts, the
+- [How Précis Finance MCP works](getting-started/concepts/): the moving parts, the
   federated-read split, and the vocabulary table
 - [Quickstart](getting-started/quickstart/): single-user local server with
   the populated demo model in ~15 minutes (Docker, dev key)

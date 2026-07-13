@@ -71,7 +71,7 @@ def package_version() -> str:
     try:
         from importlib.metadata import version
 
-        return version("precis-mcp")
+        return version("precis-finance-mcp")
     except Exception:
         return "unknown"
 

@@ -199,6 +199,15 @@ diverge when the column is a raw key (`key: cost_centre, source: cost_centre_id`
 `key` must be a dimension defined in the registry below; `source` must be a real
 column in `v_pnl`.
 
+A domain may also set `native_grain_column:` — the fact's **true row grain** (the
+finest grain at which each row is one observation; default `period`). It matters
+only for `avg` and `closing` metrics, which roll up on that axis: set it to `day`
+on a daily fact so a month-filtered closing returns the last *day* of the month,
+not the last month. `sum` metrics are grain-agnostic and ignore it. See
+[Adding metrics & dimensions](adding-metrics-and-dimensions.md) for the full
+recipe on exposing a finer grain (a `grain:` leaf dimension over a `dim_<grain>`
+calendar carrying a dense `seq` ordinal).
+
 ### A base metric
 
 A base metric reads the measure column directly, optionally filtered, then
@@ -331,8 +340,11 @@ each metric and stacks the results in this order.
 key column, its display attribute, and its place in any hierarchy. Every dimension
 is one of three kinds: a **leaf** owns a master table; a **derived** dimension
 reads its members from a column on another dimension's table; a **ragged**
-hierarchy presents several levels as one browsable axis. The `account` dimension
-is a leaf, mapping onto the SQL view from earlier:
+hierarchy presents several levels as one browsable axis. A leaf dimension over a
+calendar table may also carry a `grain:` (`week`, `date`, …) to expose a finer
+period grain for filtering and grouping — see
+[Adding metrics & dimensions](adding-metrics-and-dimensions.md). The `account`
+dimension is a leaf, mapping onto the SQL view from earlier:
 
 ```yaml
 # catalogue/dimensions.yml

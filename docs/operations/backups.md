@@ -1,6 +1,6 @@
 # Backups & restore
 
-Précis-MCP ships a backup subsystem driven by one declarative file,
+Précis Finance MCP ships a backup subsystem driven by one declarative file,
 `instance/backup.yml`: one scheduled run produces a complete, self-contained
 bundle — a PostgreSQL dump, a ClickHouse backup, and a tarball of your
 `instance/` config — at a local volume or an S3-compatible bucket, with
@@ -32,14 +32,14 @@ bundle, and any non-success outcome can POST to a webhook.
 
 Run the CLI inside the server container
 (`docker compose -f deploy/docker-compose.yml exec precis-mcp
-precis-mcp-admin backup …`).
+precis-finance-mcp-admin backup …`).
 
 **Prerequisites.** The multi-user bundle deployed; for an S3 destination, the
 `s3` extra in the image (`pip install ".[s3]"` when building from source) and
 two credential pairs — a **writer** that cannot delete objects and a
 **reader** for restore — plus, for the ransomware posture, object-lock
 (WORM) and a lifecycle policy on the bucket (the bucket policy is yours;
-Précis-MCP verifies it). Bring-your-own ClickHouse needs the `BACKUP` grant
+Précis Finance MCP verifies it). Bring-your-own ClickHouse needs the `BACKUP` grant
 on the configured user (`GRANT BACKUP ON *.* TO <chuser>`); the bundled
 service's default user has it implicitly.
 
@@ -82,9 +82,9 @@ service's default user has it implicitly.
    `BACKUP_READER_ACCESS_KEY_ID`, `BACKUP_READER_SECRET_ACCESS_KEY`. A local
    destination needs none.
 
-3. **Validate:** `precis-mcp-admin backup validate` (static checks).
+3. **Validate:** `precis-finance-mcp-admin backup validate` (static checks).
 
-4. **Render and check:** `precis-mcp-admin backup init`. Writes the
+4. **Render and check:** `precis-finance-mcp-admin backup init`. Writes the
    ClickHouse backup-disk config to `deploy/secrets/precis_backup_disk.xml`
    (for S3 it embeds the resolved writer credential and is written mode
    0600, which is why it lives in the secrets area and is regenerated,
@@ -101,8 +101,8 @@ service's default user has it implicitly.
    (`chown 101 deploy/secrets/precis_backup_disk.xml` for the stock image),
    and re-do that after every credential rotation re-render.
 
-6. **First manual run:** `precis-mcp-admin backup run`, then
-   `precis-mcp-admin backup list` to confirm the bundle.
+6. **First manual run:** `precis-finance-mcp-admin backup run`, then
+   `precis-finance-mcp-admin backup list` to confirm the bundle.
 
 7. **Enable the schedule:** append `backup` to `COMPOSE_PROFILES` and
    `docker compose up -d` — the `backup-scheduler` sidecar fires the same
@@ -118,7 +118,7 @@ service's default user has it implicitly.
     quarterly after.
 
 ```bash
-precis-mcp-admin backup restore --id <run_id> --drill
+precis-finance-mcp-admin backup restore --id <run_id> --drill
 ```
 
 The drill restores into side databases (`precis_platform_drill`,
@@ -132,7 +132,7 @@ instance at the restored stores.)
 A **real restore**:
 
 ```bash
-precis-mcp-admin backup restore --id <run_id> [--stores postgres,clickhouse,instance] [--force]
+precis-finance-mcp-admin backup restore --id <run_id> [--stores postgres,clickhouse,instance] [--force]
 ```
 
 Checksums are verified before anything is touched; a non-empty target is

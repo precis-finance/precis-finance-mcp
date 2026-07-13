@@ -906,3 +906,167 @@ class TestDimFormatWiring:
         # The dimension value should be the display name, not the raw code
         dim_vals = {r['dimensions'].get('cost_centre') for r in response['rows']}
         assert 'Cloud - AWS Team' in dim_vals
+
+
+# ---------------------------------------------------------------------------
+# Test: non-month filter grain targets the grain's column end-to-end.
+# Regression — the resolver->retriever bridge (_to_retriever_query) must
+# propagate period_column, or quarter/fiscal-year filters silently hit t.period.
+# ---------------------------------------------------------------------------
+
+def test_quarter_filter_targets_quarter_column(catalogue, scenario_registry):
+    ch = FakeClickHouseClient()
+    request = {
+        'context': {'period_start': '2025-Q1', 'period_end': '2025-Q4'},
+        'blocks': [{'model': 'metric:revenue', 'scenario': 'actuals'}],
+    }
+    execute_report(request, catalogue, ch_client=ch, scenario_registry=scenario_registry)
+
+    fact_sql = [sql for sql, _ in ch.queries if 'FROM semantic.v_pnl' in sql]
+    assert fact_sql, "expected a fact query against v_pnl"
+    assert any('t.quarter >=' in sql for sql in fact_sql), fact_sql
+    assert not any('t.period >=' in sql for sql in fact_sql)
+
+
+# ---------------------------------------------------------------------------
+# Test: prior-period at week grain folds a calendar seq-join into the fact
+# query (predecessor = dim_week.seq - 1), rather than an arithmetic shift.
+# ---------------------------------------------------------------------------
+
+def test_week_prior_period_uses_seq_join(catalogue, scenario_registry):
+    ch = FakeClickHouseClient()
+    request = {
+        'context': {'period_start': '2025-W02', 'period_end': '2025-W05'},
+        'blocks': [{'model': 'metric:hours_worked', 'scenario': 'prior_period'}],
+    }
+    execute_report(request, catalogue, ch_client=ch, scenario_registry=scenario_registry)
+
+    fact_sql = [sql for sql, _ in ch.queries if 'FROM semantic.v_timesheets' in sql]
+    assert fact_sql, "expected a fact query against v_timesheets"
+    assert any('semantic.dim_week' in sql and 'seq - 1' in sql for sql in fact_sql), fact_sql
+    # The window bounds are the ORIGINAL weeks — the seq-join resolves predecessors.
+    pp_sql = [sql for sql in fact_sql if 'seq - 1' in sql][0]
+    assert 't.week IN (' in pp_sql
+
+
+def test_prior_period_week_breakdown_remapped_via_calendar():
+    """PP broken down by week: predecessor-labelled rows are realigned onto the
+    current axis via the calendar successor map (seq-based, not arithmetic)."""
+    from precis_mcp.engine.retriever import DataQuery, ExecutionPlan, retrieve
+    from precis_mcp.engine.catalogue import load_catalogue
+    import os
+
+    fact_rows = [
+        {'week': '2024-W52', 'hours_worked': 40.0},  # predecessor of 2025-W01
+        {'week': '2025-W01', 'hours_worked': 42.0},  # predecessor of 2025-W02
+    ]
+    successor_rows = [('2024-W52', '2025-W01'), ('2025-W01', '2025-W02')]
+
+    class FakeCH:
+        def query(self, sql, parameters=None):
+            if 'AS pred' in sql:  # the successor-map lookup
+                class R:
+                    column_names = ['pred', 'orig']
+                    result_rows = successor_rows
+                return R()
+            class R2:
+                column_names = ['week', 'hours_worked']
+                result_rows = [tuple(r.values()) for r in fact_rows]
+            return R2()
+
+    plan = ExecutionPlan(
+        data_queries=[
+            DataQuery(
+                scenario_key='prior_period',
+                scenario_id='ACTUALS',
+                period_start='2025-W01',
+                period_end='2025-W02',
+                metric_keys=['hours_worked'],
+                domain='timesheets',
+                period_column='week',
+                calendar_table='semantic.dim_week',
+                calendar_key='week',
+                time_offset=0,
+            ),
+        ],
+        dimensions=['week'],
+    )
+    cat_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'instance', 'catalogue')
+    cat = load_catalogue(cat_dir)
+
+    results = retrieve(plan, cat, FakeCH())
+    pp = results['prior_period']
+    assert ('2025-W01',) in pp and ('2025-W02',) in pp, pp.keys()
+    assert pp[('2025-W01',)]['hours_worked'] == 40.0  # was 2024-W52
+    assert pp[('2025-W02',)]['hours_worked'] == 42.0  # was 2025-W01
+
+
+# ---------------------------------------------------------------------------
+# Grain-aware avg/closing rollup keyed off the domain's native grain.
+# ---------------------------------------------------------------------------
+
+def _native_week_catalogue(tmp_path):
+    from precis_mcp.engine.catalogue import load_catalogue
+    (tmp_path / "invtest.yml").write_text(textwrap.dedent("""
+        domain: invtest
+        source_view: semantic.v_invtest
+        native_grain_column: week
+        versioned: false
+        metrics:
+          - key: inv_close
+            label: Closing Inventory
+            source_column: units
+            aggregation: sum
+            rollup_method: closing
+            sign: raw
+            format: number
+            fs_group: Inv
+          - key: inv_avg
+            label: Average Inventory
+            source_column: units
+            aggregation: sum
+            rollup_method: avg
+            sign: raw
+            format: number
+            fs_group: Inv
+    """))
+    return load_catalogue(str(tmp_path))
+
+
+def _dq(**kw):
+    from precis_mcp.engine.retriever import DataQuery
+    base: dict = dict(scenario_key="actuals", scenario_id="ACTUALS",
+                      period_start="2026-01", period_end="2026-01", metric_keys=[],
+                      domain="invtest", period_column="period", native_column="week")
+    base.update(kw)
+    return DataQuery(**base)  # type: ignore[arg-type]
+
+
+def test_avg_denominator_uses_native_grain(tmp_path):
+    from precis_mcp.engine.retriever import generate_sql
+    cat = _native_week_catalogue(tmp_path)
+    sql = dict(generate_sql(_dq(metric_keys=["inv_avg"]), cat, [], None))
+    text = "\n".join(sql)
+    assert "COUNT(DISTINCT t.week)" in text
+    assert "COUNT(DISTINCT t.period)" not in text
+
+
+def test_closing_month_filter_uses_last_native_week(tmp_path):
+    from precis_mcp.engine.retriever import generate_sql
+    cat = _native_week_catalogue(tmp_path)
+    # Month-filtered closing, no breakdown → last week of the window, resolved
+    # via max(week) over the month-filtered window (NOT t.period = period_end).
+    sql = "\n".join(dict(generate_sql(_dq(metric_keys=["inv_close"]), cat, [], None)))
+    assert "max(week)" in sql
+    assert "t.week = (SELECT max(week)" in sql
+    assert "t.period = {period_end:String}" not in sql
+
+
+def test_monthly_closing_keeps_plain_period_end_filter(tmp_path):
+    # A default (native=period) domain still emits the plain t.period = end.
+    from precis_mcp.engine.retriever import generate_sql
+    cat = _native_week_catalogue(tmp_path)
+    sql = "\n".join(dict(generate_sql(
+        _dq(metric_keys=["inv_close"], native_column="period"), cat, [], None)))
+    assert "t.period = {period_end:String}" in sql
+    assert "max(week)" not in sql

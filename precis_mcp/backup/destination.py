@@ -102,7 +102,7 @@ class S3Destination:
         except ImportError as exc:  # pragma: no cover — exercised at deploy time
             raise ImportError(
                 "an s3 backup destination requires boto3 "
-                "(install the 's3' extra: pip install 'precis-mcp[s3]')"
+                "(install the 's3' extra: pip install 'precis-finance-mcp[s3]')"
             ) from exc
         self._bucket = bucket
         self._prefix = f"{prefix}/" if prefix else ""

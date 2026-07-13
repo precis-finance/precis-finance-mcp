@@ -1,3 +1,7 @@
+---
+description: Install and configure the read-only Précis Excel add-in to retrieve governed statements and metrics from your self-hosted MCP endpoint.
+---
+
 # Précis for Excel
 
 The Précis Excel add-in brings live financial statements and metrics into the
@@ -142,7 +146,7 @@ the `/mcp` URL alone.
 
 ### 2. Hosted bundle
 
-The published `precis-mcp` image ships the add-in bundle prebuilt at
+The published `precis-finance-mcp` image ships the add-in bundle prebuilt at
 `/app/excel-addin/dist`, so no separate asset install or bind mount is required. Advanced deployments can point `EXCEL_ADDIN_DIST_DIR` at a
 different built bundle directory.
 

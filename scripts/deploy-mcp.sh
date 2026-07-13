@@ -170,7 +170,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 COMPOSE="docker compose -f deploy/docker-compose.yml --env-file deploy/.env"
 
 echo "╔══════════════════════════════════════════╗"
-echo "║  Précis-MCP (open) Deploy                ║"
+echo "║  Précis Finance MCP Deploy               ║"
 echo "║  Server: ${SERVER}                       ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
@@ -330,7 +330,7 @@ if [ -n "$MCP_TAG" ]; then
             echo 'PRECIS_MCP_TAG=${MCP_TAG}' >> deploy/.env
         fi
     "
-    echo "  set PRECIS_MCP_TAG=${MCP_TAG} in deploy/.env (pulls ghcr.io/precis-finance/precis-mcp:${MCP_TAG})"
+    echo "  set PRECIS_MCP_TAG=${MCP_TAG} in deploy/.env (pulls ghcr.io/precis-finance/precis-finance-mcp:${MCP_TAG})"
     echo ""
 fi
 

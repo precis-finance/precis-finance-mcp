@@ -971,6 +971,13 @@ def test_list_dimensions_returns_catalogue_metadata(tools, catalogue):
     assert entries["org_structure"]["leaf_dimension"] == "cost_centre"
     assert "leaf_dimension" not in entries["cost_centre"]
     assert entries["cost_centre"]["label"] == "Cost Centre"
+    # Time dimensions surface their period grain; non-time dimensions omit it.
+    assert entries["period"]["grain"] == "month"
+    assert entries["quarter"]["grain"] == "quarter"
+    assert entries["fiscal_year"]["grain"] == "year"
+    assert entries["week"]["grain"] == "week"
+    assert entries["day"]["grain"] == "date"
+    assert "grain" not in entries["cost_centre"]
 
 
 def test_list_dimensions_issues_no_warehouse_queries(tools, fake_ch):

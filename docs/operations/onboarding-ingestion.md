@@ -1,6 +1,6 @@
 # Onboarding a data source to ingestion
 
-How to land a new dataset into a self-hosted Précis-MCP deployment end-to-end:
+How to land a new dataset into a self-hosted Précis Finance MCP deployment end-to-end:
 declare the live table DDL, the Source and Binding YAML, wire credentials, run
 a smoke load, verify. Covers both binding **kinds** (`period` for fact tables,
 `snapshot` for master data) and both delivery patterns (warehouse-direct via
@@ -19,7 +19,7 @@ there.
 
 - Your first dataset needs to land — you've been running
   [query-only](../getting-started/quickstart.md) over data you populate
-  yourself, and now want Précis-MCP to pull from the source directly.
+  yourself, and now want Précis Finance MCP to pull from the source directly.
 - You're adding a dataset (you had GL only, now you're adding timesheets).
 - A dataset's delivery is moving (e.g. warehouse-direct replacing a file
   drop) — same procedure with a new Source/Binding.
@@ -42,7 +42,7 @@ Do **not** run this for:
 - **Source-side delivery agreed**: a reachable warehouse (Postgres, MSSQL,
   Snowflake, BigQuery, or Databricks), or a file-drop location the watcher can
   poll. Non-Postgres warehouses need their optional driver extra (`pip install
-  'precis-mcp[snowflake]'`). See
+  'precis-finance-mcp[snowflake]'`). See
   [What you need](../configuration/ingestion.md#what-you-need).
 - **A sample data file or query result** from the source system with realistic
   column names, types, and at least one full reporting period of rows —
@@ -132,7 +132,7 @@ The two contracts that bite during onboarding:
   (substituted with the regex-validated period literal). Snapshot queries omit
   it and return the full current state.
 
-If you prefer not to embed transformation logic in Précis-MCP config, the
+If you prefer not to embed transformation logic in Précis Finance MCP config, the
 equivalent is a view on your warehouse and a trivial
 `SELECT … FROM your_view WHERE period = :period` extract — same result,
 transformation logic under your warehouse's version control instead.

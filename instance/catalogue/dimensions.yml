@@ -94,6 +94,7 @@ dimensions:
 
   period:
     label: Period
+    grain: month
     source:
       table: dim_period
       key_column: period
@@ -224,6 +225,7 @@ dimensions:
 
   quarter:
     label: Quarter
+    grain: quarter
     derived_from:
       dimension: period
       source_column: quarter
@@ -233,9 +235,31 @@ dimensions:
 
   fiscal_year:
     label: Fiscal Year
+    grain: year
     derived_from:
       dimension: period
       source_column: fiscal_year
+
+  # Day grain (YYYY-MM-DD). Leaf over the dim_date business-day calendar; its
+  # dense `seq` is the prior-period authority. Facts carry their own `week`
+  # and `period` columns for the (clean) week/month rollups off the day leaf.
+  day:
+    label: Day
+    grain: date
+    source:
+      table: dim_date
+      key_column: day
+
+  # ISO-week grain (YYYY-Www). Leaf dimension over the dim_week calendar; its
+  # dense `seq` is the prior-period authority. No month parent is declared —
+  # week→month is lossy, and facts carry their own `period` column for month
+  # rollups, so month grouping never routes through week.
+  week:
+    label: Week
+    grain: week
+    source:
+      table: dim_week
+      key_column: week
 
   # ── Ragged hierarchies ─────────────────────────────────────────
 

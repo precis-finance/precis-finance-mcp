@@ -1,6 +1,10 @@
-# Précis-MCP
+---
+description: Self-host Précis Finance MCP to serve governed FP&A metrics, statements, and drill-down from your own financial data to MCP-capable clients.
+---
 
-**Précis-MCP lets an AI assistant query your financial model — safely and
+# Précis Finance MCP
+
+**Précis Finance MCP lets an AI assistant query your financial model — safely and
 read-only — over the [Model Context Protocol](https://modelcontextprotocol.io).**
 
 You point it at your financial data (in ClickHouse), describe your model in a
@@ -23,7 +27,7 @@ every client, so two people asking the same question get the same answer.
 
 ## What it doesn't do
 
-Précis-MCP is **read-only**. It never writes to or changes your data. It does
+Précis Finance MCP is **read-only**. It never writes to or changes your data. It does
 not render charts, export Excel files, or execute code — it returns data and
 tables. If your client supports rich widgets, it renders the finance-table and
 inspection views; otherwise it gets the same data as structured content.
@@ -35,7 +39,7 @@ charts, Excel). Nothing here depends on it.
 
 ## Is this for me?
 
-Use Précis-MCP if you have financial data you want an AI assistant to query
+Use Précis Finance MCP if you have financial data you want an AI assistant to query
 **accurately and consistently**, on infrastructure you control, without giving
 it the ability to change anything. You bring the data and a description of your
 model; it serves the queries.
@@ -45,7 +49,7 @@ model; it serves the queries.
 | You want to… | Go to |
 |---|---|
 | Run a single-user server in a few minutes | [Quickstart](getting-started/quickstart.md) |
-| Understand the moving parts first | [How Précis-MCP works](getting-started/concepts.md) |
+| Understand the moving parts first | [How Précis Finance MCP works](getting-started/concepts.md) |
 | Expose a secure multi-user server (bundled Keycloak or your own OIDC IdP) | [Remote access — sign-in & identity modes](deployment/oauth-keycloak.md) |
 | Sign in with your corporate IdP (SSO) through the bundled Keycloak | [Keycloak brokering](deployment/keycloak-brokering.md) |
 | Connect Auth0 / Okta / Entra / Ping directly | [External IdP recipes](deployment/external-idp-recipes.md) |
@@ -66,6 +70,6 @@ model; it serves the queries.
 | Add a metric or dimension to your model | [Adding metrics & dimensions](configuration/adding-metrics-and-dimensions.md) |
 | Add a custom read tool to the server | [Adding read tools](development/adding-read-tools.md) |
 
-Stuck, or want a guided evaluation? Help configuring precis-mcp, deployment
+Stuck, or want a guided evaluation? Help configuring Précis Finance MCP, deployment
 assistance, and demo environments are an email away —
 [hello@precis.finance](mailto:hello@precis.finance).

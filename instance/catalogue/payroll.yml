@@ -16,10 +16,10 @@ dimensions:
 
 metrics:
   - key: headcount
-    label: Headcount
-    description: "Monthly active headcount (employees with a payroll record in the period)."
-    calculation_note: "COUNT of payroll rows per period. Rollup = avg gives average monthly headcount over the range."
-    source_column: "1"
+    label: Average FTE
+    description: "Monthly FTE-equivalent workforce. The legacy headcount key is retained for saved-query compatibility."
+    calculation_note: "SUM of additive FTE values per period; average across periods."
+    source_column: fte
     aggregation: sum
     rollup_method: avg
     sign: raw

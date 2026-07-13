@@ -1,10 +1,14 @@
+---
+description: Prepare a multi-user Précis Finance MCP deployment with identity, TLS, warehouse permissions, finance-model configuration, and operational checks.
+---
+
 # Production deployment — first-run checklist
 
 The [quickstart](../getting-started/quickstart.md) gets a single-user trial
 running in minutes. This is the other path: a multi-user server real people
 sign in to, on infrastructure you operate.
 
-Précis-MCP is **self-hostable on standard infrastructure, plus a modeling
+Précis Finance MCP is **self-hostable on standard infrastructure, plus a modeling
 step** — it is not a turnkey appliance, and the reason is intrinsic, not a
 packaging gap. It is a *governed semantic layer*: someone has to describe your
 metrics and statements over *your* chart of accounts and warehouse (step 4
@@ -64,7 +68,7 @@ bash scripts/deploy-mcp.sh --server YOUR_HOST \
 ```
 
 This rsyncs the tree, **pulls the published release image**
-(`ghcr.io/precis-finance/precis-mcp`), and brings up the stack (server + the
+(`ghcr.io/precis-finance/precis-finance-mcp`), and brings up the stack (server + the
 bundled dependencies your axes selected). Pulling a pinned release is the
 default first-run path; pin a specific version with `--tag <version>` (it sets
 `PRECIS_MCP_TAG`). Build from source instead — for tracking rolling `main`, a

@@ -1,6 +1,9 @@
 domain: timesheets
 source_view: v_timesheets
 versioned: false
+# Daily fact (one row per employee/project/business day) — the rollup axis for
+# any avg/closing metric. Its metrics are all sum today, so this is future-proofing.
+native_grain_column: day
 inspect_enabled: true
 inspect_columns:
   - scenario
@@ -27,6 +30,12 @@ dimensions:
   - key: period
     label: Period
     source: period
+  - key: week
+    label: Week
+    source: week
+  - key: day
+    label: Day
+    source: day
 
 metrics:
   - key: hours_worked

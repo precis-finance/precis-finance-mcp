@@ -127,7 +127,6 @@ class TestResolverModifiers:
         budget_dq = [dq for dq in plan.data_queries if "budget" in dq.scenario_key][0]
         assert budget_dq.scenario_key == "budget&uncommitted"
 
-
 # ---------------------------------------------------------------------------
 # Retriever: commit-aware WHERE clause
 # ---------------------------------------------------------------------------
@@ -205,7 +204,6 @@ class TestCommitAwareWhere:
         results = generate_sql(dq, catalogue, [], None)
         for sql, _ in results:
             assert "commit_id != '__uncommitted__'" in sql
-
 
 # ---------------------------------------------------------------------------
 # Fork modifier (7C.6) — resolver accepts fork, orchestrator resolves it

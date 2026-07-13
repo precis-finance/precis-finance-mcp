@@ -19,7 +19,7 @@ test-pre-push:
 test-ci:
 	pytest
 
-# Open-core boundary check for the precis-mcp split.
+# Open-core boundary check for the precis-finance-mcp split.
 # Full import-graph analysis; requires the `precis` package present,
 # so it is the Précis monorepo guard. In the open repo (precis absent) this contract
 # degenerates — use `check-imports` there instead.
@@ -34,7 +34,7 @@ check-imports:
 
 # Hashed pip lockfile for the Docker image's dependency layer. Works in both
 # repos: the Précis monorepo stages pyproject-open.toml → requirements-open.lock; the
-# open repo compiles pyproject.toml → requirements.lock. Run under Python 3.12
+# `precis-finance-mcp` open repo compiles pyproject.toml → requirements.lock. Run under Python 3.12
 # (the image's interpreter) with pip-tools installed (in the dev extra), then
 # commit the result. The copy-to-tempdir dance exists because pip-compile
 # detects the input format from the literal filename `pyproject.toml`.

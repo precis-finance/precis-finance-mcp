@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Elastic-2.0
 # Copyright (c) 2026 Sergio Naval Marimont
-"""Admin CLI for the open precis-mcp package.
+"""Admin CLI for the open precis-finance-mcp distribution.
 
 Headless operator surface for the platform-Postgres objects the open package owns:
 users, security profiles, profile assignments. The trust boundary is host/DB
@@ -328,7 +328,7 @@ def cmd_backup_restore(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m precis_mcp.admin_cli",
-        description="Operator admin for the open precis-mcp platform DB.",
+        description="Operator admin for the open precis-finance-mcp platform DB.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 

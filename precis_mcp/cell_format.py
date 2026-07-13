@@ -10,7 +10,7 @@ imported by every consumer that maps engine output to a rendering surface:
   the sign-aware variance rule (a positive revenue delta is favourable, a
   positive cost delta is unfavourable). The openpyxl Excel writer, the React
   table, and the Excel add-in formatter all read this instead of re-deriving the
-  sign logic (docs/precis-excel-addin-spec.md §5.2).
+  sign logic.
 - :func:`excel_number_format` — the Excel custom number-format string (en-dash
   negatives) for a metric format + decimal count. Shared by the openpyxl writer
   and the add-in grid manifest so the en-dash convention is encoded once.

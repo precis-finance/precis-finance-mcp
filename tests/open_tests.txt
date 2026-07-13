@@ -1,5 +1,5 @@
 # Open-core test manifest — the test files that exercise ONLY the open
-# `precis_mcp` package and therefore travel to the open `precis-mcp` repo at the
+# `precis_mcp` package and therefore travel to the open `precis-finance-mcp` repo at the
 # R4 cut. Source of truth for two consumers:
 #
 #   1. The collection-time boundary guard in conftest.py

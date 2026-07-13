@@ -16,7 +16,7 @@ The `ibis.<backend>.connect(...)` call is the only impure step.
 
 Optional drivers: `postgres` + `duckdb` ship in the default install
 (`ibis-framework[duckdb,postgres]`); `mssql` / `snowflake` / `bigquery` /
-`databricks` are optional extras (`pip install 'precis-mcp[snowflake]'`) and
+`databricks` are optional extras (`pip install 'precis-finance-mcp[snowflake]'`) and
 raise `IntegrationConfigError` naming the extra when the driver is absent.
 """
 
@@ -225,6 +225,6 @@ def build_ibis_backend(source: Source) -> Any:
             raise IntegrationConfigError(
                 f"Source {source.id!r} (kind={source.kind}) needs the optional "
                 f"{extra!r} driver, which is not installed. Install it with: "
-                f"pip install 'precis-mcp[{extra}]'."
+                f"pip install 'precis-finance-mcp[{extra}]'."
             ) from exc
         raise

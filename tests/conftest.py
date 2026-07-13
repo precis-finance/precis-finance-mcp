@@ -259,7 +259,7 @@ from tests.factories.auth import make_auth_headers, make_token  # noqa: E402
 # surface in tests, mirroring agui startup. Idempotent. Without
 # this, the dispatch core loads only the open read-only tools.
 #
-# Guarded so this same conftest works unchanged in the open `precis-mcp` repo:
+# Guarded so this same conftest works unchanged in the open `precis-finance-mcp` repo:
 # there the `precis` package is absent, so there is nothing to
 # register and the open read-only set is correct.
 # The other `precis` import — `from precis.agui import app` — is lazy inside the

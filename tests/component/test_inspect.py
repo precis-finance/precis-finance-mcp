@@ -173,3 +173,47 @@ def test_inspect_rows_empty_filter_list_matches_nothing(monkeypatch):
 
     assert "toString(cost_centre) IN ({dimf_cost_centre:Array(String)})" in ch.sql
     assert ch.parameters["dimf_cost_centre"] == []
+
+
+# ---------------------------------------------------------------------------
+# Grain-aware inspection: a week/day range must filter the week/day column,
+# not the month `period` column (mirrors the read path's grain resolution).
+# ---------------------------------------------------------------------------
+
+def _instance_catalogue():
+    import os
+    from precis_mcp.engine import load_and_validate
+    return load_and_validate(
+        os.path.join(os.path.dirname(__file__), "..", "..", "instance", "catalogue")
+    )
+
+
+def test_inspect_week_range_targets_week_column():
+    catalogue = _instance_catalogue()
+    ch = _FakeClickHouse()
+    inspect_rows(
+        catalogue, "timesheets",
+        period_start="2025-W01", period_end="2025-W10", ch_client=ch,
+    )
+    assert "week >= {period_start:String}" in ch.sql
+    assert "week <= {period_end:String}" in ch.sql
+    assert "period >=" not in ch.sql
+
+
+def test_inspect_month_range_unchanged():
+    catalogue = _instance_catalogue()
+    ch = _FakeClickHouse()
+    inspect_rows(
+        catalogue, "timesheets",
+        period_start="2025-01", period_end="2025-12", ch_client=ch,
+    )
+    assert "period >= {period_start:String}" in ch.sql
+
+
+def test_inspect_mixed_grain_bounds_rejected():
+    catalogue = _instance_catalogue()
+    with pytest.raises(InspectionError, match="same grain"):
+        inspect_rows(
+            catalogue, "timesheets",
+            period_start="2025-W01", period_end="2025-03", ch_client=_FakeClickHouse(),
+        )
