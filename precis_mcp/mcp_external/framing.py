@@ -147,13 +147,16 @@ _MCP_TOOL_DESCRIPTIONS: dict[str, str] = {
         "Run a financial statement — P&L, variance report, or executive "
         "summary. Rows are statement lines (Revenue, Direct Cost, Gross Margin, "
         "…); columns are scenarios. Supports an optional dimension breakdown "
-        "(e.g. by period or cost centre)."
+        "(e.g. by period or cost centre). For an unspecified general P&L, prefer "
+        "`full_pnl` when it is listed by precis_orientation. Give every scenario "
+        "a concise, user-facing `alias` such as Actuals, Budget, Variance, or Var %."
     ),
     "run_metric": (
         "Break one or more metrics down by a dimension — revenue by project, "
         "utilisation by employee, headcount trends, GL account drill-down. Rows "
-        "are the dimension; columns are metrics × scenarios. Pass `scenario_id` "
-        "explicitly (usually `actuals`)."
+        "are the dimension; columns are metrics × scenarios. Pass `scenarios` "
+        "explicitly and give every scenario a concise, user-facing `alias` such "
+        "as Actuals, Budget, Variance, or Var %."
     ),
     "inspect_rows": (
         "Inspect the row-level detail behind a figure, from an enabled "

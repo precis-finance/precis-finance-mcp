@@ -638,6 +638,25 @@ def generate_clients():
 # ──────────────────────────────────────────────────────────────────────────────
 
 PROJECT_TYPES = ["T&M"] * 66 + ["FIXED_FEE"] * 42 + ["MILESTONE"] * 12
+# One long-running T&M engagement per delivery cost centre keeps every delivery
+# centre represented across the reporting horizon. The remaining projects
+# retain the overall 66/42/12 type mix above.
+ANCHOR_PROJECT_COUNT = len(BILLABLE_CCS)
+
+# The employee master stores a baseline list rate. Year-specific assumptions
+# model rate progression while preserving the underlying hours, project mix,
+# and subledger-to-GL reconciliation.
+TM_RATE_MULTIPLIER_BY_YEAR = {
+    2023: 1.02,
+    2024: 1.17,
+    2025: 1.28,
+    2026: 1.40,
+}
+
+# Fixed-fee and milestone contract values use a consistent scaling assumption
+# so the generated commercial profile remains proportional to delivery effort
+# without changing the recognition mechanics.
+NON_TM_CONTRACT_MULTIPLIER = 1.7
 PROJECT_NAMES = [
     "Cloud Migration Initiative", "ERP Modernisation", "Data Platform Build-Out",
     "Digital Transformation Programme", "Security Hardening Sprint",
@@ -674,45 +693,69 @@ def generate_projects(employees, clients):
     managers = [e for e in employees if e["grade"] in ("MGR", "DIR")]
     billable_emps = [e for e in employees if e["grade"] != "ADMIN"]
 
-    random.shuffle(PROJECT_TYPES)
+    project_type_remainder = (
+        ["T&M"] * (PROJECT_TYPES.count("T&M") - ANCHOR_PROJECT_COUNT)
+        + ["FIXED_FEE"] * PROJECT_TYPES.count("FIXED_FEE")
+        + ["MILESTONE"] * PROJECT_TYPES.count("MILESTONE")
+    )
+    random.shuffle(project_type_remainder)
+    project_types = ["T&M"] * ANCHOR_PROJECT_COUNT + project_type_remainder
     proj_names = PROJECT_NAMES.copy()
     random.shuffle(proj_names)
 
     # Assign clients: top 3 get ~40% of projects
     client_weights = [5, 4, 4, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]  # 15 clients
-    client_pool = random.choices(clients, weights=client_weights, k=len(PROJECT_TYPES))
+    client_pool = random.choices(clients, weights=client_weights, k=len(project_types))
 
-    # Build a CC pool that guarantees at least 2 projects per billable CC before
-    # randomly distributing the remainder — prevents any CC ending up with zero revenue.
-    cc_pool_base = BILLABLE_CCS * 2  # 2 guaranteed per CC
-    random.shuffle(cc_pool_base)
-    cc_pool_extra = random.choices(BILLABLE_CCS, k=max(0, len(PROJECT_TYPES) - len(cc_pool_base)))
-    cc_pool = cc_pool_base + cc_pool_extra
-    random.shuffle(cc_pool)
+    # The first project in every delivery CC is an anchor engagement spanning
+    # the full actuals and 2026 plan horizon.  A second project per CC plus the
+    # random remainder keeps the broader portfolio varied.
+    cc_pool_remainder = BILLABLE_CCS.copy()
+    cc_pool_remainder.extend(random.choices(
+        BILLABLE_CCS,
+        k=max(0, len(project_types) - ANCHOR_PROJECT_COUNT - len(BILLABLE_CCS)),
+    ))
+    random.shuffle(cc_pool_remainder)
+    cc_pool = BILLABLE_CCS.copy() + cc_pool_remainder
 
     proj_id = 1
-    for idx, ptype in enumerate(PROJECT_TYPES):
+    for idx, ptype in enumerate(project_types):
+        cc_id = cc_pool[idx]
+        is_anchor = idx < ANCHOR_PROJECT_COUNT
+
         # Duration
-        if ptype == "T&M":
+        if is_anchor:
+            duration_months = 60
+        elif ptype == "T&M":
             duration_months = int(rng_normal_clipped(8, 3, 3, 18))
         elif ptype == "FIXED_FEE":
             duration_months = int(rng_normal_clipped(6, 2, 4, 12))
         else:  # MILESTONE
             duration_months = int(rng_normal_clipped(12, 4, 6, 24))
 
-        # Start date: include 2022 so active projects exist from Jan 2023 onward
-        year = random.choices([2022, 2023, 2024, 2025], weights=[8, 14, 10, 8])[0]
-        month = random.choices(range(1, 13), weights=[3, 2, 3, 2, 2, 2, 3, 2, 3, 2, 1, 1])[0]
-        start_date = datetime.date(year, month, 1)
+        # Anchor engagements are established before actuals begin and remain
+        # active through the whole 2026 plan.  Other projects retain the normal
+        # rolling-start distribution.
+        if is_anchor:
+            year = 2022
+            month = 1
+            start_date = datetime.date(2022, 1, 1)
+        else:
+            year = random.choices([2022, 2023, 2024, 2025], weights=[8, 14, 10, 8])[0]
+            month = random.choices(range(1, 13), weights=[3, 2, 3, 2, 2, 2, 3, 2, 3, 2, 1, 1])[0]
+            start_date = datetime.date(year, month, 1)
 
-        planned_end = datetime.date(
-            start_date.year + (start_date.month + duration_months - 1) // 12,
-            (start_date.month + duration_months - 1) % 12 + 1,
-            28
-        )
+        if is_anchor:
+            planned_end = datetime.date(BUDGET_YEAR, 12, 31)
+        else:
+            planned_end = datetime.date(
+                start_date.year + (start_date.month + duration_months - 1) // 12,
+                (start_date.month + duration_months - 1) % 12 + 1,
+                28
+            )
 
         # ~15% complete early
-        if random.random() < 0.15:
+        if not is_anchor and random.random() < 0.15:
             actual_end = planned_end - datetime.timedelta(days=random.randint(30, 60))
         else:
             actual_end = planned_end
@@ -737,15 +780,18 @@ def generate_projects(employees, clients):
             contract_value = None
         elif ptype == "FIXED_FEE":
             budget_hours = None
-            contract_value = round(rng_uniform(30_000, 300_000), 2)
+            contract_value = round(
+                rng_uniform(30_000, 300_000) * NON_TM_CONTRACT_MULTIPLIER, 2
+            )
             budget_rev = contract_value
         else:  # MILESTONE
             budget_hours = None
-            contract_value = round(rng_uniform(80_000, 500_000), 2)
+            contract_value = round(
+                rng_uniform(80_000, 500_000) * NON_TM_CONTRACT_MULTIPLIER, 2
+            )
             budget_rev = contract_value
 
         pm = random.choice(managers)
-        cc_id = cc_pool[idx]
         client = client_pool[idx]
 
         proj = {
@@ -771,14 +817,15 @@ def generate_projects(employees, clients):
 
         # Assign employees
         n_members = {"T&M": random.randint(3, 6), "FIXED_FEE": random.randint(2, 5), "MILESTONE": random.randint(4, 8)}[ptype]
-        # Filter employees active during at least part of the project
+        # Keep delivery effort and project revenue in the same cost centre so
+        # cost-centre P&Ls remain meaningful.  Every delivery CC has employees
+        # and an anchor project, so no cross-centre fallback is required.
         eligible = [
             e for e in billable_emps
-            if e["start_date"] <= actual_end
+            if e["cost_centre_id"] == cc_id
+            and e["start_date"] <= actual_end
             and (e["end_date"] is None or e["end_date"] >= start_date)
         ]
-        if len(eligible) < n_members:
-            eligible = billable_emps  # fallback
 
         team = random.sample(eligible, min(n_members, len(eligible)))
         for member in team:
@@ -815,7 +862,8 @@ def fill_assignment_gaps(employees, projects, assignments):
         ):
             covered.add((emp_id, year, month))
 
-    # Active project_ids per (year, month)
+    # Active project_ids per (year, month, cost centre).  Gap-fill stays within
+    # the employee's delivery CC so payroll cost and project revenue align.
     proj_by_month: dict[tuple, list] = {}
     for proj in projects:
         p_end = min(proj["end_date"] or ACTUALS_END, ACTUALS_END)
@@ -824,7 +872,9 @@ def fill_assignment_gaps(employees, projects, assignments):
         for year, month in months_in_range(
             max(proj["start_date"], ACTUALS_START), p_end
         ):
-            proj_by_month.setdefault((year, month), []).append(proj["project_id"])
+            proj_by_month.setdefault(
+                (year, month, proj["cost_centre_id"]), []
+            ).append(proj["project_id"])
 
     new_assignments = list(assignments)
 
@@ -841,7 +891,9 @@ def fill_assignment_gaps(employees, projects, assignments):
                 continue
             if random.random() > TARGET_COVERAGE:
                 continue  # intentionally on bench this month
-            active_projs = proj_by_month.get((year, month), [])
+            active_projs = proj_by_month.get(
+                (year, month, emp["cost_centre_id"]), []
+            )
             if not active_projs:
                 continue
             proj_id = random.choice(active_projs)
@@ -1249,7 +1301,13 @@ def compute_revenue_subledger(projects, timesheets, employees, cost_history):
 
             # ── Revenue recognition ────────────────────────────────────────
             if ptype == "T&M":
-                revenue_recog = (hours_billable / 8.0) * wavg_rate if hours_billable > 0 else 0.0
+                annual_rate_multiplier = TM_RATE_MULTIPLIER_BY_YEAR.get(
+                    year, TM_RATE_MULTIPLIER_BY_YEAR[max(TM_RATE_MULTIPLIER_BY_YEAR)]
+                )
+                revenue_recog = (
+                    (hours_billable / 8.0) * wavg_rate * annual_rate_multiplier
+                    if hours_billable > 0 else 0.0
+                )
                 # Effective contract for T&M = cumulative billed-hour value (open ceiling)
                 contract_effective = 0.0
             elif ptype == "FIXED_FEE":
@@ -3197,6 +3255,27 @@ def run_validation(employees, timesheets, entries_je, lines_all, budget_entries,
     status = "OK" if abs(wip_months) < 4 else "WARN"
     print(f"[12] Closing WIP @ {closing_period}: EUR {closing_wip:,.0f} "
           f"({wip_months:+.1f} months of revenue)  [{status}]")
+
+    # 13. Revenue cost-centre coverage — every delivery centre should have a
+    # non-zero monthly actual so PY/budget comparisons are useful in the demo.
+    revenue_ccs_by_period: dict[str, set[str]] = {}
+    for row in subledger:
+        if row["revenue_recognised_eur"] <= 0:
+            continue
+        revenue_ccs_by_period.setdefault(row["period"], set()).add(
+            row["cost_centre_id"]
+        )
+    coverage_counts = [
+        len(revenue_ccs_by_period.get(period_str(year, month), set()))
+        for year, month in months_in_range(ACTUALS_START, ACTUALS_END)
+    ]
+    min_coverage = min(coverage_counts, default=0)
+    expected_coverage = len(BILLABLE_CCS)
+    status = "OK" if min_coverage == expected_coverage else "WARN"
+    print(
+        f"[13] Monthly revenue CC coverage: {min_coverage}/{expected_coverage} "
+        f"minimum  [{status}]"
+    )
 
     print("="*60 + "\n")
 

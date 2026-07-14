@@ -25,6 +25,7 @@ from precis_mcp.sample_data.generate import (
     billing_dict_from_subledger,
     _employee_daily_cost,
     period_str,
+    TM_RATE_MULTIPLIER_BY_YEAR,
 )
 os.environ.clear()
 os.environ.update(_saved_environ)
@@ -145,7 +146,7 @@ def _ms_project(project_id=300, client_id=3, cc_id=30,
 # ---------------------------------------------------------------------------
 
 class TestTMRecognition:
-    """T&M: revenue = billable_hours/8 * daily_rate; billing lags 1 period."""
+    """T&M: hours × list rate × annual uplift; billing lags 1 period."""
 
     @pytest.fixture()
     def subledger(self):
@@ -160,7 +161,11 @@ class TestTMRecognition:
 
     def test_revenue_equals_billable_days_times_rate(self, subledger):
         for row in subledger:
-            expected = (row["hours_billable"] / 8.0) * 1_200.0
+            expected = (
+                (row["hours_billable"] / 8.0)
+                * 1_200.0
+                * TM_RATE_MULTIPLIER_BY_YEAR[2024]
+            )
             assert row["revenue_recognised_eur"] == pytest.approx(expected, rel=1e-4)
 
     def test_billing_lags_one_period(self, subledger):
@@ -515,12 +520,16 @@ class TestEdgeCases:
         assert rows[0]["hours_billable"] == pytest.approx(140.0)
 
     def test_two_employees_revenue_uses_weighted_rate(self):
-        """Revenue = billable_hours/8 * weighted-average daily rate."""
+        """Revenue = billable days × weighted-average rate × annual uplift."""
         proj = _tm_project(start="2024-06", end="2024-06")
         ts = _make_timesheets(100, [(2024, 6)], emp_ids=[1, 2],
                               hours_worked=80, hours_billable=70)
         rows = compute_revenue_subledger([proj], ts, EMPLOYEES, COST_HISTORY)
         # emp1: 70h billable × 1200/day; emp2: 70h billable × 1500/day
         # weighted avg = (70*1200 + 70*1500) / (70+70) = 1350
-        expected_rev = (140.0 / 8.0) * 1350.0
+        expected_rev = (
+            (140.0 / 8.0)
+            * 1350.0
+            * TM_RATE_MULTIPLIER_BY_YEAR[2024]
+        )
         assert rows[0]["revenue_recognised_eur"] == pytest.approx(expected_rev, rel=1e-4)

@@ -107,10 +107,11 @@ def _invalid_scenarios_error(scenarios: list) -> dict | None:
                 "error": (
                     f"Invalid scenarios entry: {sc!r}. Each entry must be an "
                     'object with a "scenario" field (a scenario key from '
-                    'list_scenarios) and an optional "alias" display label, '
-                    'e.g. [{"scenario": "actuals"}, '
+                    'list_scenarios). Also provide a user-facing "alias" display '
+                    'label so internal keys do not become column headings, '
+                    'e.g. [{"scenario": "actuals", "alias": "Actuals"}, '
                     '{"scenario": "budget", "alias": "Budget"}, '
-                    '{"scenario": "actuals_vs_budget", "alias": "Variance"}].'
+                    '{"scenario": "actuals_vs_budget_pct", "alias": "Var %"}].'
                 ),
                 "error_type": "validation",
             }
@@ -809,10 +810,13 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
             statement: Statement key from **Available Statements** in the
                 data model description. Defaults from report context, or 'pnl'.
             scenarios: List of scenario dicts, each with 'scenario' (registry
-                key) and optional 'alias' (display label), e.g.
-                ``[{"scenario": "actuals"},
+                key) and optional-at-protocol-level 'alias' (display label).
+                Agents should always provide a concise, user-facing alias so
+                internal keys never become visible column headings, e.g.
+                ``[{"scenario": "actuals", "alias": "Actuals"},
                 {"scenario": "budget", "alias": "Budget"},
-                {"scenario": "actuals_vs_budget", "alias": "Variance"}]``.
+                {"scenario": "actuals_vs_budget", "alias": "Variance"},
+                {"scenario": "actuals_vs_budget_pct", "alias": "Var %"}]``.
                 Use the scenario keys from **Available Scenarios** in the data
                 model description (real, shifted, and generated comparison
                 types). If a key is not recognised, call ``list_scenarios``
@@ -1085,10 +1089,13 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         Args:
             metrics: List of metric keys. All must share the same domain.
             scenarios: List of scenario dicts, each with 'scenario' (registry
-                key) and optional 'alias' (display label), e.g.
-                ``[{"scenario": "actuals"},
+                key) and optional-at-protocol-level 'alias' (display label).
+                Agents should always provide a concise, user-facing alias so
+                internal keys never become visible column headings, e.g.
+                ``[{"scenario": "actuals", "alias": "Actuals"},
                 {"scenario": "budget", "alias": "Budget"},
-                {"scenario": "actuals_vs_budget", "alias": "Variance"}]``.
+                {"scenario": "actuals_vs_budget", "alias": "Variance"},
+                {"scenario": "actuals_vs_budget_pct", "alias": "Var %"}]``.
                 Use the scenario keys from **Available Scenarios** in the data
                 model description (real, shifted, and generated comparison
                 types). If a key is not recognised, call ``list_scenarios``

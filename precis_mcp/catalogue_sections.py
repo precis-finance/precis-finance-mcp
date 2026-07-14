@@ -44,21 +44,24 @@ def render_scenarios_table(
         )
 
     examples = [
-        {"scenario": row["scenario"]}
+        {"scenario": row["scenario"], "alias": row["label"]}
         for row in vocabulary["real"][:2]
     ]
     example_text = (
         json.dumps(examples)
         if examples
-        else '[{"scenario": "<visible_scenario_key>"}]'
+        else '[{"scenario": "<visible_scenario_key>", "alias": "<user-facing label>"}]'
     )
 
     lines = [
         "## Available Scenarios",
         "",
-        "Pass scenarios as objects whose `scenario` field holds a visible key, "
-        f"e.g. `{example_text}`. Real scenarios come from `semantic.scenarios`; "
-        "shifted and comparison scenarios are generated.",
+        "Pass scenarios as objects whose `scenario` field holds a visible key and "
+        "whose `alias` is a concise, user-facing column label, "
+        f"e.g. `{example_text}`. Always provide `alias`: without it, internal keys "
+        "such as `actuals_vs_budget_pct` become visible table headings. Real "
+        "scenarios come from `semantic.scenarios`; shifted and comparison scenarios "
+        "are generated.",
         "",
         "### Data scenarios (stored data)",
         "",
@@ -138,12 +141,29 @@ def render_scenarios_table(
 
 def render_statements_table(catalogue: Catalogue) -> str:
     """Render all catalogue statements as a Markdown section for the system prompt."""
+    if "full_pnl" in catalogue.statements:
+        selection_guidance = (
+            "When the user has not chosen a statement and no active report default "
+            "applies, use `full_pnl` for a general P&L request. Respect an explicit "
+            "request for a narrower or summary statement. When the user asks for "
+            '"the full picture", "with FTEs", or a "comprehensive" view, use '
+            "`full_pnl`. "
+        )
+    else:
+        selection_guidance = (
+            "When the user has not chosen a statement and no active report default "
+            "applies, choose the closest available statement from the table below. "
+        )
+    if "executive_summary" in catalogue.statements:
+        selection_guidance += (
+            'When they ask for a "summary" or "executive" view, use '
+            "`executive_summary`."
+        )
     lines = [
         "## Available Statements",
         "",
         "The `run_statement` tool accepts a `statement` parameter to control which metrics are included. "
-        'When the user asks for "the full picture", "with FTEs", or a "comprehensive" view, use `full_pnl`. '
-        'When they ask for a "summary" or "executive" view, use `executive_summary`.',
+        + selection_guidance,
         "",
         "| Statement | Label | Description |",
         "|---|---|---|",

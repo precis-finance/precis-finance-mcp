@@ -207,3 +207,5 @@ def test_open_instructions_exclude_commercial_surface(monkeypatch, catalogue):
     assert "## Charts" not in text
     # The open read surface is still described.
     assert "run_statement_data" in text and "inspect_rows" in text
+    assert "use `full_pnl` for a general P&L request" in text
+    assert "Always give every scenario a user-facing `alias`" in text

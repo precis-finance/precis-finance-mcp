@@ -29,6 +29,10 @@ tools over Streamable HTTP. Every tool is **read-only**.
   [catalogue](../configuration/catalogue-and-semantic.md) and scenario
   registry. The discovery tools below return the valid values; the listings
   here use the bundled demo model for examples.
+- **Scenario keys are not headings.** In every reporting call, give each
+  scenario object a concise user-facing `alias` (`Actuals`, `Budget`,
+  `Variance`, `Var %`, `Prior Year`). If omitted, the internal scenario key is
+  used as the visible column heading.
 
 ## Variants and widgets
 
@@ -59,10 +63,12 @@ platform's Excel output mode and have no effect here.
 
 No parameters. Returns the orientation text for this deployment: the data
 model (scenarios, metrics, statements, dimensions), how the tool variants
-relate, and usage guidance. It exists because hosted clients drop or truncate
-the MCP `initialize` instructions — a tool *result* is the one channel that
-reliably reaches the model. A well-behaved client calls it once before
-composing queries.
+relate, and usage guidance. For catalogues that expose `full_pnl`, this guidance
+prefers it for a general P&L request when the user has not chosen another
+statement and no report default applies. It exists because hosted clients drop
+or truncate the MCP `initialize` instructions — a tool *result* is the one
+channel that reliably reaches the model. A well-behaved client calls it once
+before composing queries.
 
 ## Discovery
 
@@ -121,8 +127,8 @@ scenarios, optionally crossed with a dimension breakdown.
 
 | Parameter | Type | Notes |
 |---|---|---|
-| `statement` | string | Statement key from the catalogue (defaults to `pnl`). |
-| `scenarios` | list of objects | Each `{"scenario": "<key>", "alias": "<display label>"}` — registry keys, variance keys, shifted views. Scenario-gated. |
+| `statement` | string | Statement key from the catalogue. The calling model is guided to prefer `full_pnl` for a general P&L when available; the transport fallback remains `pnl` for catalogue portability. |
+| `scenarios` | list of objects | Each `{"scenario": "<key>", "alias": "<display label>"}` — registry keys, variance keys, shifted views. Always provide the user-facing `alias`; the field remains optional at protocol level for compatibility. Scenario-gated. |
 | `period_start` / `period_end` | string | Grain-tagged period range; the code shape sets the grain — `2025-06` month, `2025-Q2` quarter, `2025` fiscal year, `2025-W37` week, `2025-06-14` day. Both bounds must be the same grain. Month/quarter/fiscal-year work everywhere; week/day only where the domain's data carries them. |
 | `filters` | object | Dimension key → member id(s). Keys from `dimension_keys`; member ids from `search_hierarchy`. |
 | `dimensions` | list of strings | Breakdown dimension keys — the same `dimension_keys` (e.g. `["period"]`, `["cost_centre"]`). |
@@ -233,7 +239,7 @@ list_scenarios                      → "actuals" and "budget" exist
 list_kpis                           → revenue lives in domain pnl; can break by cost_centre
 search_hierarchy(dimension="cost_centre", query="cloud")
                                     → the member ids worth filtering on
-run_metric_data(metrics=["revenue"], scenarios=[{"scenario": "actuals"}],
+run_metric_data(metrics=["revenue"], scenarios=[{"scenario": "actuals", "alias": "Actuals"}],
                 dimensions=["cost_centre"], period_start="2026-01",
                 period_end="2026-03")
                                     → the figures

@@ -274,7 +274,10 @@ with the output mode pinned per name:
   The longer "how do I use this data model" guidance reaches the model through
   the synthetic `precis_orientation` tool's *result*
   (`mcp_external/instructions.py`) — hosted clients drop the `initialize`
-  instructions field, so don't put load-bearing guidance there.
+  instructions field, so don't put load-bearing guidance there. When argument
+  discipline affects what the user sees, keep the short description and
+  orientation aligned; the reporting tools, for example, require the calling
+  model to give every scenario a user-facing display `alias`.
 - **Dead params** (`_DEAD_MCP_PARAMS = {out, report_id, position}`) are
   stripped from every advertised `inputSchema` — `out` is pinned by the
   variant, and the other two belong to output paths the transport rejects.

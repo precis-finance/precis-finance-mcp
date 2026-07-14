@@ -50,9 +50,9 @@ lists three services — `clickhouse` and `postgres` (healthy) and
 ## 2. Populate the demo model
 
 The bundled ClickHouse starts empty. Generate the synthetic demo dataset —
-36 months of consistent financials for a fictional IT consultancy — **inside
-the server container** (it has the package installed and the connections
-configured):
+44 months of consistent actuals plus 2026 budget and forecast for a fictional
+IT consultancy — **inside the server container** (it has the package installed
+and the connections configured):
 
 ```bash
 docker compose -f docker-compose.local.yml exec precis-mcp \
@@ -73,9 +73,10 @@ docker compose -f docker-compose.local.yml exec precis-mcp \
 ```
 
 **You should see:** the generator's validation report (revenue, margin,
-utilisation all `[OK]`), and the `--check` run printing one `ok` line per
-check (catalogue, each semantic view, the scenario registry) before exiting
-`0`. A `FAIL` line names exactly what's missing —
+utilisation, reconciliation, and monthly delivery cost-centre coverage all
+`[OK]`), and the `--check` run printing one `ok` line per check (catalogue,
+each semantic view, the scenario registry) before exiting `0`. A `FAIL` line
+names exactly what's missing —
 [troubleshooting](../operations/troubleshooting.md#clickhouse-and-the-model).
 
 !!! note "Where commands run"

@@ -18,6 +18,18 @@ user needs:
 Figures default to thousands with one decimal place unless you pass `scale` /
 `decimals` explicitly.
 
+For a general P&L request, when the user has not chosen a statement and no
+active report default applies, use `full_pnl` if it is listed under **Available
+Statements**. Respect an explicit request for a narrower statement or executive
+summary; if `full_pnl` is not listed, choose the closest available P&L statement.
+
+**Always give every scenario a user-facing `alias`.** The `scenario` value is an
+internal query key; `alias` is the column heading the user sees. Prefer concise
+finance labels such as `Actuals`, `Budget`, `Variance`, `Var %`, or `Prior Year`.
+For example: `scenarios=[{"scenario":"actuals","alias":"Actuals"},
+{"scenario":"actuals_vs_budget_pct","alias":"Var %"}]`. Never let raw keys
+such as `actuals_vs_budget_pct` become visible table headings.
+
 **Period filters are grain-tagged.** `period_start` / `period_end` take a period
 code whose shape sets the grain: `2025-06` (month), `2025-Q2` (quarter), `2025`
 (fiscal year), `2025-W37` (week), `2025-06-14` (day). Both bounds must share a
@@ -43,7 +55,8 @@ member ids.
 - **Metric breakdown** (revenue by project, utilisation by employee, headcount,
   GL account drill-down) → `run_metric`. Rows = a dimension; columns = metrics ×
   scenarios. Always pass `scenarios` explicitly, e.g.
-  `scenarios=[{"scenario": "actuals"}]`, unless the user named another scenario.
+  `scenarios=[{"scenario": "actuals", "alias": "Actuals"}]`, unless the user
+  named another scenario.
 
 The `period` and `cost_centre` dimensions work for every statement; other
 dimensions may only apply to compatible metrics.
