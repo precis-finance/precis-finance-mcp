@@ -33,10 +33,10 @@ my client integration?"*
   managers treat them as two distributions even though both use the stable
   `precis_mcp` import namespace. Update automation that invokes the renamed
   admin commands, and pull the image from its new GHCR path.
-- The MCP Registry manifest advertises the credential-gated Précis demo as a
-  Streamable HTTP remote and directs prospective users to the demo access form.
-  The hosted demo contains synthetic data and is not anonymous access to a
-  user's own finance environment.
+- The MCP Registry manifest advertises the hosted public, read-only Précis demo
+  as a Streamable HTTP remote. The endpoint requires no credentials and contains
+  synthetic data; self-hosted deployments retain the standard OAuth-protected
+  configuration.
 
 ### Fixed
 
@@ -44,6 +44,8 @@ my client integration?"*
   semantic-view references that require the commercial writeback tier.
 - The package-only local Compose quickstart now tracks the current release tag
   instead of pulling the older `0.2.1` image.
+- The MCP Python SDK is constrained to the stable `1.x` line at `1.28.1` or
+  newer, resolving `CVE-2026-59950` before the release image is published.
 
 ## [0.2.3] - 2026-07-03
 

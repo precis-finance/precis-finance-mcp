@@ -142,7 +142,7 @@ lz4==4.4.5
     #   databricks-sql-connector
 markdown-it-py==4.2.0
     # via rich
-mcp==1.27.2
+mcp==1.28.1
     # via precis-finance-mcp (/tmp/tmp.HPp2U3N964/pyproject.toml)
 mdurl==0.1.2
     # via markdown-it-py

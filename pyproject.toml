@@ -44,7 +44,9 @@ dependencies = [
     # are compatible (fastapi 0.136.3 accepts starlette 1.3.1).
     "fastapi<0.137",
     "uvicorn",
-    "mcp",
+    # Stay on the stable v1 SDK line and include the Host/Origin validation fix
+    # for CVE-2026-59950. MCP SDK v2 has a separate migration path.
+    "mcp>=1.28.1,<2",
     "starlette>=1.3.1",
     # ClickHouse read layer + ingestion / metric engine
     "clickhouse-connect",
