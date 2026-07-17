@@ -1,0 +1,78 @@
+# registry.yml — manually publish the open server manifest to the MCP Registry.
+#
+# This stays manual: publish only after the hosted public demo is deployed and
+# its MCP/boundary smoke checks pass. GitHub OIDC binds the publication to the
+# public repository owner without a maintainer token.
+name: registry
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: registry-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Require the main branch
+        env:
+          DISPATCH_REF: ${{ github.ref }}
+        run: test "$DISPATCH_REF" = "refs/heads/main"
+
+      - name: Install pinned MCP Registry publisher
+        env:
+          PUBLISHER_VERSION: v1.8.0
+          PUBLISHER_SHA256: 1370446bbe74d562608e8005a6ccce02d146a661fbd78674e11cc70b9618d6cf
+        run: |
+          archive="$(mktemp)"
+          curl -fL --retry 3 --output "$archive" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/${PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${PUBLISHER_SHA256}  ${archive}" | sha256sum --check -
+          tar -xzf "$archive" mcp-publisher
+          chmod +x mcp-publisher
+
+      - name: Validate server manifest
+        run: ./mcp-publisher validate
+
+      - name: Authenticate with repository OIDC
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server manifest
+        run: ./mcp-publisher publish
+
+      - name: Verify published version and remote
+        run: |
+          name="$(jq -r '.name' server.json)"
+          version="$(jq -r '.version' server.json)"
+          remote="$(jq -r '.remotes[] | select(.type == "streamable-http") | .url' server.json)"
+
+          for attempt in {1..12}; do
+            response="$(curl -fsS --get \
+              --data-urlencode "search=${name}" \
+              https://registry.modelcontextprotocol.io/v0.1/servers)"
+            if jq -e \
+              --arg name "$name" \
+              --arg version "$version" \
+              --arg remote "$remote" \
+              'any(.servers[]?;
+                .server.name == $name and
+                .server.version == $version and
+                any(.server.remotes[]?;
+                  .type == "streamable-http" and .url == $remote
+                )
+              )' <<<"$response"; then
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "Registry did not return ${name} ${version} at ${remote}." >&2
+          exit 1
