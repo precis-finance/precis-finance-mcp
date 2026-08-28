@@ -1351,6 +1351,19 @@ def validate_catalogue(catalogue: Catalogue) -> None:
             raise CatalogueError(
                 f"Domain {domain_name!r} has inspect_enabled=true but inspect_columns is empty"
             )
+        for metric in domain.metrics:
+            if (
+                isinstance(metric, BaseMetric)
+                and metric.rollup_method == "avg"
+                and metric.aggregation != "sum"
+            ):
+                raise CatalogueError(
+                    f"BaseMetric {metric.key!r} in domain {domain_name!r} combines "
+                    f"aggregation={metric.aggregation!r} with rollup_method='avg'. "
+                    "Average-over-native-period rollup currently requires "
+                    "aggregation='sum'; use rollup_method='sum' for an ordinary "
+                    "source-row aggregate or define an explicit derived metric."
+                )
         if domain.backend_kind == "ibis":
             if domain.versioned:
                 raise CatalogueError(

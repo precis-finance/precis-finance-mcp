@@ -31,7 +31,7 @@ from precis_mcp.db import get_clickhouse_client
 from precis_mcp.db import execute_platform
 from precis_mcp.engine import execute_report
 from precis_mcp.read_tool_hooks import (
-    get_chart_cache,
+    get_data_ref_cache,
     get_excel_dispatch,
     get_output_renderer,
 )
@@ -141,14 +141,12 @@ def _cap_inspection_for_agent(result: dict) -> dict:
     rows = list(capped.get("rows") or [])
     if len(rows) > _INSPECT_AGENT_ROW_CAP:
         capped["rows"] = rows[:_INSPECT_AGENT_ROW_CAP]
-        capped["truncated"] = True
         capped["agent_truncated"] = True
         capped["agent_row_cap"] = _INSPECT_AGENT_ROW_CAP
 
     encoded = json.dumps(capped, default=str)
     if len(encoded) > _INSPECT_AGENT_CHAR_CAP:
         capped["rows"] = capped.get("rows", [])[:25]
-        capped["truncated"] = True
         capped["agent_truncated"] = True
         capped["agent_char_cap"] = _INSPECT_AGENT_CHAR_CAP
     return capped
@@ -282,7 +280,7 @@ def _round_values_for_consumer(result: dict) -> dict:
 
     Display decimals come from the per-metric ``item['decimals']``, except for
     variance-% columns whose decimals are stamped on the scenario column. Only
-    applied to the LLM-facing render/agent return — Excel and the chart cache
+    applied to the LLM-facing render/agent return — Excel and the data-ref cache
     keep full precision.
     """
     if _suppress_consumer_rounding.get():
@@ -666,6 +664,11 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         - ``out='agent'``: returns a capped sample for reasoning.
         - ``out='excel'``: generates an Excel file and returns a file artifact.
 
+        When a downstream data-reference cache is registered, render/agent
+        results also include ``data_ref`` for the complete bounded extract.
+        ``truncated=true`` still means the matching source population exceeded
+        that extract.
+
         ``scenario_id`` is required so the standard scenario permission gate
         runs before the row-level query executes.
         """
@@ -737,6 +740,28 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                 "%Y-%m-%d %H:%M UTC"
             ),
         }
+
+        # Cache the complete bounded inspection result before applying the
+        # existing model/transcript preview cap. The hook is optional: open
+        # precis_mcp deployments register no cache and remain Redis-free.
+        if out in {"agent", "render"}:
+            data_ref_cache = get_data_ref_cache()
+            if data_ref_cache is not None:
+                data_ref = data_ref_cache(
+                    result=result,
+                    tool_name="inspect_rows",
+                    tool_args={
+                        "source_key": source_key,
+                        "scenario_id": scenario_id,
+                        "filters": filters,
+                        "columns": columns,
+                        "limit": limit,
+                        "period_start": period_start,
+                        "period_end": period_end,
+                    },
+                )
+                if data_ref:
+                    result["data_ref"] = data_ref
 
         if out == "excel":
             dispatch = get_excel_dispatch()
@@ -941,13 +966,13 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                 result=result,
             )
 
-        # Chart-result cache (data_ref) — Précis platform only. The open read path
+        # Data-reference cache — Précis platform only. The open read path
         # writes no data_ref and touches no Redis; the cache is a registered
-        # Précis chart-enablement step (read_tool_hooks).
+        # Précis extension step (read_tool_hooks).
         if isinstance(result, dict) and "error" not in result:
-            _chart_cache = get_chart_cache()
-            if _chart_cache is not None:
-                data_ref = _chart_cache(
+            data_ref_cache = get_data_ref_cache()
+            if data_ref_cache is not None:
+                data_ref = data_ref_cache(
                     result=result,
                     tool_name="run_statement",
                     tool_args={
@@ -1217,13 +1242,13 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                 result=result,
             )
 
-        # Chart-result cache (data_ref) — Précis platform only. The open read path
+        # Data-reference cache — Précis platform only. The open read path
         # writes no data_ref and touches no Redis; the cache is a registered
-        # Précis chart-enablement step (read_tool_hooks).
+        # Précis extension step (read_tool_hooks).
         if isinstance(result, dict) and "error" not in result:
-            _chart_cache = get_chart_cache()
-            if _chart_cache is not None:
-                data_ref = _chart_cache(
+            data_ref_cache = get_data_ref_cache()
+            if data_ref_cache is not None:
+                data_ref = data_ref_cache(
                     result=result,
                     tool_name="run_metric",
                     tool_args={

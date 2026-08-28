@@ -84,7 +84,7 @@ set `PRECIS_MCP_TAG` to a published image version and bring the stack up
 *without* `--build`:
 
 ```bash
-PRECIS_MCP_TAG=0.2.4 docker compose -f deploy/docker-compose.yml up -d
+PRECIS_MCP_TAG=0.2.5 docker compose -f deploy/docker-compose.yml up -d
 ```
 
 Compose pulls `ghcr.io/precis-finance/precis-finance-mcp:<tag>` (falling back to a
@@ -111,10 +111,12 @@ application image follows the same principle — published to
 version by default, pinnable to a `@sha256:` digest), or built from the synced
 source when you run `up --build`. The flip side is
 that base-image and dependency security fixes do **not** arrive by
-re-pulling — they arrive as pin bumps in sync commits (CI gates the pin set
-with `pip-audit` and a trivy image scan). If you maintain a fork, regenerate
-the lockfile with `make lock` and refresh image digests with
-`docker buildx imagetools inspect <tag>` on your own cadence.
+re-pulling — they arrive as pin bumps in sync commits. CI gates both Python
+lock sets with `pip-audit`, scans the application image, scans the exact
+Postgres / ClickHouse / Keycloak pins, and builds and scans the custom Caddy
+proxy. If you maintain a fork, regenerate the lockfile with `make lock`, refresh
+image digests with `docker buildx imagetools inspect <tag>`, and rerun the same
+image scans on your own cadence.
 
 ## Not an upgrade
 

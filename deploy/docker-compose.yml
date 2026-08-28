@@ -125,7 +125,7 @@ x-precis-env: &precis-env
 # release — bump it with each release, or override to a digest for re-pull
 # immutability matching the upstream-image policy below.
 x-precis-image: &precis-image
-  image: ghcr.io/precis-finance/precis-finance-mcp:${PRECIS_MCP_TAG:-0.2.4}
+  image: ghcr.io/precis-finance/precis-finance-mcp:${PRECIS_MCP_TAG:-0.2.5}
   build:
     context: ..
     dockerfile: Dockerfile
@@ -141,7 +141,7 @@ x-precis-image: &precis-image
 # update the digest here and in docker-compose.local.yml, test, commit.
 services:
   postgres:
-    image: postgres:16@sha256:ab47a724d0e37131ac950b98ff2beeb3fdb3bfcc592d73c6cc4b4e7626649671
+    image: postgres:16-bookworm@sha256:bb3e1a57e5407e0a5280b4211980a5e537f4abd234a87014ac979849a78dd825
     restart: unless-stopped
     environment:
       POSTGRES_DB: precis
@@ -158,7 +158,7 @@ services:
   # Data axis: bundled ClickHouse. Omit the `bundled-clickhouse` profile and
   # point CHHOST/CH* at your own ClickHouse to run external instead.
   clickhouse:
-    image: clickhouse/clickhouse-server:26.3@sha256:1f7cd090d5c4e2b8bfe0ea5d8ae6125937e1d932c6371b4d25fbd6088829dc9c
+    image: clickhouse/clickhouse-server:26.3@sha256:a98e1614cb9ad74bff6b22faa37a2452c6dd445beef27012cd5b0a449d24ba9e
     profiles: ["bundled-clickhouse"]
     restart: unless-stopped
     # Runs under Docker's default seccomp profile (verified: startup, queries,
@@ -194,7 +194,7 @@ services:
 
   # Create the Keycloak role + database inside the shared Postgres. Idempotent.
   keycloak-db-init:
-    image: postgres:16@sha256:ab47a724d0e37131ac950b98ff2beeb3fdb3bfcc592d73c6cc4b4e7626649671
+    image: postgres:16-bookworm@sha256:bb3e1a57e5407e0a5280b4211980a5e537f4abd234a87014ac979849a78dd825
     profiles: ["bundled-keycloak"]
     restart: "no"
     environment:
@@ -222,7 +222,7 @@ services:
         condition: service_healthy
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.6@sha256:5fdbf2dbb5897cc34e82de49d13e23db011f9925089dbc555fc095f2c8bc1dac
+    image: quay.io/keycloak/keycloak:26.7.2@sha256:9d1f1b2b7261ff53c66cb1092dfcdc34a5fb77e81f9e6a6e75b8b6a795de8067
     profiles: ["bundled-keycloak"]
     restart: unless-stopped
     command: ["start", "--import-realm"]

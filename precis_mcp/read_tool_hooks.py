@@ -2,16 +2,17 @@
 # Copyright (c) 2026 Sergio Naval Marimont
 """Précis extension hooks for the open read tools.
 
-The open read path (``run_statement`` / ``run_metric``) is ClickHouse-only and
-writes nothing downstream. Two extension points are registered by the Précis
-platform at startup; an open deployment leaves them unregistered:
+The open read path (including ``run_statement``, ``run_metric``, and
+``inspect_rows``) writes nothing downstream. Three extension points are
+registered by the Précis platform at startup; an open deployment leaves them
+unregistered:
 
 - **Output renderers** — ``out='report'`` dispatches to the registered renderer
   (the Précis report builder). Unregistered → ``out='report'`` is unsupported.
-- **Chart-result cache** — the ``data_ref`` a later ``eval_chart_transform``
-  reads is produced by the registered cache (Redis). Unregistered → the open
-  read path returns figures with **no ``data_ref`` and no Redis write** (the
-  the open package's last read-path Redis dependency).
+- **Data-reference cache** — the ``data_ref`` later consumed by chart
+  transforms, sandbox Python, or the commercial inspection-grid pager is
+  produced by the registered cache (Redis in Précis). Unregistered → the open
+  read path returns figures with **no ``data_ref`` and no cache write**.
 - **Excel dispatch** — ``out='excel'`` (and the inspection / hierarchy Excel
   paths) write a workbook through the file-storage subsystem (Précis platform).
   Unregistered → ``out='excel'`` is unsupported and the open package carries no
@@ -26,7 +27,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 _OUTPUT_RENDERERS: dict[str, Callable[..., Any]] = {}
-_CHART_CACHE: Callable[..., Any] | None = None
+_DATA_REF_CACHE: Callable[..., Any] | None = None
 _EXCEL_DISPATCH: Any | None = None
 
 
@@ -44,14 +45,26 @@ def unregister_output_renderer(out_mode: str) -> None:
     _OUTPUT_RENDERERS.pop(out_mode, None)
 
 
-def register_chart_cache(cache: Callable[..., Any]) -> None:
-    """Register the chart-result cache that mints a ``data_ref`` for a result."""
-    global _CHART_CACHE
-    _CHART_CACHE = cache
+def register_data_ref_cache(cache: Callable[..., Any]) -> None:
+    """Register the optional result cache that mints a ``data_ref``."""
+    global _DATA_REF_CACHE
+    _DATA_REF_CACHE = cache
 
 
-def get_chart_cache() -> Callable[..., Any] | None:
-    return _CHART_CACHE
+def get_data_ref_cache() -> Callable[..., Any] | None:
+    return _DATA_REF_CACHE
+
+
+def unregister_data_ref_cache() -> None:
+    """Drop the registered cache (test isolation; no-op if absent)."""
+    global _DATA_REF_CACHE
+    _DATA_REF_CACHE = None
+
+
+# Compatibility aliases for downstream integrations that registered the
+# original chart-specific seam. The cache contract itself is now general.
+register_chart_cache = register_data_ref_cache
+get_chart_cache = get_data_ref_cache
 
 
 def register_excel_dispatch(dispatch: Any) -> None:

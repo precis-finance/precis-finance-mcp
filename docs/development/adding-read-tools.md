@@ -312,8 +312,9 @@ absent:
   registers the finance-table (`precis_mcp/table_builder.py`) and
   inspection-grid (`precis_mcp/inspection_grid_builder.py`) builders natively.
 - `precis_mcp/read_tool_hooks.py` — hooks inside the read tools themselves:
-  an output renderer for non-core `out` modes, a chart-result cache (mints
-  the `data_ref`), and an Excel dispatcher. Unregistered, the read path
+  an output renderer for non-core `out` modes, a general result cache (mints
+  the optional `data_ref` consumed by downstream products), and an Excel
+  dispatcher. Unregistered, the read path
   returns figures with no `data_ref` and `out='excel'` / `out='report'` are
   unsupported.
 

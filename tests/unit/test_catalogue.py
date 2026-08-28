@@ -185,6 +185,26 @@ class TestBaseMetricParsing:
         with pytest.raises(CatalogueError, match="supports only 'sum'"):
             load_catalogue(str(tmp_path))
 
+    def test_average_period_rollup_rejects_non_sum_source_aggregation(self, tmp_path):
+        write_yml(tmp_path, "test.yml", """
+            domain: test
+            source_view: semantic.v_test
+            metrics:
+              - key: bad_average
+                label: Bad average
+                source_column: amount
+                aggregation: avg
+                rollup_method: avg
+                sign: raw
+                format: number
+                fs_group: Test
+        """)
+        with pytest.raises(
+            CatalogueError,
+            match="Average-over-native-period rollup.*aggregation='sum'",
+        ):
+            load_catalogue(str(tmp_path))
+
     def test_federated_domain_rejects_versioned_true(self, tmp_path):
         write_yml(tmp_path, "test.yml", """
             domain: fed

@@ -38,15 +38,31 @@ def build_inspection_grid_block(data: dict) -> dict | None:
     columns = list(data.get("columns") or [])
     caption = data.get("caption") if isinstance(data.get("caption"), dict) else {}
     title = caption.get("description") or f"Inspection: {data.get('source_key', '')}"
+    row_count = data.get("row_count")
+    if not isinstance(row_count, int) or isinstance(row_count, bool):
+        row_count = len(rows)
+    source_truncated = bool(data.get("truncated"))
+    preview_truncated = bool(
+        data.get("agent_truncated")
+        or len(rows) > _ROW_CAP
+        or row_count > _ROW_CAP
+    )
 
-    return {
+    block = {
         "type": "inspection_grid",
         "title": title,
         "source_key": data.get("source_key"),
         "columns": columns,
         "rows": rows[:_ROW_CAP],
-        "row_count": data.get("row_count", len(rows)),
+        "row_count": row_count,
         "limit": data.get("limit"),
-        "truncated": bool(data.get("truncated") or len(rows) > _ROW_CAP),
+        "truncated": bool(source_truncated or preview_truncated),
+        "source_truncated": source_truncated,
+        "preview_truncated": preview_truncated,
         "caption": caption,
     }
+    # Optional commercial capability. Open precis_mcp deployments register no
+    # data-ref cache, so their widget contract remains the capped preview.
+    if isinstance(data.get("data_ref"), str) and data["data_ref"]:
+        block["data_ref"] = data["data_ref"]
+    return block

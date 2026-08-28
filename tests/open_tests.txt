@@ -28,7 +28,7 @@
 # tests/fakes/fake_llm.py is NOT carried — no open test uses it (it is the
 # LangGraph chat-model fake, purely commercial).
 
-# --- unit (41) ---
+# --- unit (43) ---
 unit/test_admin_ops.py
 unit/test_auth.py
 unit/test_auth_mode.py
@@ -46,6 +46,7 @@ unit/test_file_readers.py
 unit/test_formatter.py
 unit/test_ibis_backends.py
 unit/test_ibis_executor.py
+unit/test_inspection_grid_builder.py
 unit/test_live_ddl_runner.py
 unit/test_load_history_migration.py
 unit/test_object_store_and_period.py
@@ -72,7 +73,7 @@ unit/test_table_builder.py
 unit/test_transformer.py
 unit/test_validate.py
 
-# --- component (24) ---
+# --- component (25) ---
 component/test_admin_cli.py
 component/test_app_open_lifespan.py
 component/test_auth.py
@@ -83,6 +84,7 @@ component/test_connection_tls.py
 component/test_engine_pipeline.py
 component/test_filter_resolver.py
 component/test_identity_resolution.py
+component/test_ingestion_checks.py
 component/test_ingestion_read_tools.py
 component/test_ingestion_scheduler.py
 component/test_inspect.py

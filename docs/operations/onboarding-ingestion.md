@@ -174,15 +174,17 @@ in place. Two consumers hold a registry view:
 
 ### 7. Run a smoke load
 
-Run one `(binding, period)` through the pipeline with the operator script —
-the same code path every scheduled trigger uses, so a green run here is a real
+Run one `(binding, period)` through the pipeline with the host admin CLI — the
+same code path every scheduled trigger uses, so a green run here is a real
 signal. Commands and flags:
 [Running a load](../configuration/ingestion.md#running-a-load).
 
 When commissioning, stage it: stop after **extract** first (rows land in
 `staging.<table>` for inspection without touching live), then after
-**validate** (adds the shape check), then run the full pipeline including the
-swap. Snapshot bindings take no period.
+**validate** (adds the shape and declared data-quality/reconciliation checks,
+whose result the CLI prints), then run the full pipeline including the swap.
+Snapshot bindings take no period. Routine full loads belong on the authenticated
+admin trigger; partial stage runs are deliberately a host-operator facility.
 
 For watch-mode bindings, the end-to-end equivalent is dropping a correctly
 named file into the watched location and letting the watcher daemon pick it up
@@ -249,13 +251,13 @@ Reversible up to the point of user-visible reads; each item is independent.
   reload (step 6), re-run.
 - **Registry won't load after an edit** — the previous registry stays active
   (atomic reload); nothing is broken while you fix the YAML.
-- **Smoke-test rows cluttering `load_history`** — operator-script runs are
-  labelled `ops:manual` in `triggered_by` (override with `--triggered-by`).
+- **Smoke-test rows cluttering `load_history`** — host CLI runs are labelled
+  `cli:<OS user>` in `triggered_by` (override with `--triggered-by`).
   Clear test rows only:
 
   ```sql
   DELETE FROM load_history
-   WHERE binding_id = 'customer_pg__gl' AND triggered_by LIKE 'ops:%';
+   WHERE binding_id = 'customer_pg__gl' AND triggered_by LIKE 'cli:%';
   ```
 
   Never clear production rows — `load_history` is the audit log.

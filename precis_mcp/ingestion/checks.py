@@ -2,11 +2,17 @@
 # Copyright (c) 2026 Sergio Naval Marimont
 """Data-quality checks — the validate-stage control gate.
 
-Runs the binding's operator-declared `checks:` against `staging.<x>` after
-the structural shape check passes and before the swap. Every non-reconcile
-check reduces to a **failing-row count** (the dbt convention: zero rows =
-pass); `reconcile` diffs staged-side aggregates against an authoritative
-source total captured during extract.
+Runs the binding's operator-declared `checks:` against the current load's
+slice of `staging.<x>` after the structural shape check passes and before the
+swap. Every non-reconcile check reduces to a **failing-row count** (the dbt
+convention: zero rows = pass); `reconcile` diffs staged-side aggregates
+against an authoritative source total captured during extract.
+
+The scope is exact-attempt, not whole-table: every check filters on `_load_id`;
+period bindings additionally filter on `period`. Failed loads and operator
+`stop_after` runs intentionally leave their staging slices available for
+inspection, so whole-table checks would let an older period contaminate a
+later attempt.
 
 A check trips when its failing count satisfies its `threshold` (default
 `> 0` — any failing row). What a trip does is its `severity`:
@@ -116,24 +122,39 @@ def run_checks(
     binding: Binding,
     *,
     ch_client: Any,
+    period: Optional[str],
+    load_id: str,
     reconcile_source_totals: Optional[dict[str, list[dict]]] = None,
 ) -> CheckRunResult:
-    """Run every check on the binding against `staging.<x>` and decide the verdict.
+    """Run checks against this attempt's staging slice and decide the verdict.
+
+    The current load is selected by ``_load_id`` for every binding. Period
+    bindings also require and select ``period``. Snapshot extraction truncates
+    staging before insert, but retaining the load-id predicate keeps the check
+    contract uniform and proves that controls evaluated the rows from this
+    attempt.
 
     `reconcile_source_totals` maps a reconcile check's name to the source-side
     grouped rows captured during extract (`list[dict]`, keys = group_by columns
     + measure names). Missing for a reconcile check → that check errors.
     """
     staging = binding.staging_target
+    scope = _staging_scope_predicate(binding, period=period, load_id=load_id)
     source_totals = reconcile_source_totals or {}
     results: list[CheckResult] = []
 
     for c in binding.checks:
         try:
             if c.type == "reconcile":
-                res = _run_reconcile(c, ch_client, staging, source_totals.get(c.name))
+                res = _run_reconcile(
+                    c,
+                    ch_client,
+                    staging,
+                    scope,
+                    source_totals.get(c.name),
+                )
             else:
-                failing = _failing_count(c, ch_client, staging)
+                failing = _failing_count(c, ch_client, staging, scope)
                 res = CheckResult(
                     name=c.name, severity=c.severity, type=c.type,
                     passed=not _trips(failing, c.threshold),
@@ -166,26 +187,37 @@ def run_checks(
 # ---------------------------------------------------------------------------
 
 
-def _failing_count(c: Check, ch_client: Any, staging: str) -> int:
-    inner = _failing_rows_sql(c, staging)
+def _failing_count(
+    c: Check,
+    ch_client: Any,
+    staging: str,
+    scope: str,
+) -> int:
+    inner = _failing_rows_sql(c, staging, scope)
     rows = ch_client.query(
         f"SELECT count() FROM ({inner}) AS _precis_check"
     ).result_rows
     return int(rows[0][0]) if rows else 0
 
 
-def _failing_rows_sql(c: Check, staging: str) -> str:
+def _failing_rows_sql(c: Check, staging: str, scope: str) -> str:
     """The SELECT that yields the violating rows (or a 1-row marker for
-    table-level metric checks). Wrapped in `count()` by the caller."""
+    table-level metric checks). Wrapped in `count()` by the caller.
+
+    Raw SQL receives a scoped relation in place of ``{staging}``, so the same
+    exact-attempt boundary applies without requiring operators to repeat the
+    platform's period/load-id predicate in every binding.
+    """
     if c.sql is not None:
         live = "live." + staging[len("staging."):]
-        return c.sql.replace("{staging}", staging).replace("{live}", live)
+        scoped_staging = f"(SELECT * FROM {staging} WHERE {scope})"
+        return c.sql.replace("{staging}", scoped_staging).replace("{live}", live)
 
-    w = c.where
+    w = _combine_predicates(scope, c.where)
     t = c.type
 
     def row_pred(pred: str) -> str:
-        clause = f"({w}) AND ({pred})" if w else pred
+        clause = _combine_predicates(w, pred)
         return f"SELECT 1 FROM {staging} WHERE {clause}"
 
     def grouped(group_cols: str, having: str) -> str:
@@ -228,7 +260,11 @@ def _failing_rows_sql(c: Check, staging: str) -> str:
 
 
 def _run_reconcile(
-    c: Check, ch_client: Any, staging: str, source_rows: Optional[list[dict]]
+    c: Check,
+    ch_client: Any,
+    staging: str,
+    scope: str,
+    source_rows: Optional[list[dict]],
 ) -> CheckResult:
     measures = c.measures or {}
     group_by = c.group_by or []
@@ -241,9 +277,10 @@ def _run_reconcile(
     # read positionally — no dependency on the driver returning column names.
     measure_names = list(measures)
     select_cols = group_by + [f"{measures[m].expr} AS {m}" for m in measure_names]
+    where = _combine_predicates(scope, c.where)
     staged_sql = (
         f"SELECT {', '.join(select_cols)} FROM {staging}"
-        f"{_where_suffix(c.where)} GROUP BY {', '.join(group_by)}"
+        f"{_where_suffix(where)} GROUP BY {', '.join(group_by)}"
     )
     staged: dict[tuple, dict[str, float]] = {}
     for row in ch_client.query(staged_sql).result_rows:
@@ -294,6 +331,36 @@ def _run_reconcile(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _staging_scope_predicate(
+    binding: Binding,
+    *,
+    period: Optional[str],
+    load_id: str,
+) -> str:
+    """Return the SQL predicate selecting exactly the current load attempt."""
+    if not load_id:
+        raise CheckError("checks require a non-empty load_id")
+
+    predicates: list[str] = []
+    if binding.kind == "period":
+        if period is None:
+            raise CheckError("period binding checks require a period")
+        predicates.append(f"period = {_lit(period)}")
+    elif binding.kind == "snapshot":
+        if period is not None:
+            raise CheckError("snapshot binding checks require period=None")
+    else:  # Binding validation constrains this; defensive for direct callers.
+        raise CheckError(f"unsupported binding kind for checks: {binding.kind!r}")
+
+    predicates.append(f"_load_id = {_lit(load_id)}")
+    return _combine_predicates(*predicates)
+
+
+def _combine_predicates(*predicates: Optional[str]) -> str:
+    present = [p for p in predicates if p]
+    return " AND ".join(f"({p})" for p in present)
 
 
 def _trips(failing: int, threshold: Optional[str]) -> bool:

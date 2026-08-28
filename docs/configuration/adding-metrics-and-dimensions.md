@@ -84,6 +84,17 @@ nothing else to register.
   for rates). Complex business logic belongs in the semantic view or in a
   derived metric, not in an ad hoc metric expression.
 
+- **Source aggregation and time rollup are separate.** ClickHouse domains
+  support `aggregation: sum | count | count_distinct | avg | min | max`.
+  `avg`, `min`, and `max` exclude rows that do not match `where:` rather than
+  treating them as zero. Use the ordinary `rollup_method: sum` path when that
+  aggregate should run over every matching source row in the selected window,
+  and `closing` when it should run only at the closing native period. The
+  period-average `rollup_method: avg` is currently defined only for additive
+  inputs (`aggregation: sum`): it divides their sum by the number of distinct
+  native periods. Other pairings with `rollup_method: avg` are rejected at
+  catalogue load instead of being approximated.
+
 - **`variance_effect` sets variance colour polarity.** A comparison column
   (`actuals_vs_budget`, `actuals_vs_actuals_py`, …) is colour-coded
   favourable/unfavourable, and the sign that counts as *favourable* comes from
@@ -376,10 +387,12 @@ filter and group by a **finer** grain (week or day), do four things:
 
 4. **Set `native_grain_column` on the domain** to the fact's *true row grain* —
    the finest grain at which each row is one observation (e.g. `day` for a daily
-   fact; the default is `period`). Average and closing metrics roll up on this
-   axis, so a month-filtered closing on a daily fact returns the last day of the
-   month. Declare the real row grain: a coarser mis-declaration makes `closing`
-   pick an arbitrary row.
+   fact; the default is `period`). Metrics with `rollup_method: avg` or
+   `rollup_method: closing` roll up on this axis, so a month-filtered closing on
+   a daily fact returns the last day of the month. A source-row
+   `aggregation: avg` on the ordinary rollup path does not use this axis—it
+   averages all matching rows directly. Declare the real row grain: a coarser
+   mis-declaration makes `closing` pick an arbitrary row.
 
 `sum` metrics need only steps 1–3. One current limit: a prior-year / prior-period
 comparison broken down by a grain finer than the filter grain is refused — filter

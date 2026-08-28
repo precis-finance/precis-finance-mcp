@@ -67,17 +67,21 @@ source →   staging.<x>   live.<x>
    own engine plans any joins and aggregation; only result rows traverse the
    wire) and the rows land in `staging.<table>` in ClickHouse.
 2. **Validate** — the staging table's column shape is diffed against the live
-   table's. A mismatch aborts before anything touches live. A zero-row
-   extract also stops here: an empty staging slice will never be swapped over
-   live data.
+   table's. Value checks and source reconciliation then run against the exact
+   candidate load (`_load_id`, plus `period` for period bindings), never
+   unrelated slices left in staging. A mismatch or failed error-level check
+   aborts before anything touches live. A zero-row extract also stops here: an
+   empty staging slice will never be swapped over live data.
 3. **Swap** — promotion is atomic. Period loads use
    `REPLACE PARTITION '<period>'` (other periods untouched); snapshot loads
    use `EXCHANGE TABLES` (metadata-only full swap). Queries never see a
    half-loaded state.
 
 Re-running the same load replaces rather than appends — the staging slice is
-cleared before each extract. Every attempt, success or failure, is recorded in
-`load_history`.
+cleared before each extract. Failed and `--stop-after` attempts may leave their
+slices in staging for operator inspection; attempt-scoped validation prevents
+them from affecting a later period. Every attempt, success or failure, is
+recorded in `load_history`.
 
 ## Describing a source
 
@@ -165,6 +169,14 @@ The suffixes above are for `kind: postgres` (and `mssql`, which adds
 - **snowflake** — `_ACCOUNT`, `_USER`, `_PASSWORD`, `_DATABASE`, `_WAREHOUSE`, `_SCHEMA` (optional), `_ROLE` (optional)
 - **bigquery** — `_PROJECT_ID`, `_DATASET_ID` (optional), `_CREDENTIALS_JSON` (the service-account key JSON as a value secret, via the `*_FILE` seam; omit for Application Default Credentials)
 - **databricks** — `_SERVER_HOSTNAME`, `_HTTP_PATH`, `_ACCESS_TOKEN`, `_CATALOG` (optional), `_SCHEMA` (optional)
+
+Snowflake connections disable Ibis's automatic object-UDF bootstrap. Précis
+therefore does not attempt to create the account-level `IBIS_UDFS` database or
+helper functions when connecting to an external source. Operator-authored
+Snowflake SQL, native Snowflake functions, and ordinary Ibis filters and
+aggregations are unaffected. Express any required object/array manipulation in
+the binding's dialect-native SQL rather than relying on Ibis's optional helper
+UDFs.
 
 A file-drop source has no credentials to resolve; the registry logs a startup
 warning about the missing env vars, which is expected and harmless there.
@@ -307,9 +319,12 @@ a known source, and at most one binding may write each `live.*` target.
 The validate stage above is structural only — it confirms the staged columns
 match the live table. To gate a load on the *values* (a GL that balances,
 totals that tie to the source, no orphan account codes), add a `checks:` list
-to the binding. Each check runs against the staged rows **after** the
-structural check and **before** the swap; a failing `error` check blocks the
-swap, so bad data never reaches `live.*`.
+to the binding. Each check runs against the current attempt's staged rows
+**after** the structural check and **before** the swap; a failing `error`
+check blocks the swap, so bad data never reaches `live.*`. Précis supplies the
+scope automatically: `_load_id = <current load>` for every binding, plus
+`period = <current period>` for period bindings. Do not repeat that predicate
+in binding YAML.
 
 ```yaml
 # instance/integrations/bindings/<source>__<dataset>.yml  (excerpt)
@@ -367,11 +382,13 @@ check trips — absent, any failing row trips.
 (`column:` + `references: schema.table.column`), `expression`
 (`expression:` boolean, optional `group_by:` for aggregate predicates),
 `row_count` / `distinct_count` (`min:`/`max:`), and `reconcile`. Anything the
-curated set doesn't cover is a raw `sql:` check (`{staging}` / `{live}` resolve
-to the binding's tables).
+curated set doesn't cover is a raw `sql:` check. `{staging}` resolves to a
+subquery already scoped to the current attempt; `{live}` resolves to the live
+table so an explicit cross-period control can compare the candidate slice with
+authoritative landed history.
 
 **`reconcile`** is the cross-system tie-out — the most important control. It
-diffs each staged-side `measure` (computed by Précis over the staged rows)
+diffs each staged-side `measure` (computed by Précis over the current attempt)
 against the same-named column from `source_query` (run against the source
 during extract), per `group_by` group, within `tolerance` (`abs:` or `pct:`).
 The `source_query` is typically a *different* table than the extract pulled
@@ -399,26 +416,37 @@ to `instance/integrations/`; override with `PRECIS_INTEGRATIONS_ROOT`.
 
 ## Running a load
 
-The operator script runs one `(binding, period)` through the full pipeline,
-using the same code path every trigger uses:
+The installed host admin CLI, `precis-finance-mcp-admin`, runs one
+`(binding, period)` through the same production orchestrator used by the
+authenticated admin, push, cron, and watch triggers. From a source checkout,
+`python -m precis_mcp.admin_cli` is the equivalent entrypoint.
 
 ```bash
 # Full pipeline: extract → validate → swap
-python scripts/run_ingest_stage.py --binding customer_pg__gl --period 2026-04
+precis-finance-mcp-admin ingestion run \
+  --binding customer_pg__gl --period 2026-04
 
 # Snapshot bindings take no --period
-python scripts/run_ingest_stage.py --binding crm_filedrop__fact_pipeline
+precis-finance-mcp-admin ingestion run \
+  --binding crm_filedrop__fact_pipeline
 ```
 
-When commissioning a new binding, run one stage at a time with `--stop-after`:
+Use the authenticated admin trigger for routine full loads. The host CLI's
+distinct purpose is commissioning and diagnosis: it can stop before promotion
+and prints the persisted data-quality verdict and per-check summary. Run a new
+binding one stage at a time with `--stop-after`:
 
 ```bash
-python scripts/run_ingest_stage.py --binding customer_pg__gl --period 2026-04 --stop-after extract
-python scripts/run_ingest_stage.py --binding customer_pg__gl --period 2026-04 --stop-after validate
+precis-finance-mcp-admin ingestion run \
+  --binding customer_pg__gl --period 2026-04 --stop-after extract
+precis-finance-mcp-admin ingestion run \
+  --binding customer_pg__gl --period 2026-04 --stop-after validate
 ```
 
 `--stop-after extract` leaves the rows in `staging.<table>` for inspection
-without touching live.
+without touching live. A later period remains safe: its checks are constrained
+to its own `_load_id` and period. Stale diagnostic slices consume storage but
+do not participate in validation or swap.
 
 ## Scheduling
 
@@ -497,6 +525,7 @@ they reach the server and the daemons alike.
    | `failed_extract` | Source query failed (connectivity, SQL error, credentials). |
    | `failed_validation` | Zero rows extracted — refused before swap. |
    | `failed_recon` | Staging/live column shape mismatch — fix the extract query or the table DDL. |
+   | `failed_checks` | An error-severity data-quality or source-reconciliation check failed for the candidate load. |
    | `failed_swap` | ClickHouse swap failed. |
    | `failed_other` | Couldn't acquire the per-target lock (another load was running), or an unclassified failure. |
 

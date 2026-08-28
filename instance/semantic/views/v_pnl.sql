@@ -18,12 +18,9 @@
 -- The union assembles all six sources at that grain; the outer SELECT
 -- joins the three dim tables (account / cost_centre / period) once,
 -- not per-source.
+-- Time-rollup semantics are metric metadata in the catalogue, not row
+-- metadata in this native-period view.
 --
--- rollup_method: controls how values aggregate across periods in summary views
---   'sum'     — standard: SUM(amount) across selected periods
---   'avg'     — period average: SUM(amount) / COUNT(DISTINCT period)
---   'closing' — last period only: value WHERE period = MAX(period)
-
 WITH unified AS (
     -- Actuals (GL) — P&L + BS, BS excluded post-join via fs_line lookup
     SELECT
@@ -33,7 +30,6 @@ WITH unified AS (
         period         AS period,
         'ACTUALS'      AS scenario,
         SUM(amount)    AS amount,
-        'sum'          AS rollup_method,
         '__actuals__'  AS commit_id,
         CAST(NULL AS Nullable(String)) AS hardcoded_account_name,
         CAST(NULL AS Nullable(String)) AS hardcoded_account_type,
@@ -51,9 +47,6 @@ WITH unified AS (
         e.period                    AS period,
         e.scenario                  AS scenario,
         SUM(e.amount)         AS amount,
-        CASE WHEN e.account_code IN ('9200', '9210') THEN 'avg'
-             ELSE 'sum'
-        END                         AS rollup_method,
         '__plan__'                  AS commit_id,
         CAST(NULL AS Nullable(String)) AS hardcoded_account_name,
         CAST(NULL AS Nullable(String)) AS hardcoded_account_type,
@@ -72,7 +65,6 @@ WITH unified AS (
         period                AS period,
         'ACTUALS'             AS scenario,
         SUM(hours_billable)   AS amount,
-        'sum'                 AS rollup_method,
         '__actuals__'         AS commit_id,
         'Billable Hours'      AS hardcoded_account_name,
         'STATISTICAL'         AS hardcoded_account_type,
@@ -90,7 +82,6 @@ WITH unified AS (
         period                AS period,
         'ACTUALS'             AS scenario,
         SUM(hours_worked)     AS amount,
-        'sum'                 AS rollup_method,
         '__actuals__'         AS commit_id,
         'Total Hours'         AS hardcoded_account_name,
         'STATISTICAL'         AS hardcoded_account_type,
@@ -110,7 +101,6 @@ WITH unified AS (
         p.period                                                                        AS period,
         'ACTUALS'                                                                       AS scenario,
         CAST(COUNT(DISTINCT p.employee_id) AS Decimal(18, 2))                           AS amount,
-        'avg'                                                                           AS rollup_method,
         '__actuals__'                                                                   AS commit_id,
         CASE WHEN cc.is_billable = 1 THEN 'FTEs - Billable' ELSE 'FTEs - Overhead' END  AS hardcoded_account_name,
         'STATISTICAL'                                                                   AS hardcoded_account_type,
@@ -135,7 +125,6 @@ SELECT
     coalesce(pd.fiscal_year, '')   AS fiscal_year,
     u.scenario                     AS scenario,
     u.amount                       AS amount,
-    u.rollup_method                AS rollup_method,
     u.commit_id                    AS commit_id
 FROM unified u
 LEFT JOIN live.dim_account     ad ON u.account     = ad.account_code

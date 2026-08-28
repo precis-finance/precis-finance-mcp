@@ -517,13 +517,15 @@ def run_binding(
             # ----- Stage 2b: data-quality checks (operator-declared) -----
             # Structural shape has passed — a precondition, since the check
             # SQL assumes the columns exist and are typed right. The
-            # operator's business-rule checks now run against staging and the
-            # swap is gated on the combined outcome.
+            # operator's business-rule checks now run against this attempt's
+            # staging slice and the swap is gated on the combined outcome.
             if binding.checks:
                 try:
                     check_run = dq_checks.run_checks(
                         binding,
                         ch_client=ctx.ch_client,
+                        period=period,
+                        load_id=load_id,
                         reconcile_source_totals=reconcile_source_totals,
                     )
                 except Exception as exc:

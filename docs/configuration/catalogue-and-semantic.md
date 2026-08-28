@@ -236,6 +236,17 @@ SQL aggregate applied to the source rows (`sum`, `count`, `avg`, …);
 up — `sum` for flows like revenue, `closing` for balances (take the last
 period's value rather than adding), `avg` for rates.
 
+On a ClickHouse domain, `aggregation` supports `sum`, `count`,
+`count_distinct`, `avg`, `min`, and `max`. The row filter in `where:` is applied
+inside that aggregate. Non-matching rows contribute zero to `sum`, are counted
+by neither count variant, and are excluded (SQL `NULL`) from `avg`, `min`, and
+`max`. Use `aggregation: avg` with `rollup_method: sum` for an ordinary average
+over all matching source rows in the selected window; `rollup_method: closing`
+applies that average only at the closing native period. The special
+`rollup_method: avg` means “sum the matching values, then divide by the number
+of distinct native periods” and therefore currently requires
+`aggregation: sum`.
+
 Read it as a query against the source view:
 
 ```sql

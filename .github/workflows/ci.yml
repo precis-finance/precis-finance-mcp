@@ -4,7 +4,7 @@
 # .github/workflows/ci.yml (GitHub Actions only runs workflows under
 # .github/workflows/). It is inert in the Précis monorepo, which has no Actions runner.
 #
-# Four jobs:
+# Six jobs:
 #   - boundary: the open import check (no `precis` import) — replaces the
 #     Précis monorepo's `lint-imports`, which degenerates once `precis` is absent. Pure
 #     stdlib AST scan, so it runs before any install.
@@ -15,6 +15,9 @@
 #     with `make lock`) — known-vulnerability gate on the pinned dependency set.
 #   - image-scan: build the Docker image and trivy-scan it; fails on fixable
 #     HIGH/CRITICAL findings in the OS layer or site-packages.
+#   - sidecar-scan: scan the exact Postgres, ClickHouse, and Keycloak digest
+#     pins shipped in Compose.
+#   - caddy-scan: build and scan the custom rate-limited Caddy image.
 name: ci
 
 on:
@@ -73,6 +76,54 @@ jobs:
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: precis-finance-mcp:scan
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+
+  sidecar-scan:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: postgres
+            image: postgres:16-bookworm@sha256:bb3e1a57e5407e0a5280b4211980a5e537f4abd234a87014ac979849a78dd825
+            # gosu only drops privileges and execs postgres; it does not use
+            # the network/parser code implicated by its Go stdlib findings.
+            skip_files: /usr/local/bin/gosu
+            trivyignores: ""
+          - name: clickhouse
+            image: clickhouse/clickhouse-server:26.3@sha256:a98e1614cb9ad74bff6b22faa37a2452c6dd445beef27012cd5b0a449d24ba9e
+            skip_files: ""
+            trivyignores: ""
+          - name: keycloak
+            image: quay.io/keycloak/keycloak:26.7.2@sha256:9d1f1b2b7261ff53c66cb1092dfcdc34a5fb77e81f9e6a6e75b8b6a795de8067
+            skip_files: ""
+            trivyignores: deploy/.trivyignore-keycloak
+    steps:
+      - uses: actions/checkout@v6
+      - name: Trivy scan ${{ matrix.name }} (fixable HIGH/CRITICAL gate)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ matrix.image }}
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          skip-files: ${{ matrix.skip_files }}
+          trivyignores: ${{ matrix.trivyignores }}
+
+  caddy-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build the custom Caddy image
+        run: docker build -t precis-caddy:scan deploy/caddy
+      - name: Trivy scan Caddy (fixable HIGH/CRITICAL gate)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: precis-caddy:scan
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL

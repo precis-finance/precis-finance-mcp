@@ -2,11 +2,13 @@
 # Copyright (c) 2026 Sergio Naval Marimont
 """Admin CLI for the open precis-finance-mcp distribution.
 
-Headless operator surface for the platform-Postgres objects the open package owns:
-users, security profiles, profile assignments. The trust boundary is host/DB
-access (the same one `migrate.py` assumes) — no web server, no browser auth. It
-shares all logic with the Précis admin UI via `precis_mcp.admin_ops`, so both
-surfaces validate identically and write the same audit rows.
+Headless operator surface for identity/profile administration, ingestion
+commissioning, and backup operations. The trust boundary is host/DB access
+(the same one `migrate.py` assumes) — no web server, no browser auth. Identity
+commands share all logic with the Précis admin UI via `precis_mcp.admin_ops`,
+so both surfaces validate identically and write the same audit rows. Ingestion
+commands call the same orchestrator used by admin, push, cron, and watch
+triggers.
 
 It also solves first-run bootstrap (`create-admin`): the admin UI needs an admin
 to log in, but none exists at install — only the CLI can seed the first one.
@@ -39,6 +41,50 @@ def _actor() -> str:
 
 def _print_json(obj: Any) -> None:
     print(json.dumps(obj, indent=2, default=str))
+
+
+def _normalise_control_result(value: Any) -> dict[str, Any]:
+    """Return a JSONB control result as a dict, tolerating text drivers."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
+def _print_control_result(value: Any) -> None:
+    """Print a compact operator summary of persisted ingestion checks."""
+    result = _normalise_control_result(value)
+    checks = result.get("checks")
+    if not isinstance(checks, list):
+        return
+
+    verdict = result.get("verdict", "unknown")
+    passed = sum(c.get("passed") is True for c in checks if isinstance(c, dict))
+    print(f"checks       : {verdict} ({passed}/{len(checks)} passed)")
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        name = check.get("name", "unnamed")
+        severity = check.get("severity", "error")
+        outcome = "passed" if check.get("passed") is True else "failed"
+        facts: list[str] = []
+        if check.get("failing") is not None:
+            facts.append(f"failing={check['failing']}")
+        if check.get("error"):
+            facts.append(f"error={check['error']}")
+        detail = check.get("detail")
+        groups = detail.get("groups") if isinstance(detail, dict) else None
+        if isinstance(groups, dict):
+            facts.append(
+                f"groups(staged={groups.get('staged')},source={groups.get('source')})"
+            )
+        suffix = f"; {', '.join(facts)}" if facts else ""
+        print(f"  check      : {name} [{severity}] {outcome}{suffix}")
 
 
 def _read_profile_body(args: argparse.Namespace) -> ProfileYamlBody:
@@ -224,6 +270,57 @@ def cmd_check_auth(args: argparse.Namespace) -> None:
     print("auth conformance: OK")
 
 
+def cmd_ingestion_run(args: argparse.Namespace) -> None:
+    """Run one production ingestion attempt, optionally stopping before swap."""
+    # Resolve *_FILE credentials before the Ibis backend factory can read any
+    # source environment variables. The import performs the one-shot seam.
+    import precis_mcp.secrets  # noqa: F401
+    from precis_mcp.ingestion.load_history import get_load_history_row
+    from precis_mcp.ingestion.orchestrator import run_binding
+    from precis_mcp.ingestion.wiring import (
+        build_default_ingestion_context_from_env,
+    )
+
+    ctx = build_default_ingestion_context_from_env()
+    if ctx is None:
+        print(
+            "error: could not build the ingestion context; check ClickHouse / "
+            "Postgres connectivity and the integrations root",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+
+    result = run_binding(
+        ctx,
+        binding_id=args.binding,
+        period=args.period,
+        triggered_by=args.triggered_by or _actor(),
+        notes=args.notes,
+        stop_after=args.stop_after,
+    )
+
+    print(f"load_id      : {result.load_id}")
+    print(f"status       : {result.status}")
+    if result.stopped_after is not None:
+        print(f"stopped_after: {result.stopped_after}")
+    if result.rows_landed is not None:
+        print(f"rows_landed  : {result.rows_landed}")
+    print(f"duration_ms  : {result.duration_ms}")
+
+    try:
+        history_row = get_load_history_row(result.load_id)
+    except Exception as exc:
+        print(f"checks       : unavailable ({exc})", file=sys.stderr)
+    else:
+        if history_row is not None:
+            _print_control_result(history_row.get("control_total_result"))
+
+    if result.error:
+        print(f"error        : {result.error}", file=sys.stderr)
+    if result.status != "success":
+        raise SystemExit(1)
+
+
 def _backup_config_path(args: argparse.Namespace):
     from pathlib import Path
 
@@ -328,7 +425,7 @@ def cmd_backup_restore(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="python -m precis_mcp.admin_cli",
-        description="Operator admin for the open precis-finance-mcp platform DB.",
+        description="Host-side administration for precis-finance-mcp.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -449,6 +546,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Static checks only — skip the network reachability checks.",
     )
     sp.set_defaults(func=cmd_check_auth)
+
+    # ingestion run
+    ip = sub.add_parser(
+        "ingestion",
+        help="Commission or diagnose ingestion through the production orchestrator.",
+    )
+    isub = ip.add_subparsers(dest="ingestion_cmd", required=True)
+
+    ir = isub.add_parser(
+        "run",
+        help="Run one binding, optionally stopping after extract or validation.",
+    )
+    ir.add_argument("--binding", required=True, help="Binding id.")
+    ir.add_argument(
+        "--period",
+        default=None,
+        help="Period token for period bindings; omit for snapshot bindings.",
+    )
+    ir.add_argument(
+        "--stop-after",
+        choices=("extract", "validate", "swap"),
+        default=None,
+        help=(
+            "Stop after the named stage. Extract and validation stops do not "
+            "touch live; validation includes structural and declared "
+            "data-quality checks."
+        ),
+    )
+    ir.add_argument(
+        "--triggered-by",
+        default=None,
+        help="Override the load-history trigger label (default: cli:<OS user>).",
+    )
+    ir.add_argument("--notes", default=None, help="Audit note for the attempt.")
+    ir.set_defaults(func=cmd_ingestion_run)
 
     # backup <validate|init|run|list|restore>
     bp = sub.add_parser("backup", help="Backup and restore the Précis stores.")

@@ -10,6 +10,7 @@ missing-var error, the unknown-kind error, and the optional-extra message.
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -85,7 +86,31 @@ def test_snowflake_kwargs(monkeypatch):
     assert kw["account"] == "ac"
     assert kw["warehouse"] == "wh"
     assert kw["role"] == "ANALYST"
+    assert kw["create_object_udfs"] is False
     assert "schema" not in kw  # optional, unset
+
+
+def test_snowflake_connect_disables_ibis_object_udfs(monkeypatch):
+    _clearenv(monkeypatch, "WH", "PASSWORD", "SCHEMA")
+    _setenv(monkeypatch, "WH", ACCOUNT="ac", USER="u", DATABASE="d",
+            WAREHOUSE="wh", ROLE="PARTICIPANT")
+    captured: dict[str, object] = {}
+    connected = object()
+
+    class _SnowflakeBackend:
+        @staticmethod
+        def connect(**kwargs):
+            captured.update(kwargs)
+            return connected
+
+    monkeypatch.setitem(
+        sys.modules,
+        "ibis",
+        SimpleNamespace(snowflake=_SnowflakeBackend()),
+    )
+
+    assert build_ibis_backend(_source("snowflake")) is connected
+    assert captured["create_object_udfs"] is False
 
 
 # --- bigquery ---------------------------------------------------------------

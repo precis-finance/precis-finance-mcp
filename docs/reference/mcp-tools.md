@@ -183,7 +183,15 @@ The drill-through from a figure to the rows behind it.
 | `period_start` / `period_end` | string | Grain-tagged period range; the code shape sets the grain — `2025-06` month, `2025-Q2` quarter, `2025` fiscal year, `2025-W37` week, `2025-06-14` day. Both bounds must be the same grain. Month/quarter/fiscal-year work everywhere; week/day only where the domain's data carries them. |
 
 Returns a capped sample of rows plus the inspection grid for rendering
-hosts. Profile scope applies to the rows themselves.
+hosts. The external inspection widget displays at most its first 50 preview
+rows and does not provide server-side pagination; refine filters or use an
+available export mode for a broader bounded extract. A downstream product may
+register the optional result-cache hook and add a `data_ref`, but the open
+package has no Redis dependency and provides no cached paging service. Profile
+scope applies to the rows themselves. In the result metadata,
+`truncated=true` means the database inspection hit its hard/query limit;
+`agent_truncated=true` means only the returned reasoning/preview payload was
+shortened.
 
 ## Ingestion status
 

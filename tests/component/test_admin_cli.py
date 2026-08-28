@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -148,6 +149,95 @@ def test_check_auth_problems_exit_1(capsys):
         with pytest.raises(SystemExit) as exc:
             admin_cli.main(["check-auth"])
     assert exc.value.code == 1
+
+
+# --- ingestion commissioning ---------------------------------------------
+
+
+def test_ingestion_run_uses_production_orchestrator_and_prints_checks(capsys):
+    ctx = object()
+    attempt = SimpleNamespace(
+        load_id="load-1",
+        status="success",
+        stopped_after="validate",
+        rows_landed=200_540,
+        duration_ms=19_700,
+        error=None,
+    )
+    control = {
+        "verdict": "passed",
+        "checks": [{
+            "name": "source_reconciles",
+            "severity": "error",
+            "passed": True,
+            "failing": 0,
+            "detail": {"groups": {"staged": 1, "source": 1}},
+        }],
+    }
+    with patch(
+        "precis_mcp.ingestion.wiring.build_default_ingestion_context_from_env",
+        return_value=ctx,
+    ), patch(
+        "precis_mcp.ingestion.orchestrator.run_binding",
+        return_value=attempt,
+    ) as run, patch(
+        "precis_mcp.ingestion.load_history.get_load_history_row",
+        return_value={"control_total_result": control},
+    ):
+        admin_cli.main([
+            "ingestion", "run",
+            "--binding", "source__fact_sales",
+            "--period", "2024-09",
+            "--stop-after", "validate",
+            "--triggered-by", "ops:test",
+        ])
+
+    run.assert_called_once_with(
+        ctx,
+        binding_id="source__fact_sales",
+        period="2024-09",
+        triggered_by="ops:test",
+        notes=None,
+        stop_after="validate",
+    )
+    out = capsys.readouterr().out
+    assert "status       : success" in out
+    assert "stopped_after: validate" in out
+    assert "checks       : passed (1/1 passed)" in out
+    assert "source_reconciles [error] passed" in out
+    assert "groups(staged=1,source=1)" in out
+
+
+def test_ingestion_run_exits_nonzero_for_failed_attempt(capsys):
+    attempt = SimpleNamespace(
+        load_id="load-2",
+        status="failed_checks",
+        stopped_after=None,
+        rows_landed=10,
+        duration_ms=500,
+        error="Data-quality checks failed",
+    )
+    with patch(
+        "precis_mcp.ingestion.wiring.build_default_ingestion_context_from_env",
+        return_value=object(),
+    ), patch(
+        "precis_mcp.ingestion.orchestrator.run_binding",
+        return_value=attempt,
+    ), patch(
+        "precis_mcp.ingestion.load_history.get_load_history_row",
+        return_value={"control_total_result": {}},
+    ):
+        with pytest.raises(SystemExit) as exc:
+            admin_cli.main([
+                "ingestion", "run",
+                "--binding", "source__fact_sales",
+                "--period", "2024-09",
+            ])
+
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert "status       : failed_checks" in captured.out
+    assert "error        : Data-quality checks failed" in captured.err
 
 
 def test_profile_create_from_stdin(capsys, monkeypatch):

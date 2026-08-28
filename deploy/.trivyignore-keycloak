@@ -1,0 +1,5 @@
+# Keycloak bundles every supported database driver. This deployment selects
+# KC_DB=postgres and never loads the Microsoft SQL Server JDBC driver. Keep this
+# exception scoped to the Keycloak-only CI scan and remove it when upstream
+# ships a fixed driver.
+CVE-2025-59250

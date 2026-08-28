@@ -11,6 +11,57 @@ my client integration?"*
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-08-28
+
+### Added
+
+- `precis-finance-mcp-admin ingestion run` is the host-side ingestion
+  commissioning command. It supports period and snapshot bindings,
+  `--stop-after extract|validate|swap`, audit notes, non-zero failure exits,
+  and a summary of the persisted data-quality/reconciliation result.
+
+### Changed
+
+- Inspection-grid results distinguish source truncation from the smaller
+  agent/widget preview through `source_truncated` and `preview_truncated`.
+  Downstream integrations may attach a `data_ref` for paging the complete
+  bounded extract; standalone open deployments remain cache-free and return
+  the capped preview only.
+
+### Fixed
+
+- Base metrics configured with `aggregation: avg`, `min`, or `max` now compile
+  the declared aggregate instead of being summed. Catalogue validation rejects
+  the unsupported combination of a non-sum source aggregation with
+  `rollup_method: avg`, preventing ambiguous double-averaging.
+- Ingestion data-quality and reconciliation checks are restricted to the
+  current `_load_id` and, for period bindings, the requested period. Rows left
+  in staging by an earlier failed or diagnostic run can no longer affect a
+  later attempt's verdict.
+- Snowflake connections no longer ask Ibis to create its account-level helper
+  UDF database. Read-only source credentials can connect without that DDL
+  privilege.
+- The base and optional-driver dependency sets now pin `cryptography 50.0.1`;
+  optional drivers also pin `pyOpenSSL 26.4.0` and `pyasn1 0.6.4`. These clear
+  `PYSEC-2026-3552`, `PYSEC-2026-3553`, `PYSEC-2026-3554`, and the
+  `PYSEC-2026-3455`–`3457` advisory set before the release image is built.
+- Bundled image pins now ship PostgreSQL 16.15 on Debian Bookworm, ClickHouse
+  26.3.24.4, Keycloak 26.7.2, and a hardened Caddy 2.11.4 build. Open CI now
+  scans those exact sidecar digests and the custom Caddy image for fixable
+  high/critical vulnerabilities instead of scanning only the application image.
+
+### Removed
+
+- The exported demo `semantic.v_pnl` view no longer exposes the row-level
+  `rollup_method` column; time-rollup semantics come from metric catalogue
+  metadata. **Upgrade action:** remove any custom query dependency on that
+  view column before reapplying the bundled semantic views.
+- The duplicate `scripts/run_ingest_stage.py` entrypoint. **Upgrade action:**
+  replace `python scripts/run_ingest_stage.py <flags>` with
+  `precis-finance-mcp-admin ingestion run <flags>`. The binding, period,
+  stage-stop, trigger-label, and notes flags are unchanged; the consolidated
+  CLI defaults `triggered_by` to `cli:<OS user>` instead of `ops:manual`.
+
 ## [0.2.4] - 2026-07-13
 
 ### Added

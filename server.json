@@ -3,7 +3,7 @@
   "name": "io.github.precis-finance/precis-finance-mcp",
   "title": "Précis Finance MCP",
   "description": "Public read-only Précis Finance MCP demo with synthetic data; no account or credentials required.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "websiteUrl": "https://precis.finance/mcp",
   "repository": {
     "url": "https://github.com/precis-finance/precis-finance-mcp",

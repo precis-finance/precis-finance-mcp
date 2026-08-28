@@ -472,6 +472,9 @@ def test_error_check_blocks_swap(tmp_path: Path):
         "name": "amt", "severity": "error", "type": "not_null",
         "passed": False, "failing": 3,
     }
+    check_sql = next(q for q in ch.queries if "amount IS NULL" in q)
+    assert "period = '2026-04'" in check_sql
+    assert f"_load_id = '{result.load_id}'" in check_sql
 
 
 def test_warning_check_loads_with_warnings(tmp_path: Path):

@@ -2,9 +2,12 @@
 # Copyright (c) 2026 Sergio Naval Marimont
 """Tests for MCP read tools — validates tool registration and request construction."""
 
+from copy import deepcopy
 import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch
+
 from tests.fakes.fake_clickhouse import FakeQueryResult
 from tests.fakes.mock_mcp import MockMCP
 
@@ -54,7 +57,13 @@ def tools(catalogue, fake_ch):
     mock_mcp = MockMCP()
     from precis_mcp.tools.read_tools import register_read_tools
     register_read_tools(mock_mcp, MockCatalogueRef(catalogue))
-    with patch('precis_mcp.tools.read_tools.get_clickhouse_client', return_value=fake_ch):
+    with patch(
+        "precis_mcp.tools.read_tools.get_clickhouse_client",
+        return_value=fake_ch,
+    ), patch(
+        "precis_mcp.tools.read_tools.get_data_ref_cache",
+        return_value=None,
+    ):
         yield mock_mcp.tools
 
 
@@ -363,6 +372,73 @@ def test_inspect_rows_agent_output_is_capped(tools):
 
     assert len(result["rows"]) == 100
     assert result["agent_truncated"] is True
+    assert result["truncated"] is False
+
+
+def test_inspect_rows_caches_full_bounded_result_before_agent_cap(tools):
+    rows = [{"period": "2026-01", "amount": i} for i in range(150)]
+    cached_snapshot = {}
+
+    def capture_cache(**kwargs):
+        cached_snapshot.update(deepcopy(kwargs))
+        return "conv-1:inspection-ref"
+
+    cache = MagicMock(side_effect=capture_cache)
+    with patch("precis_mcp.tools.read_tools.engine_inspect_rows") as mock_inspect:
+        mock_inspect.return_value = {
+            "source_key": "gl",
+            "columns": ["period", "amount"],
+            "rows": rows,
+            "row_count": 150,
+            "limit": 200,
+            "truncated": False,
+            "query": {"backend_kind": "clickhouse", "sql": "SELECT ..."},
+        }
+        with patch("precis_mcp.tools.read_tools.execute_platform"), patch(
+            "precis_mcp.tools.read_tools.get_data_ref_cache",
+            return_value=cache,
+        ):
+            result = tools["inspect_rows"](
+                source_key="gl",
+                scenario_id="actuals",
+                period_start="2026-01",
+                period_end="2026-01",
+                out="agent",
+            )
+
+    cached = cached_snapshot
+    assert cached["tool_name"] == "inspect_rows"
+    assert len(cached["result"]["rows"]) == 150
+    assert cached["result"]["caption"]["source_key"] == "gl"
+    assert "data_ref" not in cached["result"]
+    assert cached["tool_args"]["scenario_id"] == "actuals"
+    assert cached["tool_args"]["period_start"] == "2026-01"
+    assert result["data_ref"] == "conv-1:inspection-ref"
+    assert len(result["rows"]) == 100
+
+
+def test_inspect_rows_open_path_has_no_data_ref_without_cache(tools):
+    with patch("precis_mcp.tools.read_tools.engine_inspect_rows") as mock_inspect:
+        mock_inspect.return_value = {
+            "source_key": "gl",
+            "columns": ["period", "amount"],
+            "rows": [{"period": "2026-01", "amount": 1}],
+            "row_count": 1,
+            "limit": 200,
+            "truncated": False,
+            "query": {"backend_kind": "clickhouse", "sql": "SELECT ..."},
+        }
+        with patch("precis_mcp.tools.read_tools.execute_platform"), patch(
+            "precis_mcp.tools.read_tools.get_data_ref_cache",
+            return_value=None,
+        ):
+            result = tools["inspect_rows"](
+                source_key="gl",
+                scenario_id="actuals",
+                out="agent",
+            )
+
+    assert "data_ref" not in result
 
 
 def test_inspect_rows_render_output_is_capped(tools):
@@ -387,6 +463,7 @@ def test_inspect_rows_render_output_is_capped(tools):
     assert len(result["rows"]) == 100
     assert result["agent_truncated"] is True
     assert result["row_count"] == 150
+    assert result["truncated"] is False
 
 
 def test_inspect_rows_validation_error_does_not_audit(tools):

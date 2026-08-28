@@ -500,6 +500,21 @@ class TestBuildMetricExpression:
         assert "/ NULLIF(COUNT(DISTINCT t.period), 0)" in expr
         assert "CASE WHEN" in expr
 
+    def test_average_period_rollup_rejects_non_sum_aggregation(self):
+        m = BaseMetric(
+            key="bad_average",
+            label="Bad average",
+            source_column="amount",
+            aggregation="avg",
+            rollup_method="avg",
+            sign="raw",
+            format="number",
+            fs_group="Test",
+        )
+
+        with pytest.raises(ValueError, match="requires aggregation='sum'"):
+            build_avg_metric_expression(m)
+
     def test_count_distinct_uses_source_column(self):
         # Regression: count_distinct must distinct-count the metric's
         # source_column, not a hardcoded `employee_id` (which broke pipeline
@@ -519,6 +534,58 @@ class TestBuildMetricExpression:
         assert "COUNT(DISTINCT CASE WHEN" in expr
         assert "THEN t.opportunity_id END" in expr
         assert "employee_id" not in expr
+
+    @pytest.mark.parametrize(
+        ("aggregation", "expected"),
+        [
+            ("avg", "AVG(CASE WHEN t.category = 'AAA' THEN t.amount END)"),
+            ("min", "MIN(CASE WHEN t.category = 'AAA' THEN t.amount END)"),
+            ("max", "MAX(CASE WHEN t.category = 'AAA' THEN t.amount END)"),
+        ],
+    )
+    def test_non_additive_aggregations_use_the_declared_sql_function(
+        self, aggregation, expected
+    ):
+        m = BaseMetric(
+            key=f"test_{aggregation}",
+            label=f"Test {aggregation}",
+            where=[MetricPredicate(column="category", op="eq", value="AAA")],
+            source_column="amount",
+            aggregation=aggregation,
+            rollup_method="sum",
+            sign="raw",
+            format="number",
+            fs_group="Test",
+        )
+
+        expr = build_metric_expression(m)
+
+        assert expr == expected
+        assert "ELSE 0" not in expr
+
+    def test_avg_honours_sign_before_aggregation(self):
+        m = BaseMetric(
+            key="test_avg_abs",
+            label="Test average absolute",
+            source_column="amount",
+            aggregation="avg",
+            rollup_method="closing",
+            sign="abs",
+            format="number",
+            fs_group="Test",
+        )
+
+        assert build_metric_expression(m) == (
+            "AVG(CASE WHEN 1=1 THEN ABS(t.amount) END)"
+        )
+
+    def test_project_percent_complete_generates_avg_not_sum(self, catalogue):
+        dq = _make_query(["project_percent_complete"], domain="project_economics")
+
+        sql, _ = generate_sql(dq, catalogue, [], None)[0]
+
+        assert "AVG(CASE WHEN 1=1 THEN t.percent_complete END)" in sql
+        assert "SUM(CASE WHEN 1=1 THEN t.percent_complete" not in sql
 
 
 class TestCompilePredicatesToSql:

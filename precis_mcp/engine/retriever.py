@@ -126,14 +126,14 @@ def compile_predicates_to_sql(where: list[MetricPredicate]) -> str:
 
 
 def build_metric_expression(metric: BaseMetric) -> str:
-    """Build the SQL CASE WHEN expression for a single base metric.
+    """Build the filtered SQL aggregate for a single base metric.
 
     Returns the expression WITHOUT an alias — caller adds 'AS {key}'.
 
-    sign values:
-      raw     -> SUM(CASE WHEN {filter} THEN {col} ELSE 0 END)
-      abs     -> SUM(CASE WHEN {filter} THEN ABS({col}) ELSE 0 END)
-      negate  -> SUM(CASE WHEN {filter} THEN -{col} ELSE 0 END)
+    ``sum`` uses an explicit zero for non-matching rows so an empty filtered
+    slice remains additive. ``avg`` / ``min`` / ``max`` omit ELSE so SQL NULL
+    semantics exclude non-matching rows rather than treating them as zero.
+    ``count`` and ``count_distinct`` have their own source/sign contracts below.
     """
     col = _qualify(metric.source_column)
     filt = compile_predicates_to_sql(metric.where)
@@ -156,7 +156,14 @@ def build_metric_expression(metric: BaseMetric) -> str:
     else:  # raw
         value_expr = col
 
-    return f"SUM(CASE WHEN {filt} THEN {value_expr} ELSE 0 END)"
+    if metric.aggregation == "sum":
+        return f"SUM(CASE WHEN {filt} THEN {value_expr} ELSE 0 END)"
+    if metric.aggregation in {"avg", "min", "max"}:
+        aggregate = metric.aggregation.upper()
+        return f"{aggregate}(CASE WHEN {filt} THEN {value_expr} END)"
+    raise ValueError(
+        f"Unsupported aggregation {metric.aggregation!r} for metric {metric.key!r}"
+    )
 
 
 def build_avg_metric_expression(metric: BaseMetric, native_column: str = "period") -> str:
@@ -166,6 +173,11 @@ def build_avg_metric_expression(metric: BaseMetric, native_column: str = "period
     average is per native period within each breakdown group — correct at any
     query/breakdown grain, not just month. NULLIF guards a zero period count.
     """
+    if metric.aggregation != "sum":
+        raise ValueError(
+            f"rollup_method='avg' requires aggregation='sum' for metric "
+            f"{metric.key!r}; got {metric.aggregation!r}"
+        )
     col = _qualify(metric.source_column)
     filt = compile_predicates_to_sql(metric.where)
     native = _qualify(native_column)

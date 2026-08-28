@@ -18,6 +18,9 @@ Optional drivers: `postgres` + `duckdb` ship in the default install
 (`ibis-framework[duckdb,postgres]`); `mssql` / `snowflake` / `bigquery` /
 `databricks` are optional extras (`pip install 'precis-finance-mcp[snowflake]'`) and
 raise `IntegrationConfigError` naming the extra when the driver is absent.
+Snowflake's Ibis object-UDF bootstrap is disabled because integration sources
+are read-only; operator-authored SQL and ordinary Ibis filters/aggregates do
+not depend on those helper UDFs.
 """
 
 from __future__ import annotations
@@ -108,6 +111,10 @@ def _kwargs_snowflake(source: Source) -> dict[str, Any]:
         database=req["DATABASE"],
         warehouse=req["WAREHOUSE"],
         password=os.environ.get(f"{p}_PASSWORD") or "",
+        # Ibis otherwise attempts to create an account-level `IBIS_UDFS`
+        # database at connect time. External sources are a read-only boundary;
+        # raw SQL plus the filters/aggregates Précis uses need no helper UDFs.
+        create_object_udfs=False,
     )
     _optional(p, kwargs, (("SCHEMA", "schema"), ("ROLE", "role")))
     return kwargs
