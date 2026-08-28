@@ -91,7 +91,9 @@ jobs:
             image: postgres:16-bookworm@sha256:bb3e1a57e5407e0a5280b4211980a5e537f4abd234a87014ac979849a78dd825
             # gosu only drops privileges and execs postgres; it does not use
             # the network/parser code implicated by its Go stdlib findings.
-            skip_files: /usr/local/bin/gosu
+            # Debian's ssl-cert package ships this public snake-oil test key;
+            # it is not a credential and cannot protect production traffic.
+            skip_files: /usr/local/bin/gosu,/etc/ssl/private/ssl-cert-snakeoil.key
             trivyignores: ""
           - name: clickhouse
             image: clickhouse/clickhouse-server:26.3@sha256:a98e1614cb9ad74bff6b22faa37a2452c6dd445beef27012cd5b0a449d24ba9e
