@@ -84,7 +84,7 @@ set `PRECIS_MCP_TAG` to a published image version and bring the stack up
 *without* `--build`:
 
 ```bash
-PRECIS_MCP_TAG=0.2.5 docker compose -f deploy/docker-compose.yml up -d
+PRECIS_MCP_TAG=0.2.6 docker compose -f deploy/docker-compose.yml up -d
 ```
 
 Compose pulls `ghcr.io/precis-finance/precis-finance-mcp:<tag>` (falling back to a

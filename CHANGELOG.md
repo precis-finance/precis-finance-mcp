@@ -11,6 +11,32 @@ my client integration?"*
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-09-24
+
+### Added
+
+- Documented the existing public, read-only synthetic-data demo and how to
+  connect common MCP clients. Self-hosted deployments keep their own data and
+  authentication; the public demo is not a customer deployment mode.
+
+### Changed
+
+- Refreshed the hashed Python dependency lock, the application base-image pins,
+  and the bundled PostgreSQL, ClickHouse, and Keycloak image pins. Updated the
+  bundled Caddy image and its security-patched Go modules.
+- Excluded nested `node_modules` directories from the application image build
+  context so unrelated development packages do not ship in the runtime image.
+
+### Security
+
+- Keycloak moves from 26.7.2 to 26.7.4, but its server-runtime JARs still
+  contain CVE-2026-13506, CVE-2026-75595, and CVE-2026-8763. This release
+  accepts those residual findings until 2026-10-24 while waiting for a tested
+  upstream image; it does not claim to fix them. Installations whose policy
+  disallows these findings can use external OIDC instead of bundled Keycloak.
+
+No instance schema or data migration is required for this release.
+
 ## [0.2.5] - 2026-08-28
 
 ### Added

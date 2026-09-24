@@ -58,6 +58,23 @@ period, scenario — and the measures generic metric layers can't express
 or business unit, with subtotals in the layout) are first-class catalogue
 definitions.
 
+## Try the public demo
+
+Connect a remote MCP client to **https://mcp.precis.finance/mcp** to explore
+Précis Finance MCP without installing anything or creating an account. The
+shared server exposes read-only tools over a synthetic finance dataset; it does
+not contain your financial data. No API key or sign-in is required.
+
+For Claude Code:
+
+```sh
+claude mcp add --transport http precis-demo https://mcp.precis.finance/mcp
+```
+
+Then ask `precis_orientation` what the demo supports, or request a P&L with
+comparatives. See the [public demo connection guide](docs/getting-started/public-demo.md)
+for other MCP clients and the limits of this shared instance.
+
 ## Quickstart — single-user local trial
 
 ```sh

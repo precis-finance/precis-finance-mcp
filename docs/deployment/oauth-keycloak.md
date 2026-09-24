@@ -33,6 +33,14 @@ committed realm (sign-in client, the `precis_user_id` user mapper, and the
 audience mapper for `/mcp`) plus a per-deploy reconcile. You don't configure OIDC
 by hand.
 
+!!! warning "Known findings in bundled Keycloak 26.7.4"
+    Release 0.2.6 temporarily accepts CVE-2026-13506, CVE-2026-75595, and
+    CVE-2026-8763 in Keycloak's server-runtime dependencies through
+    2026-10-24, pending a tested upstream image. These findings are not fixed
+    by this release. If your policy disallows them, use mode C with your own
+    OIDC provider or defer the bundled-Keycloak installation. See the release
+    [changelog](../../CHANGELOG.md) for the scope of this update.
+
 | Variable | Purpose | Default |
 |---|---|---|
 | `PRECIS_AUTH_MODE` | `keycloak` | — |

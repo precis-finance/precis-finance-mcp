@@ -58,6 +58,7 @@ markdown_extensions:
 nav:
   - Home: README.md
   - Getting started:
+      - Connect to the public demo: getting-started/public-demo.md
       - Quickstart (local, dev-key): getting-started/quickstart.md
       - How Précis Finance MCP works: getting-started/concepts.md
   - Excel add-in:

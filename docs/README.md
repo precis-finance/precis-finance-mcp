@@ -48,6 +48,7 @@ model; it serves the queries.
 
 | You want to… | Go to |
 |---|---|
+| Try the hosted demo with synthetic data and no account | [Connect to the public demo](getting-started/public-demo.md) |
 | Run a single-user server in a few minutes | [Quickstart](getting-started/quickstart.md) |
 | Understand the moving parts first | [How Précis Finance MCP works](getting-started/concepts.md) |
 | Expose a secure multi-user server (bundled Keycloak or your own OIDC IdP) | [Remote access — sign-in & identity modes](deployment/oauth-keycloak.md) |

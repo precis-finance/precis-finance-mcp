@@ -14,7 +14,7 @@
 # postgresql-client-16 it serves links libpq5/glibc built for bookworm. A
 # trixie userland makes that dependency unsatisfiable. Keep the codename here in
 # lockstep with the PGDG suite below.
-FROM node:20-bookworm-slim AS excel-addin-builder
+FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS excel-addin-builder
 
 WORKDIR /build/excel-addin
 
@@ -25,7 +25,7 @@ RUN npm ci
 COPY excel-addin ./
 RUN npm run build
 
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e
 
 WORKDIR /app
 

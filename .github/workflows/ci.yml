@@ -88,7 +88,7 @@ jobs:
       matrix:
         include:
           - name: postgres
-            image: postgres:16-bookworm@sha256:bb3e1a57e5407e0a5280b4211980a5e537f4abd234a87014ac979849a78dd825
+            image: postgres:16-bookworm@sha256:efedf3595f1d6f415c08568ba171029bf54052e754cc9f030e3f2412b21f3d67
             # gosu only drops privileges and execs postgres; it does not use
             # the network/parser code implicated by its Go stdlib findings.
             # Debian's ssl-cert package ships this public snake-oil test key;
@@ -96,11 +96,11 @@ jobs:
             skip_files: /usr/local/bin/gosu,/etc/ssl/private/ssl-cert-snakeoil.key
             trivyignores: ""
           - name: clickhouse
-            image: clickhouse/clickhouse-server:26.3@sha256:a98e1614cb9ad74bff6b22faa37a2452c6dd445beef27012cd5b0a449d24ba9e
+            image: clickhouse/clickhouse-server:26.3@sha256:810861a2e2d0188744f5f23b2d3ec9ff95812bcb9ddbb8fed13a377a7f305893
             skip_files: ""
             trivyignores: ""
           - name: keycloak
-            image: quay.io/keycloak/keycloak:26.7.2@sha256:9d1f1b2b7261ff53c66cb1092dfcdc34a5fb77e81f9e6a6e75b8b6a795de8067
+            image: quay.io/keycloak/keycloak:26.7.4@sha256:82a77884f3af238beab1e7afd63b5f530e1b5c0590bd7aa60b40a40463e29b2c
             skip_files: ""
             trivyignores: deploy/.trivyignore-keycloak
     steps:

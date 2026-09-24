@@ -3,3 +3,12 @@
 # exception scoped to the Keycloak-only CI scan and remove it when upstream
 # ships a fixed driver.
 CVE-2025-59250
+
+# Time-limited risk acceptance for the bundled Keycloak 26.7.4 server image.
+# Its runtime JARs contain these findings; they are not false positives and
+# are not waived for any other image. Maintainers accepted the residual risk
+# for the 0.2.6 release while waiting for a tested upstream Keycloak image.
+# Review by 2026-10-24; expired rules must fail CI unless explicitly renewed.
+CVE-2026-13506 exp:2026-10-24
+CVE-2026-75595 exp:2026-10-24
+CVE-2026-8763 exp:2026-10-24
