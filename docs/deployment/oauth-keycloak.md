@@ -38,8 +38,9 @@ by hand.
     CVE-2026-8763 in Keycloak's server-runtime dependencies through
     2026-10-24, pending a tested upstream image. These findings are not fixed
     by this release. If your policy disallows them, use mode C with your own
-    OIDC provider or defer the bundled-Keycloak installation. See the release
-    [changelog](../../CHANGELOG.md) for the scope of this update.
+    OIDC provider or defer the bundled-Keycloak installation. See the
+    [0.2.6 changelog](https://github.com/precis-finance/precis-finance-mcp/blob/v0.2.6/CHANGELOG.md)
+    for the scope of this update.
 
 | Variable | Purpose | Default |
 |---|---|---|
