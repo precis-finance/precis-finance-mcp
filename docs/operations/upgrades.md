@@ -84,7 +84,7 @@ set `PRECIS_MCP_TAG` to a published image version and bring the stack up
 *without* `--build`:
 
 ```bash
-PRECIS_MCP_TAG=0.2.6 docker compose -f deploy/docker-compose.yml up -d
+PRECIS_MCP_TAG=0.2.7 docker compose -f deploy/docker-compose.yml up -d
 ```
 
 Compose pulls `ghcr.io/precis-finance/precis-finance-mcp:<tag>` (falling back to a
@@ -93,6 +93,12 @@ source build only if the tag is absent). Upgrading is then bumping
 bundled Postgres / ClickHouse / Keycloak images are unaffected either way; they
 stay digest-pinned in the compose file. Still read `CHANGELOG.md` first, and
 back up (step 1) — a tag bump is an upgrade like any other.
+
+For 0.2.7, sync the matching Compose manifest as well as changing the app tag:
+the new manifest updates bundled Keycloak and switches ClickHouse to the
+official 26.3 Alpine variant. A tag bump alone leaves both old images running.
+Back up the ClickHouse volume before recreating that container and verify the
+data and health check after it starts.
 
 ## Rolling back
 

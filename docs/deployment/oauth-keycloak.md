@@ -33,14 +33,12 @@ committed realm (sign-in client, the `precis_user_id` user mapper, and the
 audience mapper for `/mcp`) plus a per-deploy reconcile. You don't configure OIDC
 by hand.
 
-!!! warning "Known findings in bundled Keycloak 26.7.4"
-    Release 0.2.6 temporarily accepts CVE-2026-13506, CVE-2026-75595, and
-    CVE-2026-8763 in Keycloak's server-runtime dependencies through
-    2026-10-24, pending a tested upstream image. These findings are not fixed
-    by this release. If your policy disallows them, use mode C with your own
-    OIDC provider or defer the bundled-Keycloak installation. See the
-    [0.2.6 changelog](https://github.com/precis-finance/precis-finance-mcp/blob/v0.2.6/CHANGELOG.md)
-    for the scope of this update.
+Release 0.2.7 bundles Keycloak 26.7.5, which removes the three server-runtime
+findings temporarily accepted in 0.2.6 (CVE-2026-13506, CVE-2026-75595, and
+CVE-2026-8763). The bundled PostgreSQL configuration does not load Keycloak's
+MSSQL JDBC driver; its separate scan exception remains. See the
+[0.2.7 changelog](https://github.com/precis-finance/precis-finance-mcp/blob/v0.2.7/CHANGELOG.md)
+for the full scope of this update.
 
 | Variable | Purpose | Default |
 |---|---|---|

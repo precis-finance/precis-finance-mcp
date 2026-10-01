@@ -64,7 +64,17 @@ jobs:
         # though they ride a separate constraints file (see Dockerfile / Makefile
         # lock-extras). --no-deps audits the fully-pinned set as-is (the file
         # carries no hashes, so --require-hashes does not apply).
-        run: pip-audit --no-deps -r constraints-extras.txt
+        # Databricks SQL Connector 4.6.0 requires oauthlib<4, while the only
+        # published fix for CVE-2026-49265 is oauthlib 4.0.0. This finding is
+        # limited to optional, build-from-source drivers and the vulnerable
+        # PKCE comparison is an authorization-server path, not the connector's
+        # client role. Expire the exception rather than silently retaining it.
+        run: |
+          if [[ "$(date -u +%F)" > "2026-10-31" ]]; then
+            echo "::error::OAuthlib CVE-2026-49265 exception expired; review the Databricks dependency"
+            exit 1
+          fi
+          pip-audit --no-deps --ignore-vuln CVE-2026-49265 -r constraints-extras.txt
 
   image-scan:
     runs-on: ubuntu-latest
@@ -96,11 +106,11 @@ jobs:
             skip_files: /usr/local/bin/gosu,/etc/ssl/private/ssl-cert-snakeoil.key
             trivyignores: ""
           - name: clickhouse
-            image: clickhouse/clickhouse-server:26.3@sha256:810861a2e2d0188744f5f23b2d3ec9ff95812bcb9ddbb8fed13a377a7f305893
+            image: clickhouse/clickhouse-server:26.3-alpine@sha256:13801d987af5b890e6843d9d72df6ee0ca9c664d56a5d8ccbe6065460f0eb20f
             skip_files: ""
             trivyignores: ""
           - name: keycloak
-            image: quay.io/keycloak/keycloak:26.7.4@sha256:82a77884f3af238beab1e7afd63b5f530e1b5c0590bd7aa60b40a40463e29b2c
+            image: quay.io/keycloak/keycloak:26.7.5@sha256:37dbaf6f0722c9ec246335f36e1ef8b2e6cb960f7c27e0d8c615121a3d475a85
             skip_files: ""
             trivyignores: deploy/.trivyignore-keycloak
     steps:

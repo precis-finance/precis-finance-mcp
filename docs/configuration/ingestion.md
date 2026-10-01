@@ -55,6 +55,13 @@ files are a working reference configuration.
       deliberately no in-place path; a runtime install is lost on the next image
       rebuild.
 
+!!! warning "Optional Databricks driver finding in 0.2.7"
+    Databricks SQL Connector currently requires `oauthlib<4`, so an image
+    built with `--extras databricks` retains OAuthlib 3.3.1 and its
+    CVE-2026-49265 PKCE timing finding. The published core image does not
+    include this extra. The optional-driver audit exception expires after
+    2026-10-31; do not enable this extra if your policy disallows the finding.
+
 ## How a load works
 
 ```text

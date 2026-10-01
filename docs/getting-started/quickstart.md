@@ -50,9 +50,9 @@ lists three services — `clickhouse` and `postgres` (healthy) and
 ## 2. Populate the demo model
 
 The bundled ClickHouse starts empty. Generate the synthetic demo dataset —
-44 months of consistent actuals plus 2026 budget and forecast for a fictional
-IT consultancy — **inside the server container** (it has the package installed
-and the connections configured):
+monthly actuals from January 2023 through the installation month, plus the
+example 2026 budget and forecast for a fictional IT consultancy — **inside the
+server container** (it has the package installed and the connections configured):
 
 ```bash
 docker compose -f docker-compose.local.yml exec precis-mcp \

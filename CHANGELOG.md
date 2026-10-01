@@ -11,6 +11,30 @@ my client integration?"*
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-10-01
+
+### Changed
+
+- Refreshed the hashed Python lock and optional driver constraints to PyJWT
+  2.15.1 and urllib3 2.8.0 after new upstream advisories.
+- Updated bundled Keycloak to 26.7.5 and ClickHouse to the official 26.3.37.3
+  Alpine image. The ClickHouse image changes its base distribution; its health
+  probe and deploy readiness checks now use IPv4 explicitly. Existing named
+  data volumes remain the deployment's data store.
+
+### Security
+
+- Keycloak 26.7.5 no longer contains CVE-2026-13506, CVE-2026-75595, or
+  CVE-2026-8763 in the scanned runtime dependencies. Removed their temporary
+  Trivy exceptions. The separate exception for the unused MSSQL JDBC driver
+  remains when the bundle uses PostgreSQL.
+- The optional Databricks connector still requires OAuthlib 3.x, while its
+  PKCE timing advisory (CVE-2026-49265) is fixed in OAuthlib 4.0.0. The core
+  published image does not install this optional driver. The optional-driver
+  audit has a narrowly scoped exception through 2026-10-31 while Databricks
+  compatibility is resolved; installations building with `--extras databricks`
+  retain that finding.
+
 ## [0.2.6] - 2026-09-24
 
 ### Added

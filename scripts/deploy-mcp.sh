@@ -375,7 +375,7 @@ if [ -n "$DATA_MODE" ]; then
             # finish (slower than Postgres on a fresh pull) or sample_data races
             # ahead and hits 'connection refused' on :8123.
             for _ in \$(seq 1 30); do
-                ${COMPOSE} exec -T clickhouse wget -qO- http://localhost:8123/ping >/dev/null 2>&1 && break
+                ${COMPOSE} exec -T clickhouse wget -qO- http://127.0.0.1:8123/ping >/dev/null 2>&1 && break
                 sleep 2
             done
             # Generate in Postgres → trigger ingestion → apply semantic.* views.
@@ -385,7 +385,7 @@ if [ -n "$DATA_MODE" ]; then
           bundle-empty)
             ${COMPOSE} up -d clickhouse
             for _ in \$(seq 1 30); do
-                ${COMPOSE} exec -T clickhouse wget -qO- http://localhost:8123/ping >/dev/null 2>&1 && break
+                ${COMPOSE} exec -T clickhouse wget -qO- http://127.0.0.1:8123/ping >/dev/null 2>&1 && break
                 sleep 2
             done
             ${COMPOSE} run --rm --no-deps \

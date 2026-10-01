@@ -17,6 +17,7 @@ is benign (builds DSN dicts and constants only; no real connections opened).
 from __future__ import annotations
 
 from collections import Counter
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
 
@@ -33,6 +34,21 @@ def synth_module() -> ModuleType:
     from precis_mcp.sample_data import generate
 
     return generate
+
+
+def test_sample_horizon_reaches_current_utc_month(synth_module):
+    month_end = synth_module.end_of_month(datetime.now(timezone.utc).date())
+    assert synth_module.end_of_month(date(2026, 12, 1)) == date(2026, 12, 31)
+    assert synth_module.end_of_month(date(2028, 2, 1)) == date(2028, 2, 29)
+    assert synth_module.ACTUALS_END == month_end
+    assert synth_module.CRM_CREATED_TO == month_end
+    assert synth_module.CRM_OPEN_CLOSE_FROM == month_end + timedelta(days=1)
+
+    periods = synth_module.period_dim_rows()
+    assert periods[-1][0] == f"{max(month_end.year, synth_module.BUDGET_YEAR)}-12"
+    assert list(synth_module.months_in_range(synth_module.ACTUALS_START, month_end))[-1] == (
+        month_end.year, month_end.month,
+    )
 
 
 def test_crm_accounts_row_count_and_schema(synth_module):

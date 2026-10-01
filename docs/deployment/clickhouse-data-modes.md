@@ -51,7 +51,8 @@ What each mode does, under the hood:
 - It runs the right provisioner **before** the server comes up:
   `bundle-sample` runs the synthetic generator
   (`python -m precis_mcp.sample_data` — the same command the
-  [quickstart](../getting-started/quickstart.md) runs locally); `bundle-empty`
+  [quickstart](../getting-started/quickstart.md) runs locally). Its synthetic
+  actuals extend through the installation month; `bundle-empty`
   and `byo` run the schema provisioner, `clickhouse_init` (see below).
 
 ---

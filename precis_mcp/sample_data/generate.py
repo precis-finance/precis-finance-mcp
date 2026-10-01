@@ -3,10 +3,11 @@
 # pyright: reportArgumentType=false, reportCallIssue=false, reportOptionalSubscript=false
 """
 Synthetic sample-data generator — a populated demo model for evaluation.
-Seed: 42 (fully reproducible).
+Seed: 42 (reproducible for a given installation month).
 
-Generates 44 months of internally consistent FP&A data for a fictional IT
-consultancy, lands it in the mock customer Postgres, drives every ingestion
+Generates internally consistent FP&A data from January 2023 through the
+installation month for a fictional IT consultancy, lands it in the mock
+customer Postgres, drives every ingestion
 binding end-to-end so `live.*` is populated through the same pipeline a real
 deployment runs, and seeds the plan scenarios:
 
@@ -15,10 +16,10 @@ deployment runs, and seeds the plan scenarios:
   3. Employee master data + cost history
   4. Client list
   5. Project master data + assignments
-  6. Timesheets (44 months)
-  7. Payroll (44 months)
-  8. Revenue recognition (44 months, in-memory)
-  9. Journal entries (44 months) + validation
+  6. Timesheets (through the installation month)
+  7. Payroll (through the installation month)
+  8. Revenue recognition (through the installation month, in-memory)
+  9. Journal entries (through the installation month) + validation
  10. Budget scenario BUD-2026 + Forecast scenario FC-2026-Q1
  11. CRM accounts + opportunities (file-drop CSVs)
  12. Ingestion run (PG → ClickHouse `live.*`) + semantic views
@@ -137,8 +138,21 @@ def ensure_environment() -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 ENTITY_ID = "ENT-001"
 ACTUALS_START = datetime.date(2023, 1, 1)
-ACTUALS_END = datetime.date(2026, 8, 31)
 BUDGET_YEAR = 2026
+
+
+def end_of_month(day: datetime.date) -> datetime.date:
+    """Include the entire current reporting month in the synthetic actuals."""
+    if day.month == 12:
+        next_month = datetime.date(day.year + 1, 1, 1)
+    else:
+        next_month = datetime.date(day.year, day.month + 1, 1)
+    return next_month - datetime.timedelta(days=1)
+
+
+# Evaluated when the installation command starts. The fixed 2026 plan scenarios
+# are declared separately in instance/scenarios.yml and its mapping catalogue.
+ACTUALS_END = end_of_month(datetime.datetime.now(datetime.timezone.utc).date())
 
 DE_HOLIDAYS = hol.Germany(prov="NW")  # use NRW as representative state
 
@@ -554,7 +568,7 @@ def generate_employees():
             "fte": 1.00,
             "start_date": start,
             "end_date": end_date,
-            "is_active": end_date is None or end_date > datetime.date(2026, 8, 31),
+            "is_active": end_date is None or end_date > ACTUALS_END,
             "currency": "EUR",
             "created_at": datetime.datetime(start.year, start.month, start.day, 9, 0, 0),
             "updated_at": datetime.datetime(start.year, start.month, start.day, 9, 0, 0),
@@ -565,7 +579,7 @@ def generate_employees():
         cost_history.append((emp_id, start, annual_cost))
 
         # Annual raises each January
-        for raise_year in range(2024, 2027):
+        for raise_year in range(2024, ACTUALS_END.year + 1):
             # Only if employed > 12 months before raise_year-01-01
             raise_date = datetime.date(raise_year, 1, 1)
             if start < raise_date - datetime.timedelta(days=365):
@@ -708,7 +722,7 @@ def generate_projects(employees, clients):
     client_pool = random.choices(clients, weights=client_weights, k=len(project_types))
 
     # The first project in every delivery CC is an anchor engagement spanning
-    # the full actuals and 2026 plan horizon.  A second project per CC plus the
+    # the full actuals and 2026 plan horizon. A second project per CC plus the
     # random remainder keeps the broader portfolio varied.
     cc_pool_remainder = BILLABLE_CCS.copy()
     cc_pool_remainder.extend(random.choices(
@@ -734,7 +748,7 @@ def generate_projects(employees, clients):
             duration_months = int(rng_normal_clipped(12, 4, 6, 24))
 
         # Anchor engagements are established before actuals begin and remain
-        # active through the whole 2026 plan.  Other projects retain the normal
+        # active through the actuals and 2026 plan. Other projects retain the normal
         # rolling-start distribution.
         if is_anchor:
             year = 2022
@@ -746,7 +760,7 @@ def generate_projects(employees, clients):
             start_date = datetime.date(year, month, 1)
 
         if is_anchor:
-            planned_end = datetime.date(BUDGET_YEAR, 12, 31)
+            planned_end = datetime.date(max(BUDGET_YEAR, ACTUALS_END.year), 12, 31)
         else:
             planned_end = datetime.date(
                 start_date.year + (start_date.month + duration_months - 1) // 12,
@@ -761,7 +775,7 @@ def generate_projects(employees, clients):
             actual_end = planned_end
 
         # Status based on end date
-        today = datetime.date(2026, 8, 31)
+        today = ACTUALS_END
         if actual_end < today:
             status = "COMPLETED"
         elif start_date > today:
@@ -1042,7 +1056,8 @@ def generate_payroll(employees, cost_history):
 
     # Determine bonus-eligible employees for each December (60% of SR+)
     bonus_eligible_by_year: dict[int, set] = {}
-    for year in [2023, 2024, 2025]:
+    last_bonus_year = ACTUALS_END.year if ACTUALS_END.month == 12 else ACTUALS_END.year - 1
+    for year in range(ACTUALS_START.year, last_bonus_year + 1):
         eligible = [e["employee_id"] for e in employees if e["grade"] in ("SR", "MGR", "DIR")]
         random.shuffle(eligible)
         n_bonus = int(len(eligible) * 0.60)
@@ -1614,7 +1629,10 @@ def generate_journal_entries(projects, employees, timesheets, payroll, subledger
         # Revenue run-rate index relative to 2023 base (for revenue-linked costs)
         rev_annual_target = {2022: 13_000_000, 2023: 15_000_000,
                              2024: 17_000_000, 2025: 19_000_000, 2026: 21_000_000}
-        rev_index = rev_annual_target.get(year, 15_000_000) / 15_000_000
+        annual_target = rev_annual_target.get(
+            year, 21_000_000 * 1.10 ** (year - 2026)
+        )
+        rev_index = annual_target / 15_000_000
 
         # ── Facilities ────────────────────────────────────────────────────────
         # Rent: step-function capacity model — grows when headcount crosses bands.
@@ -1637,7 +1655,7 @@ def generate_journal_entries(projects, employees, timesheets, payroll, subledger
         # ── Sales & Marketing ─────────────────────────────────────────────────
         # BD/marketing spend modelled as ~2.5% of annualised revenue run-rate,
         # distributed unevenly: peaks in Q1 (new FY push) and Q3 (H2 pipeline).
-        mkt_annual_budget = rev_annual_target.get(year, 15_000_000) * 0.025
+        mkt_annual_budget = annual_target * 0.025
         mkt_monthly_base = mkt_annual_budget / 12
         mkt_seasonal = 1.4 if month in [1, 2, 3] else (1.2 if month in [7, 8, 9] else 0.8)
         mkt = mkt_monthly_base * mkt_seasonal + np.random.normal(0, mkt_monthly_base * 0.1)
@@ -2961,11 +2979,11 @@ PLAN_LOAD_ID = "synthetic_data_bootstrap"
 
 
 def period_dim_rows() -> list[list[str]]:
-    """Period dimension rows, 2023-01 through 2026-12 — written to both the
+    """Period rows through the later of the actuals or plan year, written to
     mock-source Postgres (`gl.dim_period`, read by the dim_period binding)
     and the ClickHouse config copy."""
     rows = []
-    for year in range(2023, 2027):
+    for year in range(ACTUALS_START.year, max(ACTUALS_END.year, BUDGET_YEAR) + 1):
         for month in range(1, 13):
             rows.append([
                 f"{year}-{month:02d}",
@@ -2975,12 +2993,12 @@ def period_dim_rows() -> list[list[str]]:
     return rows
 
 
-_CAL_START = datetime.date(2023, 1, 1)
-_CAL_END = datetime.date(2026, 12, 31)
+_CAL_START = ACTUALS_START
+_CAL_END = datetime.date(max(ACTUALS_END.year, BUDGET_YEAR), 12, 31)
 
 
 def date_dim_rows() -> list[list[str]]:
-    """Day calendar rows (business days only, YYYY-MM-DD) across 2023-2026.
+    """Day calendar rows (business days only, YYYY-MM-DD) through _CAL_END.
 
     Business days only, matching where timesheets exist, so prior-period at day
     grain (seq - 1) resolves to the previous *working* day. `seq` is a dense
@@ -2996,7 +3014,7 @@ def date_dim_rows() -> list[list[str]]:
 
 
 def week_dim_rows() -> list[list[str]]:
-    """ISO-week calendar rows (YYYY-Www) across 2023-2026.
+    """ISO-week calendar rows (YYYY-Www) through _CAL_END.
 
     The distinct ISO weeks that contain a business day, so the calendar aligns
     with the weeks present in the timesheet data. `seq` is materialised by the
@@ -3066,7 +3084,7 @@ def load_clickhouse(
     for stmt in [s.strip() for s in ddl_sql.split(";") if s.strip()]:
         ch.command(stmt)
 
-    # gl.dim_period — 2023-01 through 2026-12
+    # gl.dim_period — actuals start through the later of actuals or plan year
     period_rows = period_dim_rows()
     ch.insert(
         "gl.dim_period",
@@ -3355,13 +3373,14 @@ CRM_NUM_OPPORTUNITIES = 300
 # Opportunity status mix: ~60% open, ~25% won, ~15% lost.
 CRM_STATUS_MIX = ["Open"] * 60 + ["Closed-Won"] * 25 + ["Closed-Lost"] * 15
 
-# CRM time horizon: opportunities created between 2023-06-01 and 2026-08-31.
-# Open opps close in the future (2026-09 .. 2027-09); closed opps closed in
-# the past (anywhere from creation to today).
+# CRM opportunities are created through the installation month. Open closes
+# occupy the following twelve months; closed opportunities close by month-end.
 CRM_CREATED_FROM = datetime.date(2023, 6, 1)
-CRM_CREATED_TO   = datetime.date(2026, 8, 31)
-CRM_OPEN_CLOSE_FROM = datetime.date(2026, 9, 1)
-CRM_OPEN_CLOSE_TO   = datetime.date(2027, 9, 30)
+CRM_CREATED_TO = ACTUALS_END
+CRM_OPEN_CLOSE_FROM = ACTUALS_END + datetime.timedelta(days=1)
+CRM_OPEN_CLOSE_TO = datetime.date(
+    CRM_OPEN_CLOSE_FROM.year + 1, CRM_OPEN_CLOSE_FROM.month, 1
+) - datetime.timedelta(days=1)
 
 
 def _crm_segment_amount_band(segment: str) -> tuple[float, float]:
@@ -3386,7 +3405,7 @@ def generate_crm_accounts():
         # Created any time in the last ~5 years.
         created = fake.date_between(
             start_date=datetime.date(2021, 1, 1),
-            end_date=datetime.date(2026, 7, 31),
+            end_date=ACTUALS_END.replace(day=1) - datetime.timedelta(days=1),
         )
         accounts.append({
             "account_id": f"ACC-{i:04d}",
@@ -3447,7 +3466,7 @@ def _generate_one_opportunity(opp_idx: int, accounts: list[dict]) -> dict:
     if stage_category in ("Won", "Lost"):
         last_stage_change = close_date
     else:
-        today_bound = datetime.date(2026, 8, 14)
+        today_bound = ACTUALS_END
         if created_date >= today_bound:
             last_stage_change = created_date
         else:
@@ -3680,7 +3699,11 @@ def trigger_ingestion() -> None:
 
 def main(land_plan=land_plan_fact_plan, build_plan_extension=None):
     print("=== FP&A Synthetic Data Generator ===")
-    print(f"Seed: {SEED}  |  Actuals: 2023-01 → 2026-08  |  Budget/Forecast: 2026\n")
+    print(
+        f"Seed: {SEED}  |  Actuals: {period_str(ACTUALS_START.year, ACTUALS_START.month)}"
+        f" → {period_str(ACTUALS_END.year, ACTUALS_END.month)}"
+        f"  |  Budget/Forecast: {BUDGET_YEAR}\n"
+    )
 
     print("Step 0: Bootstrapping Postgres (mock-source DB + platform schema)...")
     ensure_environment()
@@ -3698,11 +3721,11 @@ def main(land_plan=land_plan_fact_plan, build_plan_extension=None):
     assignments = fill_assignment_gaps(employees, projects, assignments)
     print(f"  {len(projects)} projects, {len(assignments)} assignments (after gap-fill)")
 
-    print("Step 4: Generating timesheets (36 months)...")
+    print("Step 4: Generating timesheets...")
     timesheets = generate_timesheets(employees, assignments)
     print(f"  {len(timesheets)} timesheet rows")
 
-    print("Step 5: Generating payroll (36 months)...")
+    print("Step 5: Generating payroll...")
     payroll = generate_payroll(employees, cost_history)
     print(f"  {len(payroll)} payroll rows")
 
@@ -3736,7 +3759,7 @@ def main(land_plan=land_plan_fact_plan, build_plan_extension=None):
     print(f"  {len(crm_accounts)} accounts, {len(crm_opportunities)} opportunities")
     write_crm_csvs(crm_accounts, crm_opportunities)
 
-    print("Step 12: Generating intercompany recharges (36 months)...")
+    print("Step 12: Generating intercompany recharges...")
     intercompany = generate_intercompany()
     print(f"  {len(intercompany)} intercompany recharge rows")
 
