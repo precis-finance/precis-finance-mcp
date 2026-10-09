@@ -78,7 +78,7 @@ explicitly apply and verify migrations:
 ```sh
 mcp_compose() { docker compose -f deploy/docker-compose.yml --env-file deploy/.env "$@"; }
 mcp_compose stop precis-mcp
-mcp_compose pull precis-mcp migrate redis
+mcp_compose pull precis-mcp migrate postgres redis
 mcp_compose up -d --wait postgres redis
 mcp_compose run --rm --no-deps migrate
 mcp_compose run --rm --no-deps migrate python scripts/migrate.py --scope open --status
@@ -88,6 +88,22 @@ The `redis` service runs the pinned Valkey image. `migrate` runs
 `python scripts/migrate.py --scope open` against the platform database; only
 pending migrations apply. The status command must show `008_artifacts.sql` as
 `applied`. Stop if migration execution fails.
+
+The release also refreshes PostgreSQL 16's Debian packages and the application
+base image. Pull PostgreSQL explicitly as above; an application-only update
+leaves the database image's packages unchanged. This remains a same-major
+PostgreSQL upgrade using your existing data volume. For the bundled proxy,
+rebuild Caddy from the updated Dockerfile before starting the stack:
+
+```sh
+mcp_compose build caddy
+```
+
+Skip this build for external ingress. The Caddy build pins Go 1.26.9 because
+the builder image's bundled toolchain alone does not include the required
+security patches. Native Python installations need their host OS packages
+and external ingress patched separately; installing a Python wheel does not
+update them.
 
 For **bundled Keycloak** (`bundled-keycloak` in `COMPOSE_PROFILES`), explicitly
 reconcile existing clients' audience scope before starting the app:
@@ -118,6 +134,7 @@ procedure instead.
 with the following, then run the same migration/startup sequence:
 
 ```sh
+mcp_compose pull postgres redis
 mcp_compose build precis-mcp migrate
 ```
 
@@ -193,14 +210,15 @@ and use `PRECIS_BASE_URL=http://127.0.0.1:8768` for a client on the same machine
 ```sh
 local_mcp_compose() { docker compose -f deploy/docker-compose.local.yml --env-file deploy/.env "$@"; }
 local_mcp_compose stop precis-mcp
-local_mcp_compose pull precis-mcp migrate redis
+local_mcp_compose pull precis-mcp migrate postgres redis
 local_mcp_compose up -d --wait postgres redis
 local_mcp_compose run --rm --no-deps migrate
 local_mcp_compose run --rm --no-deps migrate python scripts/migrate.py --scope open --status
 local_mcp_compose up -d
 ```
 
-For a source candidate, replace `pull` with
+For a source candidate, replace the application pull with
+`local_mcp_compose pull postgres redis` followed by
 `local_mcp_compose build precis-mcp migrate`. If you use your own instance,
 include `-f deploy/docker-compose.instance.yml` in the function and preserve
 `PRECIS_INSTANCE_DIR`. The local stack remains host-local; a remote agent host

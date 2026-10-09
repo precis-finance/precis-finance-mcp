@@ -4,7 +4,11 @@
 # Official two-stage xcaddy pattern. Everything is pinned: both image digests,
 # the module commit, and security-patched transitive modules. Bump and scan them
 # together, deliberately.
-FROM caddy:2.11.4-builder@sha256:401121e61853cb9c7df83cba43e532e49a68e30f32921c7bdcb7a4912168c067 AS builder
+FROM caddy:2.11.4-builder@sha256:369218c81ca6d6af249981221b3a5c764d886dd5b058f51d144066de13f2418d AS builder
+
+# Pin the patched standard library as well as the builder image: its bundled
+# Go may lag security releases. Go verifies the downloaded toolchain.
+ENV GOTOOLCHAIN=go1.26.9
 
 RUN xcaddy build \
     --with github.com/mholt/caddy-ratelimit@16aecbbcb8ca \

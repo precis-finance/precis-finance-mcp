@@ -98,7 +98,7 @@ jobs:
       matrix:
         include:
           - name: postgres
-            image: postgres:16-bookworm@sha256:efedf3595f1d6f415c08568ba171029bf54052e754cc9f030e3f2412b21f3d67
+            image: postgres:16-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
             # gosu only drops privileges and execs postgres; it does not use
             # the network/parser code implicated by its Go stdlib findings.
             # Debian's ssl-cert package ships this public snake-oil test key;

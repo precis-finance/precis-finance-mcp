@@ -32,7 +32,7 @@ RUN npm ci
 COPY ui/mcp-widgets ./
 RUN npm run build
 
-FROM python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e
+FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 
 WORKDIR /app
 

@@ -46,7 +46,7 @@ with `openssl rand -hex 32`. Back up before upgrading. From the open repository:
 ```sh
 mcp_compose() { docker compose -f deploy/docker-compose.yml --env-file deploy/.env "$@"; }
 mcp_compose stop precis-mcp
-mcp_compose pull precis-mcp migrate redis
+mcp_compose pull precis-mcp migrate postgres redis
 mcp_compose up -d --wait postgres redis
 mcp_compose run --rm --no-deps migrate
 mcp_compose up -d
@@ -55,9 +55,13 @@ mcp_compose up -d
 These commands use the published 0.3.0 image, install the Valkey sidecar and
 apply pending open migrations before starting the server. For an **unpushed
 candidate or a source build**, replace the `pull` command with
+`mcp_compose pull postgres redis` followed by
 `mcp_compose build precis-mcp migrate`; the image build installs the new Python
 dependencies and builds the widgets. Standard 0.2.x open installations need no
 file-table reset.
+
+With bundled Caddy, run `mcp_compose build caddy` before the final `up -d` to
+install the patched proxy toolchain. External ingress is upgraded separately.
 
 See [Upgrade instructions](docs/operations/upgrades.md#upgrade-to-030-charts-and-file-exports)
 for the single-user stack, explicit migration verification, Keycloak
@@ -79,6 +83,13 @@ reconciliation, ingress reload and deployments with optional warehouse drivers.
   patterns are configured and these dependencies do not execute in the widgets.
 - Updated the optional Snowflake connector constraints to 4.8.0 for
   CVE-2026-86597 and aligned shared dependencies with the hashed core lock.
+- Refreshed the Python application and PostgreSQL 16 base images with patched
+  Debian PCRE2 and Perl packages. Rebuilt bundled Caddy 2.11.4 with Go 1.26.9
+  to fix CVE-2026-78667 and CVE-2026-97031. Update the deployment files and pull
+  PostgreSQL as well as the application; source and bundled-proxy installations
+  must rebuild their images. PostgreSQL stays on major version 16.
+- The optional Databricks/OAuthlib CVE-2026-49265 exception remains in effect
+  through 2026-10-31; these image fixes do not resolve that incompatibility.
 
 ## [0.2.7] - 2026-10-01
 
