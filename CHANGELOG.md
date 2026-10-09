@@ -1,9 +1,8 @@
 # Changelog
 
-Notable changes to the `precis-finance-mcp` open package. Format follows
-[Keep a Changelog](https://keepachangelog.com/); the question every entry
-answers is *"does this sync break my compose stack, my `instance/` files, or
-my client integration?"*
+New features, fixes and upgrade requirements for users of the
+`precis-finance-mcp` open package. Format follows
+[Keep a Changelog](https://keepachangelog.com/).
 
 <!-- Maintainers: add entries under [Unreleased] as part of every publish
      ritual (scripts/publish_open.py); move them under a dated heading when
@@ -13,26 +12,56 @@ my client integration?"*
 
 ## [0.3.0] - 2026-10-09
 
-### Changed
-
-- **Breaking deployment change:** temporary analytical datasets and charts now
-  use the shared open core. Both Compose bundles require the included Valkey
-  service. File metadata lives in PostgreSQL and bytes in a managed volume;
-  configure a distinct `ARTIFACT_SIGNING_KEY` and reachable public origin.
-- Apply open migration `008_artifacts.sql`. Legacy file registries are not
-  converted automatically: back up and reset only the affected artifact state
-  before this coordinated cutover. Preserve users and analytical data.
-- **Breaking tool change:** use canonical dataset references, `create_chart`,
-  `export_dataset` (JSON/XLSX), and `get_file_download`. Old Excel aliases and
-  product-specific chart implementations are removed. Download URLs expire
-  independently of the artifact and can be renewed through the tool.
+This release adds **downloadable JSON/Excel extracts and charts** to the
+standalone MCP server. Previously, the open package provided financial queries
+and table widgets without these export or chart-creation capabilities.
 
 ### Added
 
-- Bounded chart transformations, packaged chart/table widgets, scoped dataset
-  snapshots, immutable file versions, quotas and artifact cleanup.
-- Capability-authorized HTTP file transfers independent of the agent host's
-  filesystem. Sandbox attachment support remains host-dependent.
+- **File extracts over MCP.** Run a financial query, then pass its `data_ref`
+  to `export_dataset` with `format="json"` or `format="xlsx"`. The tool exports
+  that query snapshot without rerunning it and returns a download link.
+  `get_file_download` renews an expired link while the file remains available.
+- **Charts over MCP.** Pass query references as a `data_refs` array to
+  `eval_chart_transform`, with a JavaScript transformation and chart specification.
+  Nine chart types are supported, including line, bar, waterfall and scatter.
+  Compatible clients display the new chart widget; other clients receive
+  structured chart data.
+- **Temporary result and file storage.** Query snapshots retain full numerical
+  precision; generated files have ownership checks, size/storage limits and
+  automatic expiry/cleanup. Signed downloads work independently of the agent
+  host's filesystem; delivery into a host's Python sandbox remains host-dependent.
+
+### Upgrade required
+
+The new features require **Valkey, PostgreSQL migration `open/008`, a persistent
+file volume and an artifact signing key**. Updating only the application image
+or restarting the old stack is insufficient.
+
+Update to this release's deployment files, retaining your existing configuration
+and `instance/`. In `deploy/.env`, set `PRECIS_MCP_TAG=0.3.0`, keep your public
+HTTPS `PRECIS_BASE_URL`, and add a distinct `ARTIFACT_SIGNING_KEY` generated once
+with `openssl rand -hex 32`. Back up before upgrading. From the open repository:
+
+```sh
+mcp_compose() { docker compose -f deploy/docker-compose.yml --env-file deploy/.env "$@"; }
+mcp_compose stop precis-mcp
+mcp_compose pull precis-mcp migrate redis
+mcp_compose up -d --wait postgres redis
+mcp_compose run --rm --no-deps migrate
+mcp_compose up -d
+```
+
+These commands use the published 0.3.0 image, install the Valkey sidecar and
+apply pending open migrations before starting the server. For an **unpushed
+candidate or a source build**, replace the `pull` command with
+`mcp_compose build precis-mcp migrate`; the image build installs the new Python
+dependencies and builds the widgets. Standard 0.2.x open installations need no
+file-table reset.
+
+See [Upgrade instructions](docs/operations/upgrades.md#upgrade-to-030-charts-and-file-exports)
+for the single-user stack, explicit migration verification, Keycloak
+reconciliation, ingress reload and deployments with optional warehouse drivers.
 
 ### Security
 
@@ -50,10 +79,6 @@ my client integration?"*
   patterns are configured and these dependencies do not execute in the widgets.
 - Updated the optional Snowflake connector constraints to 4.8.0 for
   CVE-2026-86597 and aligned shared dependencies with the hashed core lock.
-
-### Fixed
-
-- PostgreSQL quota queries explicitly type optional upload-exclusion parameters.
 
 ## [0.2.7] - 2026-10-01
 
