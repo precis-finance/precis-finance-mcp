@@ -15,7 +15,7 @@
 #     with `make lock`) — known-vulnerability gate on the pinned dependency set.
 #   - image-scan: build the Docker image and trivy-scan it; fails on fixable
 #     HIGH/CRITICAL findings in the OS layer or site-packages.
-#   - sidecar-scan: scan the exact Postgres, ClickHouse, and Keycloak digest
+#   - sidecar-scan: scan the exact Postgres, ClickHouse, Valkey, and Keycloak digest
 #     pins shipped in Compose.
 #   - caddy-scan: build and scan the custom rate-limited Caddy image.
 name: ci
@@ -113,6 +113,10 @@ jobs:
             image: quay.io/keycloak/keycloak:26.7.5@sha256:37dbaf6f0722c9ec246335f36e1ef8b2e6cb960f7c27e0d8c615121a3d475a85
             skip_files: ""
             trivyignores: deploy/.trivyignore-keycloak
+          - name: valkey
+            image: valkey/valkey:7.2.14-alpine@sha256:c6c2f0020be34bbf684a53a0ef716ab16ff70295186d4d9f2518435beb7afbff
+            skip_files: ""
+            trivyignores: ""
     steps:
       - uses: actions/checkout@v6
       - name: Trivy scan ${{ matrix.name }} (fixable HIGH/CRITICAL gate)

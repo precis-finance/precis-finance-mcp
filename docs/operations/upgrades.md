@@ -40,6 +40,10 @@ data. Verify `/readyz`, a query → export → HTTPS download, URL renewal and a
 tool call after token expiry. External receiving defaults off; enable it only
 when intended. See [Files and agent hosts](../reference/files-and-hosts.md).
 
+If you build optional warehouse extras, use this release's regenerated
+`constraints-extras.txt`: it fixes the Snowflake connector advisory and keeps
+shared dependency versions aligned with the core image.
+
 ### Upgrade procedure
 
 1. **Back up first.**

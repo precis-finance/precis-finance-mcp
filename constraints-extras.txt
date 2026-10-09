@@ -1,21 +1,31 @@
 annotated-doc==0.0.4
-    # via fastapi
+    # via
+    #   -c requirements-open.lock
+    #   fastapi
 annotated-types==0.7.0
-    # via pydantic
+    # via
+    #   -c requirements-open.lock
+    #   pydantic
 anyio==4.14.2
     # via
+    #   -c requirements-open.lock
     #   httpx
     #   mcp
     #   sse-starlette
     #   starlette
 apscheduler==3.11.2
-    # via precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    # via
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 asn1crypto==1.5.1
     # via snowflake-connector-python
 atpublic==7.0.0
-    # via ibis-framework
+    # via
+    #   -c requirements-open.lock
+    #   ibis-framework
 attrs==26.1.0
     # via
+    #   -c requirements-open.lock
     #   jsonschema
     #   referencing
 boto3==1.43.30
@@ -27,23 +37,31 @@ botocore==1.43.30
     #   snowflake-connector-python
 certifi==2026.5.20
     # via
+    #   -c requirements-open.lock
     #   clickhouse-connect
     #   httpcore
     #   httpx
     #   requests
     #   snowflake-connector-python
 cffi==2.0.0
-    # via cryptography
+    # via
+    #   -c requirements-open.lock
+    #   cryptography
 charset-normalizer==3.4.7
     # via
     #   requests
     #   snowflake-connector-python
 click==8.4.1
-    # via uvicorn
-clickhouse-connect==1.3.0
-    # via precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    # via
+    #   -c requirements-open.lock
+    #   uvicorn
+clickhouse-connect==1.2.0
+    # via
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 cryptography==50.0.1
     # via
+    #   -c requirements-open.lock
     #   google-auth
     #   pyjwt
     #   pyopenssl
@@ -55,13 +73,21 @@ db-dtypes==1.7.0
     #   ibis-framework
     #   pandas-gbq
 duckdb==1.5.3
-    # via ibis-framework
+    # via
+    #   -c requirements-open.lock
+    #   ibis-framework
 et-xmlfile==2.0.0
-    # via openpyxl
+    # via
+    #   -c requirements-open.lock
+    #   openpyxl
 faker==40.15.0
-    # via precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    # via
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 fastapi==0.136.3
-    # via precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    # via
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 filelock==3.29.4
     # via snowflake-connector-python
 google-api-core[grpc]==2.31.0
@@ -108,22 +134,33 @@ grpcio-status==1.81.1
     # via google-api-core
 h11==0.16.0
     # via
+    #   -c requirements-open.lock
     #   httpcore
     #   uvicorn
 holidays==0.95
-    # via precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    # via
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 httpcore==1.0.9
-    # via httpx
+    # via
+    #   -c requirements-open.lock
+    #   httpx
 httpx==0.28.1
     # via
+    #   -c requirements-open.lock
     #   mcp
-    #   precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 httpx-sse==0.4.3
-    # via mcp
+    # via
+    #   -c requirements-open.lock
+    #   mcp
 ibis-framework[bigquery,databricks,duckdb,mssql,postgres,snowflake]==12.0.0
-    # via precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    # via
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 idna==3.18
     # via
+    #   -c requirements-open.lock
     #   anyio
     #   httpx
     #   requests
@@ -133,36 +170,50 @@ jmespath==1.1.0
     #   boto3
     #   botocore
 jsonschema==4.26.0
-    # via mcp
+    # via
+    #   -c requirements-open.lock
+    #   mcp
 jsonschema-specifications==2025.9.1
-    # via jsonschema
+    # via
+    #   -c requirements-open.lock
+    #   jsonschema
 lz4==4.4.5
     # via
+    #   -c requirements-open.lock
     #   clickhouse-connect
     #   databricks-sql-connector
 markdown-it-py==4.2.0
-    # via rich
+    # via
+    #   -c requirements-open.lock
+    #   rich
 mcp==1.28.1
-    # via precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    # via
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 mdurl==0.1.2
-    # via markdown-it-py
+    # via
+    #   -c requirements-open.lock
+    #   markdown-it-py
 numpy==2.4.6
     # via
+    #   -c requirements-open.lock
     #   db-dtypes
     #   ibis-framework
     #   pandas
     #   pandas-gbq
-    #   precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 oauthlib==3.3.1
     # via
     #   databricks-sql-connector
     #   requests-oauthlib
 openpyxl==3.1.5
     # via
+    #   -c requirements-open.lock
     #   databricks-sql-connector
-    #   precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 packaging==26.2
     # via
+    #   -c requirements-open.lock
     #   db-dtypes
     #   google-cloud-bigquery
     #   ibis-framework
@@ -170,15 +221,18 @@ packaging==26.2
     #   snowflake-connector-python
 pandas==3.0.3
     # via
+    #   -c requirements-open.lock
     #   databricks-sql-connector
     #   db-dtypes
     #   ibis-framework
     #   pandas-gbq
-    #   precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 pandas-gbq==0.35.0
     # via ibis-framework
 parsy==2.2
-    # via ibis-framework
+    # via
+    #   -c requirements-open.lock
+    #   ibis-framework
 platformdirs==4.10.0
     # via snowflake-connector-python
 proto-plus==1.28.0
@@ -196,20 +250,28 @@ psutil==7.2.2
     # via pandas-gbq
 psycopg[binary,pool]==3.3.4
     # via
+    #   -c requirements-open.lock
     #   ibis-framework
-    #   precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 psycopg-binary==3.3.4
-    # via psycopg
+    # via
+    #   -c requirements-open.lock
+    #   psycopg
 psycopg-pool==3.3.1
-    # via psycopg
+    # via
+    #   -c requirements-open.lock
+    #   psycopg
 pyarrow==24.0.0
     # via
+    #   -c requirements-open.lock
     #   db-dtypes
     #   ibis-framework
     #   pandas-gbq
-    #   precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 pyarrow-hotfix==0.7
-    # via ibis-framework
+    # via
+    #   -c requirements-open.lock
+    #   ibis-framework
 pyasn1==0.6.4
     # via pyasn1-modules
 pyasn1-modules==0.4.2
@@ -217,28 +279,38 @@ pyasn1-modules==0.4.2
 pybreaker==1.4.1
     # via databricks-sql-connector
 pycparser==3.0
-    # via cffi
+    # via
+    #   -c requirements-open.lock
+    #   cffi
 pydantic==2.13.4
     # via
+    #   -c requirements-open.lock
     #   fastapi
     #   mcp
-    #   precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
     #   pydantic-settings
 pydantic-core==2.46.4
-    # via pydantic
+    # via
+    #   -c requirements-open.lock
+    #   pydantic
 pydantic-settings==2.14.2
-    # via mcp
+    # via
+    #   -c requirements-open.lock
+    #   mcp
 pydata-google-auth==1.9.1
     # via
     #   ibis-framework
     #   pandas-gbq
 pygments==2.20.0
-    # via rich
+    # via
+    #   -c requirements-open.lock
+    #   rich
 pyjwt[crypto]==2.15.1
     # via
+    #   -c requirements-open.lock
     #   databricks-sql-connector
     #   mcp
-    #   precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
     #   snowflake-connector-python
 pyodbc==5.3.0
     # via ibis-framework
@@ -248,6 +320,7 @@ pyopenssl==26.4.0
     #   snowflake-connector-python
 python-dateutil==2.9.0.post0
     # via
+    #   -c requirements-open.lock
     #   botocore
     #   databricks-sql-connector
     #   google-cloud-bigquery
@@ -256,16 +329,30 @@ python-dateutil==2.9.0.post0
     #   pandas
 python-dotenv==1.2.2
     # via
-    #   precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
     #   pydantic-settings
 python-multipart==0.0.32
-    # via mcp
+    # via
+    #   -c requirements-open.lock
+    #   mcp
 pytz==2026.2
     # via snowflake-connector-python
 pyyaml==6.0.3
-    # via precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    # via
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
+quickjs-ng==0.13.0.1
+    # via
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
+redis==7.4.0
+    # via
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 referencing==0.37.0
     # via
+    #   -c requirements-open.lock
     #   jsonschema
     #   jsonschema-specifications
 requests==2.34.2
@@ -278,39 +365,54 @@ requests==2.34.2
 requests-oauthlib==2.0.0
     # via google-auth-oauthlib
 rich==15.0.0
-    # via ibis-framework
+    # via
+    #   -c requirements-open.lock
+    #   ibis-framework
 rpds-py==2026.5.1
     # via
+    #   -c requirements-open.lock
     #   jsonschema
     #   referencing
 s3transfer==0.18.0
     # via boto3
 six==1.17.0
-    # via python-dateutil
-snowflake-connector-python==4.7.1
+    # via
+    #   -c requirements-open.lock
+    #   python-dateutil
+snowflake-connector-python==4.8.0
     # via ibis-framework
 sortedcontainers==2.4.0
     # via snowflake-connector-python
-sqlglot==30.11.0
-    # via ibis-framework
+sqlglot==30.10.0
+    # via
+    #   -c requirements-open.lock
+    #   ibis-framework
 sse-starlette==3.4.4
-    # via mcp
+    # via
+    #   -c requirements-open.lock
+    #   mcp
 starlette==1.3.1
     # via
+    #   -c requirements-open.lock
     #   fastapi
     #   mcp
-    #   precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
     #   sse-starlette
 structlog==26.1.0
-    # via precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    # via
+    #   -c requirements-open.lock
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 thrift==0.24.0
     # via databricks-sql-connector
 tomlkit==0.15.0
     # via snowflake-connector-python
 toolz==1.1.0
-    # via ibis-framework
+    # via
+    #   -c requirements-open.lock
+    #   ibis-framework
 typing-extensions==4.15.0
     # via
+    #   -c requirements-open.lock
     #   anyio
     #   fastapi
     #   grpcio
@@ -327,26 +429,35 @@ typing-extensions==4.15.0
     #   typing-inspection
 typing-inspection==0.4.2
     # via
+    #   -c requirements-open.lock
     #   fastapi
     #   mcp
     #   pydantic
     #   pydantic-settings
 tzdata==2026.2
-    # via ibis-framework
-tzlocal==5.4
-    # via apscheduler
+    # via
+    #   -c requirements-open.lock
+    #   ibis-framework
+tzlocal==5.3.1
+    # via
+    #   -c requirements-open.lock
+    #   apscheduler
 urllib3==2.8.0
     # via
+    #   -c requirements-open.lock
     #   botocore
     #   clickhouse-connect
     #   databricks-sql-connector
     #   requests
 uvicorn==0.49.0
     # via
+    #   -c requirements-open.lock
     #   mcp
-    #   precis-finance-mcp (/tmp/precis-open-lock.jpNIBf/pyproject.toml)
+    #   precis-finance-mcp (build/open-lock-input/pyproject.toml)
 zstandard==0.25.0
-    # via clickhouse-connect
+    # via
+    #   -c requirements-open.lock
+    #   clickhouse-connect
 
 # The following packages are considered to be unsafe in a requirements file:
 # setuptools

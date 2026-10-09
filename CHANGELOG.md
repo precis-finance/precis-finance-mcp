@@ -44,6 +44,12 @@ my client integration?"*
   reconciliation repairs hidden MCP audience scopes so reported scopes retain
   the audience on refresh; reconnect clients after applying the repair.
 - Artifact ingress and application logs suppress transfer capabilities.
+- Refreshed compatible widget dependencies, including the MCP TypeScript SDK,
+  and rebuilt all widget resources. Three remaining npm findings are confined
+  to the single-file build plugin's pattern matcher; no external inline
+  patterns are configured and these dependencies do not execute in the widgets.
+- Updated the optional Snowflake connector constraints to 4.8.0 for
+  CVE-2026-86597 and aligned shared dependencies with the hashed core lock.
 
 ### Fixed
 
