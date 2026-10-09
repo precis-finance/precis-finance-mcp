@@ -15,10 +15,9 @@ import { FinancialTableBlock } from "./functions/block";
 
 /* global Excel */
 
-const SLATE_900 = "#0F172A"; // header fill
-const SLATE_100 = "#F1F5F9"; // subtotal fill
-const SLATE_200 = "#E2E8F0"; // total fill
-const WHITE = "#FFFFFF";
+const INK = "#0C1F2C";
+const QUIET_SURFACE = "#F2F7F6"; // headers and subtotals
+const TOTAL_SURFACE = "#DDE7E8";
 const GREEN = "#16A34A"; // favourable variance
 const RED = "#DC2626"; // unfavourable variance
 
@@ -80,8 +79,8 @@ export function applyBlockFormat(spill: Excel.Range, block: FinancialTableBlock)
   // 3. Header row(s): two when grouped (metric group labels + scenario labels).
   for (let h = 0; h < headerRows; h++) {
     const header = spill.getRow(h);
-    header.format.fill.color = SLATE_900;
-    header.format.font.color = WHITE;
+    header.format.fill.color = QUIET_SURFACE;
+    header.format.font.color = INK;
     header.format.font.bold = true;
     header.format.horizontalAlignment = "Center";
   }
@@ -99,11 +98,11 @@ export function applyBlockFormat(spill: Excel.Range, block: FinancialTableBlock)
     const rowRange = spill.getRow(r);
 
     if (row.row_type === "subtotal") {
-      rowRange.format.fill.color = SLATE_100;
+      rowRange.format.fill.color = QUIET_SURFACE;
       rowRange.format.font.bold = true;
       rowRange.format.borders.getItem("EdgeTop").style = "Continuous";
     } else if (row.row_type === "total") {
-      rowRange.format.fill.color = SLATE_200;
+      rowRange.format.fill.color = TOTAL_SURFACE;
       rowRange.format.font.bold = true;
       rowRange.format.borders.getItem("EdgeTop").style = "Continuous";
       rowRange.format.borders.getItem("EdgeBottom").style = "Continuous";

@@ -5,6 +5,28 @@ authenticate to a remote server with **OAuth 2.1 + PKCE** and discover the
 sign-in endpoint via [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728), so you
 need an OIDC authorization server in front of Précis Finance MCP.
 
+Your ingress must serve `/.well-known/oauth-protected-resource` and forward
+the authorization-server discovery and endpoint URLs it advertises. In bundled
+Keycloak mode, Précis also serves origin-relative compatibility routes:
+`/.well-known/oauth-authorization-server`, `/authorize`, `/register`, `/token`.
+Their metadata names the same canonical Keycloak realm issuer as protected-resource
+discovery and advertises authorization-response issuer identification (`iss`).
+The aliases forward to Keycloak and do not create a second token issuer.
+The bundled Caddy and reference nginx configurations expose these routes;
+a custom proxy must route them explicitly if its fallback serves another app.
+External-OIDC mode uses the external issuer's endpoints and disables these
+Keycloak-specific aliases.
+
+For remote OAuth, publish the issuer under a resolvable hostname with a trusted
+TLS certificate. Some clients reject private-IP authorization-server identifiers
+even when the MCP resource itself is reachable on the LAN: Codex 0.161.0's
+[pinned SDK policy](https://github.com/modelcontextprotocol/rust-sdk/blob/3e636cab26c013eca5131103c03d20237f12c4df/crates/rmcp/src/transport/auth.rs)
+does this during protected-resource discovery. Its subsequent origin fallback
+can report an issuer mismatch for a realm-based issuer. Origin aliases do not
+remove that client restriction; retain the actual issuer consistently in
+Keycloak, Précis metadata and token validation. The issuer hostname need not
+match the MCP resource hostname, but clients must resolve and trust it.
+
 You pick the sign-in posture at install with **one variable, `PRECIS_AUTH_MODE`**:
 
 | Mode | `PRECIS_AUTH_MODE` | Sign-in | When |
@@ -32,6 +54,13 @@ Précis Finance MCP ships a ready-to-run Keycloak in the bundled `docker-compose
 committed realm (sign-in client, the `precis_user_id` user mapper, and the
 audience mapper for `/mcp`) plus a per-deploy reconcile. You don't configure OIDC
 by hand.
+
+The bundled realm uses the Précis login theme in `keycloak/themes/precis/login`,
+mounted separately from the server image. It includes a light appearance,
+self-hosted fonts and the connected-P brand mark and favicons. Theme updates
+must be installed with the deployment files; production Keycloak theme caches
+require a restart to load them. External OIDC providers in mode C own their
+sign-in appearance.
 
 Release 0.2.7 bundles Keycloak 26.7.5, which removes the three server-runtime
 findings temporarily accepted in 0.2.6 (CVE-2026-13506, CVE-2026-75595, and
@@ -68,6 +97,16 @@ above doesn't change; the walkthrough is
 [Sign in with your corporate IdP](keycloak-brokering.md). This is also the
 path for **claude.ai / ChatGPT**: their connectors self-register (DCR), which
 the bundled Keycloak supports.
+
+The `precis-mcp` client scope supplies the MCP audience. Although it is a
+realm default, dynamic registration can make it optional on a client. The
+realm-reconcile script enforces `include.in.token.scope=true` for new and
+existing scopes: the token response then reports the granted scope, allowing
+clients that replay reported scopes on refresh to retain their MCP audience.
+For an existing installation with this scope hidden, apply the updated realm
+reconcile and sign the connector in again; an already downscoped refresh grant
+cannot restore the omitted scope. Verify a tool call after the access token
+expires, as initial login alone does not accept refresh continuity.
 
 To enable the hosted Excel add-in in mode B, set `KC_ENABLE_EXCEL_ADDIN=true`
 before the Keycloak reconcile runs. The default callback is
@@ -109,7 +148,7 @@ Two things to know:
   `https://<your-host>/excel/auth-callback.html`, then set
   `EXCEL_ADDIN_CLIENT_ID` on the `/mcp` host. Entra/Okta usually also need
   `EXCEL_ADDIN_SCOPE` and `EXCEL_ADDIN_RESOURCE_INDICATOR=false`; see
-  [External IdP recipes](external-idp-recipes.md#351-excel-add-in-against-a-no-dcr-idp-entra--okta-direct).
+  [External IdP recipes](external-idp-recipes.md#351-excel-add-in-against-a-no-dcr-idp-entra-okta-direct).
 
 ## Create the first admin and provision users
 

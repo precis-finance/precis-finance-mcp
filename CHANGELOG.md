@@ -11,6 +11,44 @@ my client integration?"*
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-09
+
+### Changed
+
+- **Breaking deployment change:** temporary analytical datasets and charts now
+  use the shared open core. Both Compose bundles require the included Valkey
+  service. File metadata lives in PostgreSQL and bytes in a managed volume;
+  configure a distinct `ARTIFACT_SIGNING_KEY` and reachable public origin.
+- Apply open migration `008_artifacts.sql`. Legacy file registries are not
+  converted automatically: back up and reset only the affected artifact state
+  before this coordinated cutover. Preserve users and analytical data.
+- **Breaking tool change:** use canonical dataset references, `create_chart`,
+  `export_dataset` (JSON/XLSX), and `get_file_download`. Old Excel aliases and
+  product-specific chart implementations are removed. Download URLs expire
+  independently of the artifact and can be renewed through the tool.
+
+### Added
+
+- Bounded chart transformations, packaged chart/table widgets, scoped dataset
+  snapshots, immutable file versions, quotas and artifact cleanup.
+- Capability-authorized HTTP file transfers independent of the agent host's
+  filesystem. Sandbox attachment support remains host-dependent.
+
+### Security
+
+- External uploads and attachment import are disabled by default. Trusted
+  authenticated deployments may opt in with `PRECIS_MCP_UPLOADS_ENABLED=true`;
+  URL import also requires an exact hostname allow-list. Exports and downloads
+  remain enabled. No finance writeback tools are added.
+- Origin OAuth aliases identify the canonical realm issuer. Bundled Keycloak
+  reconciliation repairs hidden MCP audience scopes so reported scopes retain
+  the audience on refresh; reconnect clients after applying the repair.
+- Artifact ingress and application logs suppress transfer capabilities.
+
+### Fixed
+
+- PostgreSQL quota queries explicitly type optional upload-exclusion parameters.
+
 ## [0.2.7] - 2026-10-01
 
 ### Changed

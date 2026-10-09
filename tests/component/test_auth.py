@@ -14,9 +14,14 @@ import pytest
 from tests.fakes.fake_platform_db import FakePlatformDB
 
 from precis_mcp.auth import (
+    AccountDisabledError,
+    AuthContext,
     AuthError,
     UserPermissions,
     load_permissions,
+    refresh_permissions,
+    set_auth_context,
+    clear_auth_context,
 )
 
 
@@ -176,3 +181,70 @@ def test_load_permissions_expired_assignment_ignored():
          patch("precis_mcp.auth._load_scenario_kinds", return_value=_FAKE_KINDS):
         perms = load_permissions("alice")
     assert perms.scenarios == {}
+
+
+@pytest.mark.asyncio
+async def test_refresh_permissions_propagates_from_worker_to_shared_snapshot():
+    import asyncio
+
+    db = FakePlatformDB()
+    _seed_user(db, "actor")
+    _seed_profile(db, "all-plan", {"scenarios": {"PLAN": {"manager": {}}}})
+    _assign_profile(db, "actor", "all-plan")
+    kinds = {"BUD-2026": "BUDGET"}
+    with patch("precis_mcp.auth.query_platform", side_effect=db.query), \
+         patch("precis_mcp.auth._load_scenario_kinds", side_effect=lambda: dict(kinds)):
+        snapshot = load_permissions("actor")
+        ctx = AuthContext("actor", snapshot, conversation_id="thread")
+        set_auth_context(ctx)
+        try:
+            kinds["FC-NEW"] = "FORECAST"
+            await asyncio.to_thread(refresh_permissions)
+            assert ctx.permissions is snapshot
+            assert "FC-NEW" in snapshot.scenarios
+            assert ctx.conversation_id == "thread"
+        finally:
+            clear_auth_context()
+
+
+@pytest.mark.parametrize("failure", [AccountDisabledError("disabled"), RuntimeError("DB unavailable")])
+def test_refresh_failure_clears_old_grants(failure):
+    from tests.factories.auth import make_permissions, make_scenario_permissions
+
+    snapshot = make_permissions(
+        "actor", is_admin=True, scenarios={"BUD-2026": make_scenario_permissions()},
+    )
+    set_auth_context(AuthContext("actor", snapshot))
+    try:
+        with patch("precis_mcp.auth.load_permissions", side_effect=failure):
+            with pytest.raises(type(failure)):
+                refresh_permissions()
+        assert snapshot.scenarios == {}
+        assert snapshot.is_admin is False
+    finally:
+        clear_auth_context()
+
+
+def test_refresh_without_auth_context_is_dev_noop():
+    clear_auth_context()
+    with patch("precis_mcp.auth.load_permissions") as load:
+        assert refresh_permissions() is None
+    load.assert_not_called()
+
+
+def test_refresh_revalidates_profile_assignment():
+    db = FakePlatformDB()
+    _seed_user(db, "actor")
+    _seed_profile(db, "all", {"scenarios": {"*": {"manager": {}}}})
+    _assign_profile(db, "actor", "all")
+    with patch("precis_mcp.auth.query_platform", side_effect=db.query), \
+         patch("precis_mcp.auth._load_scenario_kinds", return_value=_FAKE_KINDS):
+        snapshot = load_permissions("actor")
+        assert snapshot.scenarios
+        set_auth_context(AuthContext("actor", snapshot))
+        try:
+            db.user_profile_assignments.clear()
+            refresh_permissions()
+            assert snapshot.scenarios == {}
+        finally:
+            clear_auth_context()

@@ -245,10 +245,30 @@ Local-volume destinations need none of the credentials.
 ## What each surface requires
 
 **Single-user local trial** (`deploy/docker-compose.local.yml`):
-`ENABLE_MCP_DEV_SERVER=1`, `MCP_DEV_KEY`, and the `CH*` connection (the local
-bundle wires the bundled ClickHouse for you). Everything else is optional.
+`ENABLE_MCP_DEV_SERVER=1`, `MCP_DEV_KEY`, the `CH*` and `PG*` connections, Redis/Valkey, `ARTIFACT_SIGNING_KEY`, `PRECIS_BASE_URL` and managed `USER_DATA_DIR` (the local bundle wires the services).
 
 **Multi-user bundle** (`deploy/docker-compose.yml`): the `CH*` and `PG*`
 connections, `PRECIS_BASE_URL`, and one identity mode — bundled Keycloak
 (`KC_BOOTSTRAP_ADMIN_PASSWORD`, `KC_DB_PASSWORD`) or external OIDC
 (`OIDC_ISSUER` + client registration).
+
+## Datasets and artifacts
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ARTIFACT_SIGNING_KEY` / `ARTIFACT_SIGNING_KEY_FILE` | required | Distinct server-only master secret, at least 32 bytes; upload/download capabilities use separate derived keys. |
+| `PRECIS_BASE_URL` | required | Public HTTPS origin for file transfer; localhost/dev-key exceptions are for local trials. |
+| `USER_DATA_DIR` | `/data/users` | Managed persistent blob/staging root. |
+| `REDIS_URL` | unset | Redis-compatible connection URL, including authentication/TLS when required. |
+| `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `REDIS_TLS` | localhost, 6379, unset, false | Used when no URL is configured. |
+| `PRECIS_DATASET_IDLE_SECONDS` | 600 | Sliding idle TTL. |
+| `PRECIS_DATASET_MAX_AGE_SECONDS` | 3600 | Absolute lifetime; renewal cannot exceed it. |
+| `PRECIS_DATASET_MAX_BYTES` | 4194304 | Maximum encoded snapshot bytes. |
+| `PRECIS_DATASET_USER_BYTES` | 67108864 | Per-owner cache byte capacity. |
+| `PRECIS_DATASET_USER_COUNT` | 128 | Per-owner snapshot count. |
+| `PRECIS_DATASET_MAX_INPUTS` | 8 | Maximum chart input references. |
+| `PRECIS_MCP_UPLOADS_ENABLED` | false | Explicit opt-in for external MCP upload reservation/completion, host attachment imports and signed PUT. Disabled tools are hidden and direct calls denied; PUT returns 404. Exports/downloads and the full application's multipart uploads remain available. |
+| `PRECIS_FILE_IMPORT_HOSTS` | unset | Optional exact trusted HTTPS attachment hostnames; ChatGPT import additionally requires uploads enabled. Empty disables advertisement and direct calls. |
+| `PRECIS_WIDGET_DIR` | packaged resources | Explicit development override for MCP widget bundles. |
+
+The Compose snapshot cache uses a bounded 256 MiB `noeviction` Valkey instance. Quota/accounting keys must not be evicted independently. Production operators must size their shared cache for expected users and other workloads. File limits are 10 MiB per file and 100 MiB per owner; atomic replacements need at most one file of transient headroom. Failed retired-blob deletion stays quota-accounted and blocks further growth until cleanup succeeds. Transfer concurrency is four globally and two per owner per worker, separate from analytical read concurrency.

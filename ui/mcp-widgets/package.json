@@ -1,0 +1,27 @@
+{
+  "name": "precis-mcp-widgets",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "build": "for f in src/widgets/*.html; do WIDGET=$(basename \"$f\" .html) vite build || exit 1; done"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "1.7.2",
+    "d3-array": "3.2.4",
+    "d3-scale": "4.0.2",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "recharts": "3.8.0"
+  },
+  "devDependencies": {
+    "@types/d3-array": "3.2.1",
+    "@types/d3-scale": "4.0.9",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "typescript": "~5.9.3",
+    "vite": "^8.0.1",
+    "vite-plugin-singlefile": "^2.3.3"
+  }
+}

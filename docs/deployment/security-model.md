@@ -14,12 +14,17 @@ them in order.
 
 "Read-only" is enforced at specific points, not promised:
 
-- **No write tools ship in this package.** The tool surface is metrics,
-  statements, row inspection, discovery, and ingestion status — nothing that
-  mutates data. The plan-write paths exist only in the Précis platform.
-- **The `/mcp` transport refuses non-read access classes at call time.**
-  Even if a write-class tool were loaded, the transport executes only
-  `read`/`general` tools — checked per call, as defence in depth.
+- **No finance-write tools ship in this package.** Finance tools expose
+  metrics, statements, row inspection, discovery and ingestion status. Charts
+  transform bounded read snapshots. Artifact tools create owned files and
+  upload reservations; they do not write financial data.
+- **The `/mcp` transport denies finance-write authority.** Reads require the
+  catalogue's `mcp_read` flag and a `read`/`general` access class. Artifact
+  mutations require `mcp_artifact`, the `artifact` access class and membership
+  in the explicit artifact-tool allow-list. External uploads and attachment
+  imports additionally require `PRECIS_MCP_UPLOADS_ENABLED=true`; they are
+  hidden and denied by default, including the signed PUT endpoint. Exports and
+  downloads remain enabled.
 - **Tool publication fails closed.** Every loaded tool must have a catalogue
   entry (startup fails otherwise), and appearing on `/mcp` is a per-tool
   opt-in flag — a new tool is never published by default
@@ -27,8 +32,8 @@ them in order.
 - **The engine reads one surface**: the `semantic.*` views. No raw-table
   access from the query path, no DDL, no writes.
 
-Scope the claim correctly: **read-only describes the AI-facing surface**, not
-the whole installation. The package also contains operator-side subsystems
+Scope the claim correctly: **read-only describes financial access**, while the AI-facing
+artifact API writes file metadata and managed bytes. The package also contains operator-side subsystems
 that write by design — ingestion loads into ClickHouse, migrations evolve
 the platform database, backups write to your destination. Those run under
 *your* control (CLI, daemons, compose services), never reachable through an
@@ -183,3 +188,9 @@ in a public issue. The policy is the repository's `SECURITY.md`.
 - [User profiles & permissions](../configuration/user-profiles.md)
 - [MCP tool reference](../reference/mcp-tools.md) — the complete advertised
   surface this model governs.
+
+## Owned artifact transfer
+
+Finance access remains read-only. Explicit artifact tools create owned files and reservations; they do not acquire plan-write or ingestion authority. Signed GET/PUT capabilities have purpose-specific derived keys/audiences, bounded lifetime, live account checks, and owner checks. Generated artifacts, tool-rewritten file versions and datasets also bind current read grants; any change requires a fresh query. Download capabilities bind file version/hash and cannot authorize replacement bytes. Registry reads enforce expiry before GC.
+
+The optional host attachment importer requires exact trusted HTTPS hostnames and public DNS addresses, pins the connection while preserving TLS hostname verification, rejects redirects and credential forwarding, and caps size/time. Uploaded workbook metadata is untrusted input and never grants access. Configure ingress to omit capability query strings from access/error logs; transfer routes are excluded from HTTP telemetry. See [Files and external agent hosts](../reference/files-and-hosts.md).

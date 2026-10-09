@@ -13,6 +13,16 @@ from fastapi.testclient import TestClient
 from precis_mcp.auth_mode import AuthModeError
 
 
+@pytest.fixture(autouse=True)
+def fake_dependencies(monkeypatch):
+    from tests.fakes.fake_redis import FakeRedis
+    monkeypatch.setattr("precis_mcp.db.open_platform_pool", lambda: None)
+    monkeypatch.setattr("precis_mcp.db.close_platform_pool", lambda: None)
+    monkeypatch.setattr("precis_mcp.db.close_redis_client", lambda: None)
+    monkeypatch.setattr("precis_mcp.db.get_redis_client", lambda: FakeRedis())
+    monkeypatch.setattr("precis_mcp.artifacts.lifecycle.check_artifacts", lambda: None)
+
+
 def test_starts_with_default_keycloak(monkeypatch):
     monkeypatch.delenv("PRECIS_AUTH_MODE", raising=False)
     monkeypatch.delenv("OIDC_ISSUER", raising=False)
@@ -55,7 +65,7 @@ def test_readyz_ready_when_deps_reachable(monkeypatch):
     with TestClient(app) as c:
         r = c.get("/readyz")
     assert r.status_code == 200
-    assert r.json() == {"status": "ready", "checks": {"postgres": "ok", "clickhouse": "ok"}}
+    assert r.json() == {"status": "ready", "checks": {"postgres": "ok", "clickhouse": "ok", "redis": "ok", "artifacts": "ok"}}
 
 
 def test_readyz_503_when_a_dependency_is_down(monkeypatch):

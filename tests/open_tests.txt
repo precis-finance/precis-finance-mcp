@@ -28,7 +28,7 @@
 # tests/fakes/fake_llm.py is NOT carried — no open test uses it (it is the
 # LangGraph chat-model fake, purely commercial).
 
-# --- unit (43) ---
+# --- unit (44) ---
 unit/test_admin_ops.py
 unit/test_auth.py
 unit/test_auth_mode.py
@@ -47,6 +47,7 @@ unit/test_formatter.py
 unit/test_ibis_backends.py
 unit/test_ibis_executor.py
 unit/test_inspection_grid_builder.py
+unit/test_keycloak_reconcile.py
 unit/test_live_ddl_runner.py
 unit/test_load_history_migration.py
 unit/test_object_store_and_period.py
@@ -100,9 +101,22 @@ component/test_synthetic_data_crm.py
 component/test_upload_endpoint.py
 component/test_watcher.py
 
-# --- e2e (5) ---
+# --- e2e (6) ---
+e2e/test_artifact_registry.py
 e2e/test_ingestion_e2e.py
 e2e/test_landing_ddl_integration.py
 e2e/test_load_history_migration_integration.py
 e2e/test_mcp_oauth2_e2e.py
 e2e/test_pg_advisory_lock_integration.py
+
+# Shared datasets, charts and artifact transport
+component/test_datasets.py
+component/test_artifacts.py
+component/test_chart_tools.py
+unit/test_artifact_tokens.py
+unit/test_js_eval_tools.py
+unit/test_excel_export.py
+unit/test_extract_emit.py
+unit/test_meta.py
+unit/test_target_append.py
+unit/test_host_attachments.py

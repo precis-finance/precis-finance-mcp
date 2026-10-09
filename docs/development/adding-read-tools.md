@@ -257,14 +257,14 @@ An MCP host binds a widget to a tool *definition* — there is no per-call
 output toggle — so one underlying tool can be advertised as several MCP names
 with the output mode pinned per name:
 
-- **`_SPLIT_TOOLS`** (`run_statement`, `run_metric`) are advertised twice: the
+- **`_SPLIT_TOOLS`** (`run_statement`, `run_metric`, `inspect_rows`) are advertised twice: the
   bare name (`out='render'`, widget-linked) and `<name>_data` (`out='agent'`,
   raw figures). `mcp_tool_variants()` produces the list;
   `resolve_mcp_tool()` maps an advertised name back to
   `(underlying_tool, pinned_out)` at call time.
 - **Widget-linked tools** (`_WIDGET_URI`: financial-table, inspection-grid,
   chart) carry `_meta.ui.resourceUri` pointing at a `ui://precis/<component>`
-  resource, served from the built bundle in `ui/mcp-widgets/dist/`.
+  resource, served from the built bundle in `precis_mcp/mcp_external/widgets/`.
   `widget_uri_for()` only advertises a URI whose bundle is actually built. A
   widget-linked tool not in `_SPLIT_TOOLS` is render-only; everything else is
   a single raw-data tool.
@@ -294,32 +294,13 @@ variant/widget machinery only matters if you build a widget for your tool.
 
 ### Extension seams
 
-Several registration hooks exist so a downstream product can extend this
-surface at startup without the open package importing it. In an open
-deployment they are simply unregistered, and the corresponding behaviour is
-absent:
+The downstream agent loader (`dispatch.register_tool_loader`) adds workflow tools to the agent assembly. The remote transport deliberately assembles core descriptors only. Add reusable remote tools to the core registration and catalogue; downstream commercial startup must not change that surface. Shared computation and presentation live in these modules:
 
-- `dispatch.register_tool_loader(loader, catalogue_entries)` — add a batch of
-  tools plus their catalogue metadata without editing `dispatch.py`. Also
-  useful for your own tools if you'd rather keep them out of the package tree.
-- `framing.register_mcp_tool_description(name, description)` — description
-  override for a registered tool.
-- `framing.register_mcp_output_mode(McpOutputMode)` — an extra split-tool
-  variant with its own result framer (e.g. an `_excel` download variant);
-  `is_available()` gates its advertisement.
-- `server.register_mcp_render_builder(tool_name, builder)` — the
-  render-block builder for a tool's `render` variant. The open transport
-  registers the finance-table (`precis_mcp/table_builder.py`) and
-  inspection-grid (`precis_mcp/inspection_grid_builder.py`) builders natively.
-- `precis_mcp/read_tool_hooks.py` — hooks inside the read tools themselves:
-  an output renderer for non-core `out` modes, a general result cache (mints
-  the optional `data_ref` consumed by downstream products), and an Excel
-  dispatcher. Unregistered, the read path
-  returns figures with no `data_ref` and `out='excel'` / `out='report'` are
-  unsupported.
+- `precis_mcp/datasets.py` — bounded owner/grant-bound snapshots. Cache the result before consumer rounding or preview truncation. A failed cache must leave a successful finance read usable.
+- `precis_mcp/tools/chart_tools.py` and `precis_mcp/chart_builder.py` — shared chart computation and render-block derivation.
+- `precis_mcp/artifacts/` and `tools/artifact_tools.py` — shared owned file storage, transfer and snapshot exports. Artifact mutation requires `mcp_artifact=True`, `access="artifact"`, and the explicit transport allow-list; this is not permission to expose financial writes. External receives additionally require `PRECIS_MCP_UPLOADS_ENABLED=true`; keep new receiving tools in `artifacts/policy.py::EXTERNAL_UPLOAD_TOOLS` so both discovery and direct dispatch honor the default-off policy. Attachment import also needs its hostname allow-list. Exports and downloads bypass the receiving policy.
 
-(The Précis platform uses these same seams to attach its SPA block
-emitters and richer output modes — that machinery is out of scope here.)
+Remote descriptors always assemble the core tool set. Do not install output-mode, chart-builder or instruction overrides from a downstream product. Keep workflow persistence outside core computation.
 
 ## Auth and scope — what a tool author must and must not do
 
@@ -337,6 +318,12 @@ emitters and richer output modes — that machinery is out of scope here.)
   IDs and `filter_reporting_vocabulary(...)` when the result also contains
   shifted/comparison keys. `list_scenarios` in `read_tools.py` is the canonical
   pattern; do not reimplement the membership/dependency rules in each tool.
+- Read current permissions at each call. `refresh_permissions()` in
+  `precis_mcp.auth` can reload the authenticated caller's account/profile and
+  update the request's shared permissions object after a resource mutation.
+  Do not retain a separate copy of its scenario map: replacement of that map
+  makes the copy stale. A failed reload clears cached grants and raises;
+  absent auth context is the explicit dev path and returns `None`.
 - Use `@register_mcp_tool(mcp)` for any function with a `_`-prefixed
   parameter.
 

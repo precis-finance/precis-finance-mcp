@@ -458,12 +458,26 @@ def client() -> Iterator:
     patch("get_redis_client") + MagicMock + TestClient(app)` pattern
     duplicated across 7 endpoint tests.
     """
-    fake_ch = FakeClickHouseClient()
-    fake_rd = FakeRedis()
-    with patch("precis_mcp.db.get_clickhouse_client", return_value=fake_ch), \
-         patch("precis_mcp.db.get_redis_client", return_value=fake_rd):
-        from fastapi.testclient import TestClient
+    from unittest.mock import AsyncMock
+    from langgraph.checkpoint.memory import MemorySaver
 
+    fake_ch = FakeClickHouseClient()
+    fake_rd = FakeRedis(decode_responses=True)
+    with patch("precis_mcp.db.get_clickhouse_client", return_value=fake_ch), \
+         patch("precis_mcp.db.get_redis_client", return_value=fake_rd), \
+         patch("precis_mcp.db.open_platform_pool"), \
+         patch("precis_mcp.db.close_platform_pool"), \
+         patch("precis_mcp.artifacts.lifecycle.check_artifacts"), \
+         patch("precis.agent.checkpointer.create_checkpointer", new=AsyncMock(return_value=MemorySaver())), \
+         patch("precis.agent.checkpointer.close_checkpointer", new=AsyncMock()):
+
+        from fastapi.testclient import TestClient
         from precis.agui import app
-        with TestClient(app) as tc:
-            yield tc
+        from precis import agui
+        with patch.object(agui._llm_config_ref, "load_from_db"), \
+             patch.object(agui, "init_scheduler"), \
+             patch.object(agui, "load_all_scheduled_routines"), \
+             patch.object(agui, "schedule_hitl_purge"), \
+             patch.object(agui, "shutdown_scheduler"):
+            with TestClient(app) as tc:
+                yield tc

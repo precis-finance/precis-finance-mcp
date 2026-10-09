@@ -138,7 +138,11 @@ def _init_instrumentors(app: Any) -> None:
     # FastAPI — request spans for every HTTP route.
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-        FastAPIInstrumentor().instrument_app(app)
+        # Signed transfer URLs are credentials even when content capture is
+        # disabled. Exclude them before the instrumentation sees the raw scope.
+        excluded = os.getenv("OTEL_PYTHON_FASTAPI_EXCLUDED_URLS", os.getenv("OTEL_PYTHON_EXCLUDED_URLS", ""))
+        excluded = ",".join(value for value in (excluded, r"/api/artifacts/(download|upload)") if value)
+        FastAPIInstrumentor().instrument_app(app, excluded_urls=excluded)
     except Exception:
         logger.exception("FastAPI instrumentor failed")
 

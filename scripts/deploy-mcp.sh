@@ -263,6 +263,9 @@ ssh "$SERVER" "
             echo \"KEYCLOAK_ADMIN_USERNAME=admin\"
             echo \"KEYCLOAK_ADMIN_PASSWORD=\$(openssl rand -hex 24)\"
             echo \"KC_DB_PASSWORD=\$(openssl rand -hex 24)\"
+            echo '# Shared artifact transfer — distinct from OAuth/DB credentials.'
+            echo \"ARTIFACT_SIGNING_KEY=\$(openssl rand -hex 32)\"
+            echo 'PRECIS_FILE_IMPORT_HOSTS='
             echo '# External OIDC (mode C only — PRECIS_AUTH_MODE=oidc): set these'
             echo '# to your IdP, and drop bundled-keycloak from COMPOSE_PROFILES.'
             echo 'OIDC_ISSUER='
@@ -294,6 +297,13 @@ ssh "$SERVER" "
         echo '  generated deploy/.env (set PRECIS_BASE_URL before the server phase)'
     else
         echo '  keeping existing deploy/.env'
+    fi
+    # Upgrades preserve database/IdP secrets, but pre-artifact installs have no
+    # signing key. Generate this independent secret once, without printing it.
+    if ! grep -q '^ARTIFACT_SIGNING_KEY=.\\+' deploy/.env && \
+       ! grep -q '^ARTIFACT_SIGNING_KEY_FILE=.\\+' deploy/.env; then
+        echo \"ARTIFACT_SIGNING_KEY=\$(openssl rand -hex 32)\" >> deploy/.env
+        echo '  generated the missing artifact signing key'
     fi
 "
 echo ""

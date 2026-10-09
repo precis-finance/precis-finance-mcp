@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import contextvars
 import os
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
+from _thread import LockType
 
 from precis_mcp.auth_mode import IDENTITY_COLUMN_ALLOWLIST
 from precis_mcp.db import query_clickhouse, query_platform
@@ -97,7 +99,7 @@ class ScenarioPermissions:
 
 @dataclass
 class UserPermissions:
-    """Full auth context for a user, loaded once per request."""
+    """Derived permissions, loaded at request entry and refreshed after creation."""
     user_id: str
     is_admin: bool
     scenarios: dict[str, ScenarioPermissions] = field(default_factory=dict)
@@ -431,6 +433,11 @@ class AuthContext:
     # report panel is open; unused by the open read surface.
     active_report_id: str = ""
     active_block_id: str = ""
+    # Serialize reloads from parallel sync tools so an older snapshot cannot
+    # overwrite a newer one. This context is request-local, never checkpointed.
+    _permissions_lock: LockType = field(
+        default_factory=threading.Lock, repr=False, compare=False,
+    )
 
 
 _auth_context: contextvars.ContextVar[AuthContext | None] = contextvars.ContextVar(
@@ -451,6 +458,30 @@ def get_auth_context() -> AuthContext:
 
 def clear_auth_context() -> None:
     _auth_context.set(None)
+
+
+def refresh_permissions() -> UserPermissions | None:
+    """Reload the caller's permissions while preserving shared object identity.
+
+    Sync tools inherit a copied context in their executor. Mutate the existing
+    permissions object, rather than rebinding the contextvar, so later graph
+    tasks and request.state.permissions both observe the refresh. No context
+    is the explicit unauthenticated dev-tool path; it has nothing to refresh.
+    Reload failures clear the cached grants before propagating the exception.
+    """
+    ctx = _auth_context.get()
+    if ctx is None:
+        return None
+    with ctx._permissions_lock:
+        try:
+            fresh = load_permissions(ctx.user_id)
+        except Exception:
+            ctx.permissions.is_admin = False
+            ctx.permissions.scenarios = {}
+            raise
+        ctx.permissions.is_admin = fresh.is_admin
+        ctx.permissions.scenarios = fresh.scenarios
+        return ctx.permissions
 
 
 def require_user_id(value, tool_name: str) -> None:

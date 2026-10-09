@@ -47,7 +47,7 @@
 #   for the file-drop watcher (only useful with a drop store configured —
 #   local upload volume, PRECIS_S3_*, or PRECIS_SFTP_*). Both read
 #   instance/integrations/ at process start: restart the daemon after editing
-#   bindings or sources. No Redis — the per-binding ingestion lock is a
+#   bindings or sources. The per-binding ingestion lock remains a
 #   Postgres advisory lock on the platform DB.
 #
 #   (If your Compose version doesn't read COMPOSE_PROFILES from --env-file, prefix
@@ -84,7 +84,7 @@ x-precis-hardening: &precis-hardening
 # CUSTOMER_PG_USER / CUSTOMER_PG_PASSWORD, the `<SECRET_REF>_*` convention
 # from instance/integrations/sources/) is added in ONE place and reaches every
 # process that runs the ingestion pipeline. The platform Postgres also backs
-# the per-binding ingestion advisory lock — no Redis in this stack.
+# the per-binding ingestion advisory lock. Redis/Valkey stores temporary query snapshots.
 x-precis-env: &precis-env
   PGHOST: postgres
   PGPORT: "5432"
@@ -125,7 +125,7 @@ x-precis-env: &precis-env
 # release — bump it with each release, or override to a digest for re-pull
 # immutability matching the upstream-image policy below.
 x-precis-image: &precis-image
-  image: ghcr.io/precis-finance/precis-finance-mcp:${PRECIS_MCP_TAG:-0.2.7}
+  image: ghcr.io/precis-finance/precis-finance-mcp:${PRECIS_MCP_TAG:-0.3.0}
   build:
     context: ..
     dockerfile: Dockerfile
@@ -140,6 +140,18 @@ x-precis-image: &precis-image
 # what runs. To take an image update: `docker buildx imagetools inspect <tag>`,
 # update the digest here and in docker-compose.local.yml, test, commit.
 services:
+  redis:
+    image: valkey/valkey:7.2.14-alpine@sha256:c6c2f0020be34bbf684a53a0ef716ab16ff70295186d4d9f2518435beb7afbff
+    restart: unless-stopped
+    # Shared snapshot data is disposable. Keep capacity bounded; no eviction
+    # of the accounting indexes independently of their snapshot entries.
+    command: ["valkey-server", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   postgres:
     image: postgres:16-bookworm@sha256:efedf3595f1d6f415c08568ba171029bf54052e754cc9f030e3f2412b21f3d67
     restart: unless-stopped
@@ -269,7 +281,10 @@ services:
     command: ["python", "deploy/keycloak/reconcile.py"]
     environment:
       KC_BASE_URL_INTERNAL: http://keycloak:8080/auth
-      PRECIS_BASE_URL: ${PRECIS_BASE_URL:-}
+      PRECIS_BASE_URL: ${PRECIS_BASE_URL:?set the public HTTPS origin}
+      ARTIFACT_SIGNING_KEY: ${ARTIFACT_SIGNING_KEY:?generate a distinct key with openssl rand -hex 32}
+      REDIS_HOST: redis
+      USER_DATA_DIR: /data/users
       KC_MCP_AUDIENCE: ${KC_MCP_AUDIENCE:-}
       KC_REALM: ${KC_REALM:-precis}
       KC_ENABLE_EXCEL_ADDIN: ${KC_ENABLE_EXCEL_ADDIN:-}
@@ -314,7 +329,11 @@ services:
       - "127.0.0.1:8769:8769"
     environment:
       # Public origin — derives the OAuth URLs and the RFC 8707 /mcp audience.
-      PRECIS_BASE_URL: ${PRECIS_BASE_URL:-}
+      PRECIS_BASE_URL: ${PRECIS_BASE_URL:?set the public HTTPS origin}
+      ARTIFACT_SIGNING_KEY: ${ARTIFACT_SIGNING_KEY:?generate a distinct key with openssl rand -hex 32}
+      PRECIS_MCP_UPLOADS_ENABLED: ${PRECIS_MCP_UPLOADS_ENABLED:-false}
+      REDIS_HOST: redis
+      USER_DATA_DIR: /data/users
       # Identity mode: keycloak (bundled, default) or oidc (external IdP). In
       # oidc mode set the OIDC_* vars below and drop bundled-keycloak from
       # COMPOSE_PROFILES; the app_open resolver fail-fasts on a bad combo (e.g.
@@ -358,6 +377,8 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
       # required: false — in mode C (external OIDC) the bundled-keycloak profile
       # is inactive, so this one-shot never runs; precis-mcp must not wait on it.
       keycloak-realm-apply:
@@ -489,6 +510,7 @@ services:
     volumes:
       - ${PRECIS_INSTANCE_DIR:-../instance}:/app/instance:ro
       - backups:/backups
+      - user_data:/data/users:ro
     depends_on:
       postgres:
         condition: service_healthy

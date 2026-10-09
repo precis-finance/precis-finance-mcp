@@ -67,6 +67,7 @@ class ToolDescriptor:
     # Keeping it explicit stops the `access="read"` default from silently
     # publishing every uncatalogued tool to the connector.
     mcp_read: bool = False
+    mcp_artifact: bool = False  # narrow artifact mutations, not financial writes
     scenario_params: tuple[str, ...] = ()  # args that carry scenario IDs
     # Scenario injected before the permission gate when a scenario-scoped read
     # tool is called with none. The tool's own in-body default lands *after*
@@ -109,6 +110,12 @@ _FULL_READ_CONTEXT: tuple[str, ...] = (
 # Adding a new tool: add ONE entry here.  That's it.
 
 TOOL_CATALOGUE: dict[str, dict[str, Any]] = {
+    "eval_chart_transform": {"skills": {"analysis", "reporting", "routines"}, "access": "general", "mcp_read": True},
+    "export_dataset": {"skills": {"reporting", "analysis", "excel_workflow"}, "access": "artifact", "mcp_artifact": True},
+    "begin_file_upload": {"access": "artifact", "mcp_artifact": True},
+    "complete_file_upload": {"access": "artifact", "mcp_artifact": True},
+    "get_file_download": {"access": "general", "mcp_read": True},
+    "import_chatgpt_file": {"access": "artifact", "mcp_artifact": True},
     # --- read tools (skill-gated, receive report context) ---
     "run_statement": {
         "skills": {"reporting", "analysis", "planning", "excel_workflow", "routines"},
@@ -356,6 +363,10 @@ def _load_open_tools(reg: Any, catalogue_ref: Any) -> None:
     )
 
     register_read_tools(reg, catalogue_ref)
+    from precis_mcp.tools.chart_tools import register_chart_tools
+    register_chart_tools(reg)
+    from precis_mcp.tools.artifact_tools import register_artifact_tools
+    register_artifact_tools(reg)
 
     # Ingestion tools (list_load_history, get_load_status, list_bindings,
     # get_binding, reload_integrations). The registry ref here is constructed
@@ -369,16 +380,17 @@ def _load_open_tools(reg: Any, catalogue_ref: Any) -> None:
     register_ingestion_tools(reg, _integration_ref)
 
 
-def _load_all_tools(catalogue_ref) -> dict[str, Any]:
+def _load_all_tools(catalogue_ref, *, include_commercial=True) -> dict[str, Any]:
     """Load the open tool set plus any registered Précis loaders."""
     reg = _ToolRegistry()
     _load_open_tools(reg, catalogue_ref)
-    for loader in _EXTRA_TOOL_LOADERS:
-        loader(reg, catalogue_ref)
+    if include_commercial:
+        for loader in _EXTRA_TOOL_LOADERS:
+            loader(reg, catalogue_ref)
     return reg.tools
 
 
-def build_descriptors(catalogue_ref) -> dict[str, ToolDescriptor]:
+def build_descriptors(catalogue_ref, *, include_commercial=True) -> dict[str, ToolDescriptor]:
     """Load all tools and build the name→ToolDescriptor index.
 
     Shared by both transports. The LangGraph path wraps each descriptor as a
@@ -387,8 +399,8 @@ def build_descriptors(catalogue_ref) -> dict[str, ToolDescriptor]:
     Catalogue typos are caught here at load time, not at runtime. The catalogue
     is the merged open + registered-Précis view (``tool_catalogue()``).
     """
-    raw_funcs = _load_all_tools(catalogue_ref)
-    catalogue = tool_catalogue()
+    raw_funcs = _load_all_tools(catalogue_ref, include_commercial=include_commercial)
+    catalogue = tool_catalogue() if include_commercial else TOOL_CATALOGUE
 
     # Forward-drift guard: a catalogue entry with no registered tool function is
     # silently absent from the bound tool set (build only iterates raw_funcs), so
@@ -430,6 +442,7 @@ def build_descriptors(catalogue_ref) -> dict[str, ToolDescriptor]:
             skills=frozenset(meta.get("skills", set())),
             access=access,
             mcp_read=meta.get("mcp_read", False),
+            mcp_artifact=meta.get("mcp_artifact", False),
             scenario_params=tuple(meta.get("scenario_params", ())),
             default_scenario=meta.get("default_scenario", ""),
             report_context=report_ctx,
@@ -859,7 +872,7 @@ def _permission_gate(
         return None
 
     # General tools — no scope/scenario check
-    if access == "general":
+    if access in {"general", "artifact"}:
         return None
 
     # Scenario-scoped tools (read / write / plan_manager)

@@ -7,7 +7,6 @@ Produces the JSON-RPC `tools/call` result envelope:
 | out=            | content + structuredContent | result `_meta`                 |
 |-----------------|-----------------------------|--------------------------------|
 | agent / render  | raw engine result           | render: widget block; agent: — |
-| excel           | filename + base64 XLSX       | —                              |
 | report          | rejected — report builder is in the Précis app               |
 
 `render` and `agent` hand the model the *same* payload — the raw engine result
@@ -25,7 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -45,7 +44,7 @@ RENDER_BLOCK_META_KEY = "precis/renderBlock"
 
 
 # Maps block-emitting tools to the widget bundle URI.  Populated as
-# bundles ship in `ui/mcp-widgets/dist/`.  Keyed by the *render-variant* MCP name
+# bundles ship in `precis_mcp/mcp_external/widgets/`.  Keyed by the *render-variant* MCP name
 # (see `mcp_tool_variants`) — the `_data` variants are absent here, so they
 # carry no `_meta.ui` and the host renders no widget for them.
 _WIDGET_URI: dict[str, str] = {
@@ -66,48 +65,11 @@ _SPLIT_TOOLS: frozenset[str] = frozenset({"run_statement", "run_metric"})
 _DATA_SUFFIX = "_data"
 
 
-@dataclass(frozen=True)
-class McpOutputMode:
-    """A Précis extension adding a split-tool variant + its result framer.
-
-    The open transport ships the `render` + `_data` variants natively; richer
-    output modes (Excel download) require the file subsystem and are injected by
-    the Précis platform at startup via `register_mcp_output_mode`. An open
-    deployment registers none, so it advertises neither the variant nor frames
-    its `out`.
-
-    - `out` — the pinned `out=` value the variant maps to (e.g. `'excel'`).
-    - `suffix` — the advertised-name suffix (e.g. `'_excel'`).
-    - `framer(tool_name, result) -> mcp_result_dict` — turns the tool result
-      into a JSON-RPC `tools/call` envelope.
-    - `is_available()` — gates advertisement (e.g. Excel needs a signing key).
-    """
-
-    out: str
-    suffix: str
-    framer: Callable[[str, Any], dict]
-    is_available: Callable[[], bool] = field(default=lambda: True)
-
-
-_OUTPUT_MODES: dict[str, McpOutputMode] = {}
-
-
-def register_mcp_output_mode(mode: McpOutputMode) -> None:
-    """Register a Précis output mode (variant + framer). Keyed by `out`."""
-    _OUTPUT_MODES[mode.out] = mode
-
-
-def unregister_mcp_output_mode(out: str) -> None:
-    """Drop a registered output mode (test isolation; no-op if absent)."""
-    _OUTPUT_MODES.pop(out, None)
-
-
 def mcp_tool_variants(tool_name: str) -> list[tuple[str, str]]:
     """`(mcp_name, pinned_out)` pairs an underlying tool is advertised as.
 
     Split tools → a render variant (bare name, widget), a `_data` variant
-    (`out='agent'`, no widget), plus one variant per registered+available
-    output mode (Précis; e.g. `_excel`). A widget-linked tool that isn't
+    (`out='agent'`, no widget). A widget-linked tool that isn't
     split is render-only. Everything else is a single `agent` (raw-data) tool.
     """
     if tool_name in _SPLIT_TOOLS:
@@ -115,9 +77,6 @@ def mcp_tool_variants(tool_name: str) -> list[tuple[str, str]]:
             (tool_name, "render"),
             (tool_name + _DATA_SUFFIX, "agent"),
         ]
-        for mode in _OUTPUT_MODES.values():
-            if mode.is_available():
-                variants.append((tool_name + mode.suffix, mode.out))
         return variants
     if tool_name in _WIDGET_URI:
         return [(tool_name, "render")]
@@ -128,9 +87,6 @@ def resolve_mcp_tool(mcp_name: str) -> tuple[str, str]:
     """Map an advertised MCP tool name back to `(underlying_tool, pinned_out)`."""
     if mcp_name.endswith(_DATA_SUFFIX) and mcp_name[: -len(_DATA_SUFFIX)] in _SPLIT_TOOLS:
         return (mcp_name[: -len(_DATA_SUFFIX)], "agent")
-    for mode in _OUTPUT_MODES.values():
-        if mcp_name.endswith(mode.suffix) and mcp_name[: -len(mode.suffix)] in _SPLIT_TOOLS:
-            return (mcp_name[: -len(mode.suffix)], mode.out)
     if mcp_name in _WIDGET_URI:
         return (mcp_name, "render")
     return (mcp_name, "agent")
@@ -151,6 +107,8 @@ _MCP_TOOL_DESCRIPTIONS: dict[str, str] = {
         "`full_pnl` when it is listed by precis_orientation. Give every scenario "
         "a concise, user-facing `alias` such as Actuals, Budget, Variance, or Var %."
     ),
+    "eval_chart_transform": "Create a chart from data_refs (an array of snapshot IDs), a bounded JavaScript function, and chart_spec. Supports line, bar, area, waterfall, scatter, horizontal_bar, forecast_line, cohort_heatmap and sparkline_row. Query first and inspect rows; the transform takes one result per ref and returns flat rows.",
+    "export_dataset": "Export a cached data_ref to json or xlsx without rerunning the query; returns a temporary file and download link.",
     "run_metric": (
         "Break one or more metrics down by a dimension — revenue by project, "
         "utilisation by employee, headcount trends, GL account drill-down. Rows "
@@ -240,10 +198,9 @@ def _bundle_path_for_uri(uri: str) -> Path | None:
     if uri not in _WIDGET_URI.values():
         return None
     component = uri.rsplit("/", 1)[-1]
-    return (
-        Path(__file__).resolve().parent.parent.parent
-        / "ui" / "mcp-widgets" / "dist" / f"{component}.html"
-    )
+    directory = Path(os.environ["PRECIS_WIDGET_DIR"]) if os.getenv("PRECIS_WIDGET_DIR") else Path(__file__).parent / "widgets"
+    return directory / f"{component}.html"
+
 
 
 def widget_uri_for(tool_name: str) -> str | None:
@@ -364,24 +321,25 @@ def frame_tool_result(
     The widget HTML itself is linked via the tool's `_meta.ui` in `tools/list`
     and fetched by `resources/read`, never inlined in the result.
     """
-    if out == "report":
+    if out not in {"agent", "render"}:
         raise FramingError(
-            "out='report' is rejected on the MCP transport — the Précis "
-            "report builder is in the Précis app.  Use out='render' or out='excel'."
+            "Unsupported MCP output mode; use the advertised tool variants and export_dataset for downloads."
         )
-    mode = _OUTPUT_MODES.get(out)
-    if mode is not None:
-        return mode.framer(tool_name, tool_result)
-
     # render + agent hand the model the same payload — the raw engine result on
     # both channels. They differ only in that the render variant carries its
     # rendered block on result `_meta` for the host to bind its widget to.
     raw = tool_result if isinstance(tool_result, dict) else {"value": tool_result}
+    artifact = raw.get("artifact")
+    if isinstance(artifact, dict) and artifact.get("download_url"):
+        return {"content": [
+            {"type": "text", "text": f"Download [{artifact['filename']}]({artifact['download_url']})"},
+            {"type": "resource_link", "uri": artifact["download_url"], "name": artifact["filename"], "mimeType": artifact["mime_type"], "size": artifact["size_bytes"]},
+        ], "structuredContent": raw, "isError": False}
     text = json.dumps(raw, default=str, ensure_ascii=False)
     envelope: dict = {
         "content": [{"type": "text", "text": text}],
         "structuredContent": raw,
-        "isError": False,
+        "isError": "error" in raw or raw.get("status") == "error",
     }
     if out == "render" and render_block is not None:
         envelope["_meta"] = {RENDER_BLOCK_META_KEY: render_block}

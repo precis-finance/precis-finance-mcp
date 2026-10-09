@@ -74,6 +74,18 @@ def _get_token() -> str:
         return json.loads(resp.read())["access_token"]
 
 
+def _ensure_scope_visible(scope_id: str) -> None:
+    """Report granted audience scopes so optional DCR scopes survive refresh."""
+    path = f"/client-scopes/{scope_id}"
+    scope = _admin("GET", path)
+    attributes = scope.setdefault("attributes", {})
+    if attributes.get("include.in.token.scope") == "true":
+        return
+    attributes["include.in.token.scope"] = "true"
+    # Keycloak requires the full representation, including name and protocol.
+    _admin("PUT", path, scope)
+
+
 def main() -> None:
     global _token
 
@@ -250,13 +262,14 @@ def main() -> None:
         if scope is None:
             _admin("POST", "/client-scopes", {
                 "name": "precis-mcp", "protocol": "openid-connect",
-                "attributes": {"include.in.token.scope": "false",
+                "attributes": {"include.in.token.scope": "true",
                                "display.on.consent.screen": "false"},
             })
             scopes = _admin("GET", "/client-scopes")
             scope = next(s for s in scopes if s["name"] == "precis-mcp")
             print("  created client scope precis-mcp", flush=True)
         sid = scope["id"]
+        _ensure_scope_visible(sid)
         mappers = _admin("GET", f"/client-scopes/{sid}/protocol-mappers/models") or []
         aud_mapper = next((m for m in mappers if m["name"] == "mcp-audience"), None)
         if aud_mapper is None:

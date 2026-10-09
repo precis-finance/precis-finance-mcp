@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: Elastic-2.0
 # Copyright (c) 2026 Sergio Naval Marimont
-"""MCP read tools — thin wrappers around the metric engine.
+"""Core finance reads and snapshot production.
 
-Two report tools (run_statement, run_metric) replace the previous seven.
-Both support an ``out`` parameter controlling output destination:
-  - 'render' (default): auto-rendered to user as styled table
-  - 'agent': raw data returned to agent for reasoning
-  - 'excel': Excel file generated, download link returned
-  - 'report': persist result as a financial_table block on a saved report
-    (via Précis's report emitters), return confirmation only
+Agent/render modes select presentation. Downloadable snapshots use
+export_dataset; commercial adapters own reports and persistent workbooks.
 """
 
 from __future__ import annotations
@@ -30,11 +25,7 @@ from mcp.server.fastmcp import FastMCP
 from precis_mcp.db import get_clickhouse_client
 from precis_mcp.db import execute_platform
 from precis_mcp.engine import execute_report
-from precis_mcp.read_tool_hooks import (
-    get_data_ref_cache,
-    get_excel_dispatch,
-    get_output_renderer,
-)
+from precis_mcp.datasets import cache_read_result
 from precis_mcp.engine.catalogue import (
     BaseMetric,
     DerivedMetric,
@@ -67,6 +58,21 @@ _INSPECT_AGENT_CHAR_CAP = 50_000
 
 # Per-section ceiling for search_hierarchy's caller-supplied `limit`.
 _HIERARCHY_LIMIT_CEILING = 10_000
+
+
+def read_defaults(tool_name: str, arguments: dict) -> dict:
+    """Resolve query defaults once for computation and saved provenance."""
+    result = dict(arguments)
+    today = date.today()
+    if result.get("period_start") is None:
+        result["period_start"] = f"{today.year}-01"
+    if result.get("period_end") is None:
+        result["period_end"] = f"{today.year}-{today.month:02d}"
+    if result.get("scenarios") is None:
+        result["scenarios"] = [{"scenario": "actuals", "alias": "Actuals"}]
+    if tool_name == "run_statement" and result.get("statement") is None:
+        result["statement"] = "pnl"
+    return result
 
 
 def _duplicate_alias_error(blocks: list[dict]) -> dict | None:
@@ -649,45 +655,32 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         period_start: str | None = None,
         period_end: str | None = None,
         out: str = "render",
-        filename: str | None = None,
-        sheet_name: str | None = None,
         _scope=None,
     ) -> dict:
-        """Inspect row-level detail from an enabled catalogue source.
+        """Inspect a bounded row-level extract; the agent receives a capped preview.
 
-        This is the structured drill-through tool for detail tables. Filters
-        use semantic dimension keys from the source's ``dimensions`` section;
-        output columns are restricted to configured ``inspect_columns``.
-
-        Output modes:
-        - ``out='render'``: returns a capped sample plus an inspection grid for the user.
-        - ``out='agent'``: returns a capped sample for reasoning.
-        - ``out='excel'``: generates an Excel file and returns a file artifact.
-
-        When a downstream data-reference cache is registered, render/agent
-        results also include ``data_ref`` for the complete bounded extract.
-        ``truncated=true`` still means the matching source population exceeded
-        that extract.
-
-        ``scenario_id`` is required so the standard scenario permission gate
-        runs before the row-level query executes.
+        Returns structured data. Agent/render modes control presentation only.
+        Successful financial reads include a data_ref for charting and
+        export_dataset; export never reruns the query. Give scenario columns
+        explicit user-facing aliases.
         """
-        if out not in {"render", "agent", "excel"}:
+        if out not in {"render", "agent"}:
             return {
-                "error": "Invalid out value. Use 'render', 'agent', or 'excel'.",
+                "error": "Invalid out value. Use 'render' or 'agent'.",
                 "error_type": "validation",
             }
 
         try:
             start = time.perf_counter()
             ch = get_clickhouse_client()
+            resolved_scenario_id = _resolve_inspection_scenario(scenario_id)
             result = engine_inspect_rows(
                 ref.current,
                 source_key,
                 filters=filters,
                 columns=columns,
                 limit=limit,
-                scenario_id=_resolve_inspection_scenario(scenario_id),
+                scenario_id=resolved_scenario_id,
                 period_start=period_start,
                 period_end=period_end,
                 ch_client=ch,
@@ -742,40 +735,22 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         }
 
         # Cache the complete bounded inspection result before applying the
-        # existing model/transcript preview cap. The hook is optional: open
-        # precis_mcp deployments register no cache and remain Redis-free.
-        if out in {"agent", "render"}:
-            data_ref_cache = get_data_ref_cache()
-            if data_ref_cache is not None:
-                data_ref = data_ref_cache(
-                    result=result,
-                    tool_name="inspect_rows",
-                    tool_args={
+        # existing model/transcript preview cap. Cache failure leaves the read usable.
+        if isinstance(result, dict) and "error" not in result:
+            data_ref = cache_read_result(result, 'inspect_rows', {
                         "source_key": source_key,
-                        "scenario_id": scenario_id,
+                        "scenario_id": resolved_scenario_id,
                         "filters": filters,
-                        "columns": columns,
-                        "limit": limit,
+                        "columns": result.get("columns", columns),
+                        "limit": result.get("limit", limit),
                         "period_start": period_start,
                         "period_end": period_end,
-                    },
-                )
-                if data_ref:
-                    result["data_ref"] = data_ref
+                    })
+            if data_ref:
+                result["data_ref"] = data_ref
+            else:
+                result["dataset_available"] = False
 
-        if out == "excel":
-            dispatch = get_excel_dispatch()
-            if dispatch is None:
-                return {
-                    "error": "out='excel' is not available in this deployment",
-                    "error_type": "unsupported",
-                }
-            return dispatch.dispatch_inspection_excel(
-                result=result,
-                source_key=source_key,
-                filename=filename,
-                sheet_name=sheet_name,
-            )
         if out in {"agent", "render"}:
             return _cap_inspection_for_agent(result)
         return result
@@ -795,113 +770,21 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         scale: int | None = None,
         decimals: int | None = None,
         out: str = "render",
-        report_id: str = "",
-        position: str = "end",
-        target: str | None = None,
-        layout: str = "report",
-        filename: str | None = None,
-        sheet_name: str | None = None,
-        overwrite: bool = False,
         _scope=None,
     ) -> dict:
-        """Run a financial statement report.
+        """Run a financial statement with scenario columns and optional dimension breakdown.
 
-        All parameters except ``dimensions`` and ``out`` have automatic defaults
-        from the active report context. Omit them to use defaults. Pass explicitly
-        to override for this call only.
-
-        Rows are defined by the **statement** (e.g. P&L lines from revenue to EBITDA).
-        Columns are **scenarios** (e.g. Actuals, Budget, Variance), optionally crossed
-        with **dimensions** (e.g. monthly breakdown, by cost centre).
-
-        Output modes:
-        - ``out='render'`` (default): auto-rendered to the user as a styled financial
-          table — add brief commentary but do NOT reproduce the table.
-        - ``out='agent'``: raw data returned for your reasoning — present findings
-          in your own words.
-        - ``out='excel'``: generates a styled Excel file and returns a download link.
-          The data is NOT returned — if you need it for reasoning, call again with
-          ``out='agent'``.
-        - ``out='report'``: persist the result as a ``financial_table`` block on a
-          report (``report_id`` required). Returns a confirmation only — no raw
-          data. If you need the numbers, re-call with ``out='agent'``.
-
-        Data model note: Statements may span multiple domains (e.g. full_pnl includes
-        pnl + payroll metrics). Dimensions ``period`` and ``cost_centre`` work for all
-        statements. Other dimensions produce partial results — metrics from compatible
-        domains are broken down, others show aggregate values.
-
-        Args:
-            statement: Statement key from **Available Statements** in the
-                data model description. Defaults from report context, or 'pnl'.
-            scenarios: List of scenario dicts, each with 'scenario' (registry
-                key) and optional-at-protocol-level 'alias' (display label).
-                Agents should always provide a concise, user-facing alias so
-                internal keys never become visible column headings, e.g.
-                ``[{"scenario": "actuals", "alias": "Actuals"},
-                {"scenario": "budget", "alias": "Budget"},
-                {"scenario": "actuals_vs_budget", "alias": "Variance"},
-                {"scenario": "actuals_vs_budget_pct", "alias": "Var %"}]``.
-                Use the scenario keys from **Available Scenarios** in the data
-                model description (real, shifted, and generated comparison
-                types). If a key is not recognised, call ``list_scenarios``
-                to discover valid keys. Defaults from report context.
-            period_start: Range start as a grain-tagged period code — the code
-                shape sets the grain: ``2025-06`` month, ``2025-Q2`` quarter,
-                ``2025`` fiscal year, ``2025-W37`` week, ``2025-06-14`` day.
-                Both bounds must be the same grain. Month/quarter/fiscal-year work
-                on every domain; week/day only on domains whose data carries them
-                (``list_dimensions`` shows each dimension's grain, and an
-                unsupported grain is rejected with the domain's supported set).
-                Prior-year / prior-period comparisons work at any grain, and
-                sum / avg / closing metrics roll up correctly at each grain.
-                Defaults from report context.
-            period_end: Range end — same grain as period_start. Defaults from
-                report context.
-            filters: Dimension filters. Defaults from report context.
-                Pass {} to explicitly clear all filters.
-            dimensions: Optional dimension keys to break by — the same
-                catalogue dimension names used in ``filters``.
-            scale: Currency scaling power. 0=units (default), 3=thousands,
-                6=millions, 9=billions. Defaults from report context.
-            decimals: Decimal places. Defaults from report context.
-            out: Output mode — 'render' (default), 'agent', 'excel', or 'report'.
-            report_id: Target report ID (required when ``out='report'``).
-            position: Where to place the block when ``out='report'``:
-                'end' (default), 'start', 'replace:<block_id>',
-                'after:<block_id>', or 'before:<block_id>'. Use 'replace:'
-                to rebase a cloned block for a new period.
-            target: Only for ``out='excel'``. ``None`` (default) creates
-                a new 24h-expiring registry row. ``'new'`` creates a
-                persistent registry row (``expires_at=NULL``).
-                ``'append'`` mutates an existing file in place (resolved
-                by ``filename``) — same file_id, fresh sheet. ``'new'``
-                and ``'append'`` both require ``filename``. All three
-                paths return ``files_created: [file_id]`` and surface
-                automatically; no follow-up surfacing call is needed.
-            layout: Only for ``out='excel'``. ``'report'`` (default) writes
-                a styled hierarchical sheet. ``'extract'`` writes a flat
-                refreshable data table with named ranges and an Excel Table.
-            filename: Only for ``out='excel'`` with ``target='new'`` /
-                ``'append'``. The filename in the user's files dir. Must
-                include ``.xlsx`` extension.
-            sheet_name: Only for ``out='excel'``. Override the default
-                sheet name (derived from the statement key).
-            overwrite: Only for ``out='excel'``. On ``target='new'``, allow
-                replacing an existing file. On ``target='append'``, allow
-                replacing a colliding sheet.
+        Returns structured data. Agent/render modes control presentation only.
+        Successful financial reads include a data_ref for charting and
+        export_dataset; export never reruns the query. Give scenario columns
+        explicit user-facing aliases.
         """
-        # Sensible fallbacks for the MCP SSE dev flow (no report context injection).
-        # In the calling layer, these are always set from Précis's report context.
-        if statement is None:
-            statement = "pnl"
-        today = __import__("datetime").date.today()
-        if period_start is None:
-            period_start = f"{today.year}-01"
-        if period_end is None:
-            period_end = f"{today.year}-{today.month:02d}"
-        if scenarios is None:
-            scenarios = [{"scenario": "actuals", "alias": "Actuals"}]
+        if out not in {"render", "agent"}:
+            return {"error": "Invalid out value. Use render or agent.", "error_type": "validation"}
+        defaults = read_defaults("run_statement", dict(statement=statement, scenarios=scenarios, period_start=period_start, period_end=period_end))
+        statement = defaults["statement"]
+        scenarios = defaults["scenarios"]
+        period_start, period_end = defaults["period_start"], defaults["period_end"]
         if scale is not None:
             scale = _normalise_scale(scale)
             if isinstance(scale, dict):
@@ -953,7 +836,7 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
 
         result = _safe_execute(request, _scope=_scope)
 
-        # Attach caption to result for render and excel paths
+        # Attach presentation metadata before caching the full-precision result.
         if isinstance(result, dict) and "error" not in result:
             result["caption"] = _build_caption(
                 "run_statement",
@@ -966,101 +849,23 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                 result=result,
             )
 
-        # Data-reference cache — Précis platform only. The open read path
-        # writes no data_ref and touches no Redis; the cache is a registered
-        # Précis extension step (read_tool_hooks).
+        # Cache the engine-precision snapshot before consumer rounding.
         if isinstance(result, dict) and "error" not in result:
-            data_ref_cache = get_data_ref_cache()
-            if data_ref_cache is not None:
-                data_ref = data_ref_cache(
-                    result=result,
-                    tool_name="run_statement",
-                    tool_args={
+            data_ref = cache_read_result(result, 'run_statement', {
                         "statement": statement,
-                        "scenarios": scenarios,
+                        "scenarios": [{"scenario": block["scenario"], "alias": block["alias"]} for block in blocks],
                         "period_start": period_start,
                         "period_end": period_end,
                         "filters": filters,
                         "dimensions": dimensions,
-                    },
-                )
-                if data_ref:
-                    result["data_ref"] = data_ref
+                        "scale": result.get("scale", scale), "decimals": result.get("decimals", decimals),
+                    })
+            if data_ref:
+                result["data_ref"] = data_ref
+            else:
+                result["dataset_available"] = False
 
-        if out == "excel":
-            if isinstance(result, dict) and "error" not in result:
-                dispatch = get_excel_dispatch()
-                if dispatch is None:
-                    return {
-                        "error": "out='excel' is not available in this deployment",
-                        "error_type": "unsupported",
-                    }
-                return dispatch.dispatch_excel_out(
-                    result=result,
-                    tool_name="run_statement",
-                    tool_params={
-                        "statement": statement,
-                        "scenarios": scenarios,
-                        "period_start": period_start,
-                        "period_end": period_end,
-                        "filters": filters,
-                        "dimensions": dimensions,
-                    },
-                    default_stem=statement,
-                    target=target,
-                    layout=layout,
-                    filename=filename,
-                    sheet_name=sheet_name,
-                    overwrite=overwrite,
-                )
 
-        if out == "report":
-            if isinstance(result, dict) and "error" in result:
-                return result
-            if not report_id:
-                return {
-                    "error": "report_id is required when out='report'",
-                    "error_type": "validation",
-                }
-            renderer = get_output_renderer("report")
-            if renderer is None:
-                return {
-                    "error": "out='report' is not available in this deployment",
-                    "error_type": "unsupported",
-                }
-            try:
-                from precis_mcp.auth import get_auth_context
-
-                auth = get_auth_context()
-                tool_args = {
-                    "statement": statement,
-                    "scenarios": scenarios,
-                    "period_start": period_start,
-                    "period_end": period_end,
-                    "filters": filters,
-                    "dimensions": dimensions,
-                    "scale": scale,
-                    "decimals": decimals,
-                }
-                return renderer(
-                    result=result,
-                    tool_name="run_statement",
-                    tool_args=tool_args,
-                    user_id=auth.user_id,
-                    report_id=report_id,
-                    position=position,
-                )
-            except RuntimeError:
-                return {
-                    "error": "out='report' requires authenticated agent flow",
-                    "error_type": "auth",
-                }
-            except Exception as e:
-                logger.exception("Report block write failed")
-                return {
-                    "error": f"Report block write failed: {e}",
-                    "error_type": "execution",
-                }
 
         return _round_values_for_consumer(result)
 
@@ -1075,106 +880,20 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         scale: int | None = None,
         decimals: int | None = None,
         out: str = "render",
-        report_id: str = "",
-        position: str = "end",
-        target: str | None = None,
-        layout: str = "report",
-        filename: str | None = None,
-        sheet_name: str | None = None,
-        overwrite: bool = False,
         _scope=None,
     ) -> dict:
-        """Run a metric breakdown / pivot report.
+        """Run one or more metrics by dimensions with scenario columns.
 
-        All parameters except ``metrics``, ``dimensions``, and ``out`` have automatic
-        defaults from the active report context. Omit them to use defaults. Pass
-        explicitly to override for this call only.
-
-        One or more **metrics** as measures, broken down by **dimensions** (rows) and
-        **scenarios** (columns). Use this for any analysis that isn't a standard financial
-        statement: revenue by project, utilisation by employee, headcount trends, GL drill-downs.
-
-        Output modes:
-        - ``out='render'`` (default): auto-rendered to the user as a styled table —
-          add brief commentary but do NOT reproduce the table.
-        - ``out='agent'``: raw data returned for your reasoning — present findings
-          in your own words.
-        - ``out='excel'``: generates a flattened Excel file and returns a download link.
-          The data is NOT returned — if you need it for reasoning, call again with
-          ``out='agent'``.
-        - ``out='report'``: persist the result as a ``financial_table`` block on a
-          report (``report_id`` required). Returns a confirmation only — no raw
-          data. If you need the numbers, re-call with ``out='agent'``.
-
-        Data model note: Each metric belongs to a **domain** (pnl, timesheets, payroll, gl).
-        Dimensions are domain-specific — you can only break down by dimensions available
-        in the metric's domain. Check Available Dimensions in the system prompt, or use
-        ``list_kpis`` to see domain and available dimensions per metric.
-
-        Args:
-            metrics: List of metric keys. All must share the same domain.
-            scenarios: List of scenario dicts, each with 'scenario' (registry
-                key) and optional-at-protocol-level 'alias' (display label).
-                Agents should always provide a concise, user-facing alias so
-                internal keys never become visible column headings, e.g.
-                ``[{"scenario": "actuals", "alias": "Actuals"},
-                {"scenario": "budget", "alias": "Budget"},
-                {"scenario": "actuals_vs_budget", "alias": "Variance"},
-                {"scenario": "actuals_vs_budget_pct", "alias": "Var %"}]``.
-                Use the scenario keys from **Available Scenarios** in the data
-                model description (real, shifted, and generated comparison
-                types). If a key is not recognised, call ``list_scenarios``
-                to discover valid keys. Defaults from report context.
-            period_start: Range start as a grain-tagged period code — the code
-                shape sets the grain: ``2025-06`` month, ``2025-Q2`` quarter,
-                ``2025`` fiscal year, ``2025-W37`` week, ``2025-06-14`` day.
-                Both bounds must be the same grain. Month/quarter/fiscal-year work
-                on every domain; week/day only on domains whose data carries them
-                (``list_dimensions`` shows each dimension's grain, and an
-                unsupported grain is rejected with the domain's supported set).
-                Prior-year / prior-period comparisons work at any grain, and
-                sum / avg / closing metrics roll up correctly at each grain.
-                Defaults from report context.
-            period_end: Range end — same grain as period_start. Defaults from
-                report context.
-            filters: Dimension filters. Defaults from report context.
-                Pass {} to explicitly clear all filters.
-            dimensions: Dimension keys for row breakdown — the same catalogue
-                dimension names used in ``filters``.
-            scale: Currency scaling power. 0=units (default), 3=thousands,
-                6=millions, 9=billions. Defaults from report context.
-            decimals: Decimal places. Defaults from report context.
-            out: Output mode — 'render' (default), 'agent', 'excel', or 'report'.
-            report_id: Target report ID (required when ``out='report'``).
-            position: Where to place the block when ``out='report'``:
-                'end' (default), 'start', 'replace:<block_id>',
-                'after:<block_id>', or 'before:<block_id>'. Use 'replace:'
-                to rebase a cloned block for a new period.
-            target: Only for ``out='excel'``. ``None`` (default) creates
-                a new 24h-expiring registry row. ``'new'`` produces a
-                persistent registry row (``expires_at=NULL``).
-                ``'append'`` mutates an existing file in place — same
-                file_id, fresh sheet. All three paths return
-                ``files_created: [file_id]`` and surface automatically.
-            layout: Only for ``out='excel'``. ``'report'`` (default) writes
-                a styled flattened sheet. ``'extract'`` writes a flat
-                refreshable data table with named ranges and an Excel Table.
-            filename: Only for ``out='excel'`` with ``target='new'`` /
-                ``'append'``. Filename in the user's files dir (``.xlsx``).
-            sheet_name: Only for ``out='excel'``. Override the default
-                sheet name.
-            overwrite: Only for ``out='excel'``. ``target='new'`` → replace
-                the file; ``target='append'`` → replace the colliding sheet.
+        Returns structured data. Agent/render modes control presentation only.
+        Successful financial reads include a data_ref for charting and
+        export_dataset; export never reruns the query. Give scenario columns
+        explicit user-facing aliases.
         """
-        # Sensible fallbacks for the MCP SSE dev flow (no report context injection).
-        # In the calling layer, these are always set from Précis's report context.
-        today = __import__("datetime").date.today()
-        if period_start is None:
-            period_start = f"{today.year}-01"
-        if period_end is None:
-            period_end = f"{today.year}-{today.month:02d}"
-        if scenarios is None:
-            scenarios = [{"scenario": "actuals", "alias": "Actuals"}]
+        if out not in {"render", "agent"}:
+            return {"error": "Invalid out value. Use render or agent.", "error_type": "validation"}
+        defaults = read_defaults("run_metric", dict(scenarios=scenarios, period_start=period_start, period_end=period_end))
+        scenarios = defaults["scenarios"]
+        period_start, period_end = defaults["period_start"], defaults["period_end"]
         if scale is not None:
             scale = _normalise_scale(scale)
             if isinstance(scale, dict):
@@ -1229,7 +948,7 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
 
         result = _safe_execute(request, _scope=_scope)
 
-        # Attach caption to result for render and excel paths
+        # Attach presentation metadata before caching the full-precision result.
         if isinstance(result, dict) and "error" not in result:
             result["caption"] = _build_caption(
                 "run_metric",
@@ -1242,105 +961,24 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                 result=result,
             )
 
-        # Data-reference cache — Précis platform only. The open read path
-        # writes no data_ref and touches no Redis; the cache is a registered
-        # Précis extension step (read_tool_hooks).
+        # Cache the engine-precision snapshot before consumer rounding.
         if isinstance(result, dict) and "error" not in result:
-            data_ref_cache = get_data_ref_cache()
-            if data_ref_cache is not None:
-                data_ref = data_ref_cache(
-                    result=result,
-                    tool_name="run_metric",
-                    tool_args={
+            data_ref = cache_read_result(result, 'run_metric', {
                         "metrics": metrics,
-                        "scenarios": scenarios,
+                        "scenarios": [{"scenario": block["scenario"], "alias": block["alias"]} for block in blocks],
                         "period_start": period_start,
                         "period_end": period_end,
                         "filters": filters,
                         "dimensions": dimensions,
-                    },
-                )
-                if data_ref:
-                    result["data_ref"] = data_ref
-
-        if out == "excel":
-            if isinstance(result, dict) and "error" not in result:
-                dispatch = get_excel_dispatch()
-                if dispatch is None:
-                    return {
-                        "error": "out='excel' is not available in this deployment",
-                        "error_type": "unsupported",
-                    }
-                metric_slug = "_".join(metrics[:3])
-                if dimensions:
-                    metric_slug += "_by_" + "_".join(dimensions[:2])
-                return dispatch.dispatch_excel_out(
-                    result=result,
-                    tool_name="run_metric",
-                    tool_params={
-                        "metrics": metrics,
-                        "scenarios": scenarios,
-                        "period_start": period_start,
-                        "period_end": period_end,
-                        "filters": filters,
-                        "dimensions": dimensions,
-                    },
-                    default_stem=metric_slug,
-                    target=target,
-                    layout=layout,
-                    filename=filename,
-                    sheet_name=sheet_name,
-                    overwrite=overwrite,
-                )
+                        "scale": result.get("scale", scale), "decimals": result.get("decimals", decimals),
+                    })
+            if data_ref:
+                result["data_ref"] = data_ref
+            else:
+                result["dataset_available"] = False
 
 
-        if out == "report":
-            if isinstance(result, dict) and "error" in result:
-                return result
-            if not report_id:
-                return {
-                    "error": "report_id is required when out='report'",
-                    "error_type": "validation",
-                }
-            renderer = get_output_renderer("report")
-            if renderer is None:
-                return {
-                    "error": "out='report' is not available in this deployment",
-                    "error_type": "unsupported",
-                }
-            try:
-                from precis_mcp.auth import get_auth_context
 
-                auth = get_auth_context()
-                tool_args = {
-                    "metrics": metrics,
-                    "scenarios": scenarios,
-                    "period_start": period_start,
-                    "period_end": period_end,
-                    "filters": filters,
-                    "dimensions": dimensions,
-                    "scale": scale,
-                    "decimals": decimals,
-                }
-                return renderer(
-                    result=result,
-                    tool_name="run_metric",
-                    tool_args=tool_args,
-                    user_id=auth.user_id,
-                    report_id=report_id,
-                    position=position,
-                )
-            except RuntimeError:
-                return {
-                    "error": "out='report' requires authenticated agent flow",
-                    "error_type": "auth",
-                }
-            except Exception as e:
-                logger.exception("Report block write failed")
-                return {
-                    "error": f"Report block write failed: {e}",
-                    "error_type": "execution",
-                }
 
         return _round_values_for_consumer(result)
 
@@ -1353,43 +991,13 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         query: str | None = None,
         dimension: str | None = None,
         limit: int | None = None,
-        out: str = "agent",
     ) -> dict:
-        """[UTILITY] Search or list dimension members and hierarchy nodes.
+        """Search dimension hierarchy members before composing a query.
 
-        Covers all three dimension kinds: leaf (own master data), derived
-        (attribute values of another dimension's master data), and ragged
-        hierarchies (rollup nodes).
-
-        Two modes of operation:
-
-        - **Search** (``query`` provided): filters dimension members and hierarchy
-          nodes by free-text match. Use to find specific items by name or code.
-        - **List** (``query`` omitted or ``None``): returns all members of the
-          specified dimension (up to 200 records + 100 hierarchy nodes by
-          default; raise ``limit`` for a complete list of a large dimension).
-          Always pass ``dimension`` when listing to avoid a cross-dimension dump.
-
-        Returns two sections:
-
-        - **records**: leaf and derived members. Each record shows
-          the dimension key as the filter key with exact filter_usage.
-        - **hierarchy_nodes**: rollup hierarchy nodes (for ragged hierarchies).
-          Use these node_id values with the hierarchy key as the filter key
-          (e.g. filters: {"org_structure": "Cloud & Infrastructure"}). Some
-          verticals prefix node_ids (e.g. "dept:..."); always use the exact
-          node_id returned in the result rather than guessing a prefix.
-
-        Args:
-            query: Free-text search string, e.g. 'cloud', 'Smith', 'T&M'.
-                Omit to list all members of the dimension.
-            dimension: Dimension key to restrict results (e.g. 'cost_centre',
-                'employee', 'project', 'client', 'client_portfolio').
-                Recommended when listing without a query.
-            limit: Per-section result cap. Defaults to 200 records + 100
-                nodes when listing, 50 + 20 when searching; capped at 10000.
-            out: Output mode — 'agent' (default) or 'excel'. When 'excel',
-                generates an Excel file with two sheets (Records + Hierarchy Nodes).
+        Returns structured data. Agent/render modes control presentation only.
+        Successful financial reads include a data_ref for charting and
+        export_dataset; export never reruns the query. Give scenario columns
+        explicit user-facing aliases.
         """
         if limit is not None:
             limit = max(1, min(int(limit), _HIERARCHY_LIMIT_CEILING))
@@ -1586,20 +1194,11 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                     continue
 
         result = {"records": records, "hierarchy_nodes": hierarchy_nodes}
-
-        if out == "excel":
-            dispatch = get_excel_dispatch()
-            if dispatch is None:
-                return {
-                    "error": "out='excel' is not available in this deployment",
-                    "error_type": "unsupported",
-                }
-            return dispatch.dispatch_hierarchy_excel(
-                result=result,
-                query=query,
-                dimension=dimension,
-            )
-
+        data_ref = cache_read_result(result, "search_hierarchy", {"query": query, "dimension": dimension, "limit": limit})
+        if data_ref:
+            result["data_ref"] = data_ref
+        else:
+            result["dataset_available"] = False
         return result
 
     @mcp.tool()

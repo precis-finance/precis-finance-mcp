@@ -17,6 +17,10 @@ generation in step 2.
 For a multi-user server that real users sign in to, see
 [Remote access](../deployment/oauth-keycloak.md).
 
+**Development cutover:** the shared artifact changes await release and acceptance.
+Use a freshly built open source export for this implementation; the previously
+published `0.2.7` image does not provide the new contract.
+
 ## 1. Start the stack
 
 Download the single-user compose file and start the stack — it **pulls the
@@ -26,6 +30,7 @@ to build and no instance to supply:
 ```bash
 curl -O https://raw.githubusercontent.com/precis-finance/precis-finance-mcp/main/deploy/docker-compose.local.yml
 export MCP_DEV_KEY=$(openssl rand -hex 32)
+export ARTIFACT_SIGNING_KEY=$(openssl rand -hex 32)
 docker compose -f docker-compose.local.yml up -d
 ```
 
@@ -33,7 +38,7 @@ docker compose -f docker-compose.local.yml up -d
 adjust the `-f` path. `up --build` builds the image from a checkout instead of
 pulling; pin a release with `PRECIS_MCP_TAG`.)
 
-That runs three containers: a bundled ClickHouse, a bundled Postgres (the
+That starts four long-running containers: Valkey for snapshots, a bundled ClickHouse, a bundled Postgres (the
 ingestion bookkeeping database, doubling as the demo's mock data source), and
 the single-user MCP server, published on `127.0.0.1` only. The server is
 guarded by three deliberate gates — an explicit enable flag, the 32+
@@ -44,8 +49,8 @@ Keep hold of the key (`echo $MCP_DEV_KEY`); your client sends it on every
 request.
 
 **You should see:** `docker compose -f docker-compose.local.yml ps`
-lists three services — `clickhouse` and `postgres` (healthy) and
-`precis-mcp` — all `Up`.
+lists `clickhouse`, `postgres` and `redis` (healthy), plus `precis-mcp`
+(`Up`). The `migrate` one-shot must complete successfully before the server starts.
 
 ## 2. Populate the demo model
 
@@ -168,6 +173,7 @@ pip install -e ".[dev]"
 export CHHOST=127.0.0.1 CHPORT=8123 CHUSER=default CHPASSWORD=...
 export ENABLE_MCP_DEV_SERVER=1
 export MCP_DEV_KEY=$(openssl rand -hex 32)
+export ARTIFACT_SIGNING_KEY=$(openssl rand -hex 32)
 
 python -m precis_mcp.server
 ```
@@ -190,3 +196,7 @@ Docker-less is for serving a model you populate by other means.
 - Load your own data → [Ingestion & data sources](../configuration/ingestion.md)
 - Open it to other users → [Remote access](../deployment/oauth-keycloak.md)
 - Every knob → [Environment variable reference](../configuration/environment-variables.md)
+
+## Charts and files
+
+The bundle also starts Valkey for bounded snapshots and applies the open artifact migration before serving. It mounts persistent user-data storage. Query first, use `eval_chart_transform(data_refs=[data_ref], ...)` to build a chart, or `export_dataset(data_ref, format="xlsx")` to download the snapshot. File upload uses reserve → raw PUT → complete. See [Files and external agent hosts](../reference/files-and-hosts.md).

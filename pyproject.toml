@@ -7,7 +7,7 @@
 # Dependency subset audited from the actual imports across precis_mcp/*.py.
 # Deliberately excluded (Précis-platform-only, imported nowhere in precis_mcp/):
 # langgraph*, langchain-*, openai, google-genai, docker, slowapi, bcrypt,
-# quickjs-ng, defusedxml, lxml, sqlalchemy (transitive via ibis[postgres]),
+# defusedxml, lxml, sqlalchemy (transitive via ibis[postgres]),
 # and — once web_fetch moves to the Précis platform — anthropic, html2text, requests
 # (web_fetch_tools.py is their only open importer).
 
@@ -17,7 +17,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "precis-finance-mcp"
-version = "0.2.7"
+version = "0.3.0"
 description = "Read-only financial-data access over MCP — the open core of Précis (metric engine, semantic layer, ingestion, ClickHouse read layer, MCP transport, OIDC auth)."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -55,14 +55,15 @@ dependencies = [
     "numpy",
     "pandas",
     # Platform DB (load_history, users) — psycopg3 (db.py + scripts/migrate.py).
-    # Also backs the ingestion advisory lock — no redis dependency:
-    # db.get_redis_client is a lazy-import Précis-platform-only helper.
+    # Also backs ingestion locks and artifact metadata/quota accounting.
     "psycopg[binary,pool]",
     # Auth — IdP-agnostic OIDC verifier, JWKS fetch
     "pyjwt[crypto]",
     "httpx",
     # File-reader ingestion (xlsx) + ingestion binding scheduler
     "openpyxl",
+    "redis==7.4.0",
+    "quickjs-ng==0.13.0.1",
     "apscheduler>=3.10,<4",
     # Config + serialization
     "pydantic",
@@ -136,7 +137,7 @@ precis-finance-mcp-clickhouse-init = "precis_mcp.clickhouse_init:main"
 include = ["precis_mcp*"]
 
 [tool.setuptools.package-data]
-"precis_mcp" = ["**/*.md"]
+"precis_mcp" = ["**/*.md", "mcp_external/widgets/*.html"]
 
 # Mirrors the Précis monorepo root pyproject's pytest config so the carried open test
 # suite runs unchanged in the open repo. No import-linter contract here — it

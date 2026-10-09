@@ -151,12 +151,13 @@ the [MCP tool reference](../reference/mcp-tools.md).
 
 ## What this package deliberately is not
 
-Précis Finance MCP is the **read-only access surface** of the Précis platform. It
-never writes to your data, and the agent runtime, planning and write-back,
-charts, Excel export, and report building live in the full platform, not
-here. The extension seams those features plug into are
-documented in [Adding read tools](../development/adding-read-tools.md) — in an
-open deployment they are simply unregistered.
+Précis Finance MCP provides governed financial reads, temporary datasets,
+chart creation and JSON/XLSX snapshot exports. It also stores owned uploads and
+serves HTTPS file transfers. These artifact writes do not mutate finance data.
+Agent orchestration, the Python sandbox, planning/write-back, saved reports and
+workbook editing remain in the full platform. See
+[Files and external agent hosts](../reference/files-and-hosts.md) for the shared
+transfer contract and host-specific acceptance limits.
 
 ## Where each concern lives
 

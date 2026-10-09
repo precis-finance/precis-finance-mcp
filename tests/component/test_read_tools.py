@@ -61,7 +61,7 @@ def tools(catalogue, fake_ch):
         "precis_mcp.tools.read_tools.get_clickhouse_client",
         return_value=fake_ch,
     ), patch(
-        "precis_mcp.tools.read_tools.get_data_ref_cache",
+        "precis_mcp.tools.read_tools.cache_read_result",
         return_value=None,
     ):
         yield mock_mcp.tools
@@ -379,9 +379,9 @@ def test_inspect_rows_caches_full_bounded_result_before_agent_cap(tools):
     rows = [{"period": "2026-01", "amount": i} for i in range(150)]
     cached_snapshot = {}
 
-    def capture_cache(**kwargs):
-        cached_snapshot.update(deepcopy(kwargs))
-        return "conv-1:inspection-ref"
+    def capture_cache(result, tool_name, tool_args):
+        cached_snapshot.update(deepcopy({"result": result, "tool_name": tool_name, "tool_args": tool_args}))
+        return "ds_11111111111111111111111111111111"
 
     cache = MagicMock(side_effect=capture_cache)
     with patch("precis_mcp.tools.read_tools.engine_inspect_rows") as mock_inspect:
@@ -395,8 +395,8 @@ def test_inspect_rows_caches_full_bounded_result_before_agent_cap(tools):
             "query": {"backend_kind": "clickhouse", "sql": "SELECT ..."},
         }
         with patch("precis_mcp.tools.read_tools.execute_platform"), patch(
-            "precis_mcp.tools.read_tools.get_data_ref_cache",
-            return_value=cache,
+            "precis_mcp.tools.read_tools.cache_read_result",
+            side_effect=cache,
         ):
             result = tools["inspect_rows"](
                 source_key="gl",
@@ -411,13 +411,13 @@ def test_inspect_rows_caches_full_bounded_result_before_agent_cap(tools):
     assert len(cached["result"]["rows"]) == 150
     assert cached["result"]["caption"]["source_key"] == "gl"
     assert "data_ref" not in cached["result"]
-    assert cached["tool_args"]["scenario_id"] == "actuals"
+    assert cached["tool_args"]["scenario_id"] == mock_inspect.call_args.kwargs["scenario_id"]
     assert cached["tool_args"]["period_start"] == "2026-01"
-    assert result["data_ref"] == "conv-1:inspection-ref"
+    assert result["data_ref"] == "ds_11111111111111111111111111111111"
     assert len(result["rows"]) == 100
 
 
-def test_inspect_rows_open_path_has_no_data_ref_without_cache(tools):
+def test_inspect_rows_remains_usable_when_cache_unavailable(tools):
     with patch("precis_mcp.tools.read_tools.engine_inspect_rows") as mock_inspect:
         mock_inspect.return_value = {
             "source_key": "gl",
@@ -429,7 +429,7 @@ def test_inspect_rows_open_path_has_no_data_ref_without_cache(tools):
             "query": {"backend_kind": "clickhouse", "sql": "SELECT ..."},
         }
         with patch("precis_mcp.tools.read_tools.execute_platform"), patch(
-            "precis_mcp.tools.read_tools.get_data_ref_cache",
+            "precis_mcp.tools.read_tools.cache_read_result",
             return_value=None,
         ):
             result = tools["inspect_rows"](

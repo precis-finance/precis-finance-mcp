@@ -1,7 +1,7 @@
 /* Self-hosted webfonts — same faces the SPA bundles (@fontsource), copied
    into resources/fonts/ so the login page never depends on Google Fonts.
-   Cormorant 400 covers the wordmark (its font-weight:300 nearest-matches to
-   this face, exactly as the SPA renders it). */
+   Precision presentation: cmo/precis-app-precision.md.
+   Cormorant 600 is reserved for the wordmark, matching the SPA. */
 @font-face {
   font-family: "DM Sans";
   font-style: normal;
@@ -19,29 +19,30 @@
 @font-face {
   font-family: "Cormorant Garamond";
   font-style: normal;
-  font-weight: 400;
+  font-weight: 600;
   font-display: swap;
-  src: url("../fonts/cormorant-garamond-latin-400-normal.woff2") format("woff2");
+  src: url("../fonts/cormorant-garamond-latin-600-normal.woff2") format("woff2");
 }
 
 /* Précis login theme — overrides on top of keycloak.v2.
    Mirrors the SPA's LoginPage feel: no card, narrow centred column,
    Cormorant Garamond wordmark, "Finance Intelligence Platform"
-   subtitle, DM Sans 400 form labels (no bold anywhere). */
+   subtitle, DM Sans 400 form labels and restrained teal controls. */
 
 :root {
-  --precis-bg: #FAFBFC;
+  --precis-bg: #FCFDFD;
   --precis-surface: #FFFFFF;
-  --precis-ink: #1A1F2E;
-  --precis-ink-muted: #5A6478;
-  --precis-ink-faint: #8892A4;
-  --precis-accent: #0D9488;
-  --precis-accent-hover: #14B8A6;
-  --precis-border: rgba(12, 31, 44, 0.12);
+  --precis-ink: #0C1F2C;
+  --precis-ink-muted: #4C606B;
+  --precis-ink-faint: #60717B;
+  --precis-accent: #08786F;
+  --precis-accent-hover: #06665F;
+  --precis-border: #B8CDD0;
+  --precis-control-radius: 5px;
   --precis-critical: #C4453A;
 
   --precis-font-sans: "DM Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --precis-font-display: "Cormorant Garamond", "Times New Roman", serif;
+  --precis-font-brand: "Cormorant Garamond", Georgia, "Times New Roman", serif;
 
   --pf-v5-global--primary-color--100: var(--precis-accent);
   --pf-v5-global--primary-color--200: var(--precis-accent-hover);
@@ -52,7 +53,7 @@
   --pf-v5-global--Color--100: var(--precis-ink);
   --pf-v5-global--Color--200: var(--precis-ink-muted);
   --pf-v5-global--FontFamily--text: var(--precis-font-sans);
-  --pf-v5-global--FontFamily--heading: var(--precis-font-display);
+  --pf-v5-global--FontFamily--heading: var(--precis-font-sans);
   --pf-v5-global--danger-color--100: var(--precis-critical);
 }
 
@@ -102,8 +103,8 @@ html, body, #keycloak-bg {
 /* Précis wordmark. */
 #kc-header-wrapper,
 .pf-v5-c-brand {
-  font-family: var(--precis-font-display);
-  font-weight: 300;
+  font-family: var(--precis-font-brand);
+  font-weight: 600;
   font-size: 2.25rem;
   line-height: 1.1;
   letter-spacing: -0.02em;
@@ -113,6 +114,18 @@ html, body, #keycloak-bg {
   text-transform: none;
   background: transparent;
   height: auto;
+}
+
+/* Decorative connected-P mark; the realm's existing brand text stays intact. */
+#kc-header-wrapper::before,
+.pf-v5-c-brand::before {
+  content: "";
+  display: inline-block;
+  width: calc(2.5rem * 25 / 28);
+  height: 2.5rem;
+  margin-right: 0.75rem;
+  vertical-align: middle;
+  background: url("../img/brand-mark.svg") center / contain no-repeat;
 }
 
 /* Subtitle below the wordmark — matches the SPA's
@@ -185,21 +198,33 @@ input[type="email"] {
   font-family: var(--precis-font-sans);
   font-weight: 400;
   border: 1px solid var(--precis-border);
-  border-radius: 4px;
+  border-radius: var(--precis-control-radius);
   color: var(--precis-ink);
   background: var(--precis-surface);
   height: 2.5rem;
   --pf-v5-c-form-control--BackgroundColor: var(--precis-surface);
   --pf-v5-c-form-control--Color: var(--precis-ink);
-  --pf-v5-c-form-control--BorderBottomColor: var(--precis-border);
-  --pf-v5-c-form-control--BorderColor: var(--precis-border);
+  --pf-v5-c-form-control--before--BorderStyle: none;
+  --pf-v5-c-form-control--after--BorderBottomColor: transparent;
+}
+
+/* The wrapper owns the boundary; avoid a second border on its inner input.
+   Keep PatternFly's status underline for invalid fields. */
+span.pf-v5-c-form-control::after {
+  border-radius: inherit;
 }
 
 span.pf-v5-c-form-control > input {
   color: var(--precis-ink);
   background: transparent;
+  border: none;
+  border-radius: inherit;
   font-weight: 400;
   height: 100%;
+}
+
+span.pf-v5-c-form-control > input:focus {
+  outline: none;
 }
 
 .pf-v5-c-form-control:focus-within,
@@ -208,9 +233,9 @@ input[type="text"]:focus,
 input[type="password"]:focus,
 input[type="email"]:focus {
   border-color: var(--precis-accent);
-  outline: 2px solid rgba(13, 148, 136, 0.18);
+  outline: 2px solid var(--precis-accent);
   outline-offset: 1px;
-  --pf-v5-c-form-control--focus--BorderBottomColor: var(--precis-accent);
+  --pf-v5-c-form-control--focus--after--BorderBottomColor: var(--precis-accent);
 }
 
 /* Password toggle. */
@@ -219,10 +244,15 @@ button.pf-m-control {
   background-color: var(--precis-surface) !important;
   border: 1px solid var(--precis-border) !important;
   border-left: 0 !important;
+  border-radius: var(--precis-control-radius);
   color: var(--precis-ink-muted) !important;
   height: 2.5rem;
   --pf-v5-c-button--m-control--BackgroundColor: var(--precis-surface);
   --pf-v5-c-button--m-control--Color: var(--precis-ink-muted);
+}
+
+.pf-v5-c-button.pf-m-control::after {
+  border: none;
 }
 
 .pf-v5-c-button.pf-m-control:hover,
@@ -259,7 +289,7 @@ button[type="submit"] {
   font-family: var(--precis-font-sans);
   font-weight: 500;
   letter-spacing: 0;
-  border-radius: 4px;
+  border-radius: var(--precis-control-radius);
   height: 2.5rem;
   transition: background-color 150ms ease-in-out;
 }
@@ -269,6 +299,17 @@ button[type="submit"] {
 input[type="submit"]:hover,
 button[type="submit"]:hover {
   background-color: var(--precis-accent-hover);
+}
+
+.pf-v5-c-button::after {
+  border-radius: inherit;
+}
+
+button:focus-visible,
+input[type="submit"]:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--precis-accent);
+  outline-offset: 2px;
 }
 
 /* "Remember me" checkbox. */
@@ -304,6 +345,6 @@ a:hover {
   background: rgba(196, 69, 58, 0.08);
   border: 1px solid rgba(196, 69, 58, 0.2);
   color: var(--precis-critical);
-  border-radius: 4px;
+  border-radius: var(--precis-control-radius);
   font-weight: 400;
 }

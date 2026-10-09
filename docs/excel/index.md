@@ -75,6 +75,11 @@ total is ruled and bold), with favourable/unfavourable variance in green/red.
 Re-running **Format** resets prior styling first, so it's safe to re-apply after
 changing the formula's columns.
 
+The task pane and ribbon icons follow the current Précis identity. **Format**
+uses light headers, quiet subtotal fills and slightly stronger total fills,
+while retaining workbook fonts, number formats and green/red variance meanings.
+Existing ranges keep their formatting until you apply **Format** again.
+
 ## Member drop-downs
 
 The task pane can turn any selected cells into a native Excel drop-down of a
@@ -138,7 +143,7 @@ distinct from the SPA's confidential client. How it's provisioned depends on the
     `resource` parameter (Entra, Okta) also needs `EXCEL_ADDIN_SCOPE` (the full
     request scope, e.g. `openid offline_access api://<app-id>/access_as_user`)
     and `EXCEL_ADDIN_RESOURCE_INDICATOR=false`. See the
-    [external IdP recipes](../deployment/external-idp-recipes.md#351-excel-add-in-against-a-no-dcr-idp-entra--okta-direct).
+    [external IdP recipes](../deployment/external-idp-recipes.md#351-excel-add-in-against-a-no-dcr-idp-entra-okta-direct).
 
 In both cases the `/mcp` host advertises the client_id — and the token-request
 shape — in its protected-resource metadata, so the add-in auto-configures from

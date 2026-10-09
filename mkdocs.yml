@@ -11,9 +11,12 @@ site_url: https://docs.precis.finance/
 site_description: >-
   Self-hostable, read-only financial-model access over the Model Context
   Protocol — metric engine, semantic layer, ingestion, and OAuth2 transport.
+exclude_docs: |
+  /overrides/
 
 theme:
   name: material
+  custom_dir: docs/overrides
   logo: assets/logo.svg
   favicon: assets/favicon.svg
   font: false   # self-hosted faces via assets/extra.css (no Google Fonts)
@@ -87,5 +90,6 @@ nav:
       - Troubleshooting: operations/troubleshooting.md
   - Reference:
       - MCP tool reference: reference/mcp-tools.md
+      - Files and agent hosts: reference/files-and-hosts.md
   - Development:
       - Adding read tools: development/adding-read-tools.md

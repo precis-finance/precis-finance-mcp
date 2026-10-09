@@ -10,11 +10,14 @@
     <script type="text/javascript" src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
 
     <link href="taskpane.css" rel="stylesheet" type="text/css" />
+    <!-- Match the verbatim CSS URL; CopyWebpackPlugin supplies this font. -->
+    <!-- webpackIgnore: true -->
+    <link rel="preload" href="assets/cormorant-garamond-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin="anonymous" />
 </head>
 
 <body>
     <header class="px-header">
-        <img class="px-mark" src="../../assets/precis-mark-light.svg" alt="Précis" />
+        <img class="px-mark" src="../../assets/precis-mark.svg" alt="" />
         <div class="px-wordmark">Précis<span> for Excel</span></div>
     </header>
 

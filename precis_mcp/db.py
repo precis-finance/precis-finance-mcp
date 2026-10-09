@@ -2,6 +2,7 @@
 # Copyright (c) 2026 Sergio Naval Marimont
 """Database connection helpers for ClickHouse, Redis, and PostgreSQL (platform)."""
 
+from functools import lru_cache
 import atexit
 import json
 import logging
@@ -90,17 +91,25 @@ def query_clickhouse(sql: str, parameters: dict | None = None) -> list[dict]:
     return [dict(zip(cols, row)) for row in result.result_rows]
 
 
+@lru_cache(maxsize=1)
 def get_redis_client():
-    """Redis client for the Précis platform (plan-write locks, HITL preview
-    cache). Lazy import: no open path uses Redis — the ingestion lock is
-    Postgres-backed — so the open package does not depend on it."""
+    """Shared bounded Redis client for snapshots and commercial coordination."""
     import redis
+    options = dict(decode_responses=True, socket_connect_timeout=2, socket_timeout=2,
+                   max_connections=32, health_check_interval=30)
+    url = os.getenv("REDIS_URL")
+    if url:
+        return redis.Redis.from_url(url, **options)
+    return redis.Redis(host=os.getenv("REDIS_HOST", "localhost"),
+                       port=int(os.getenv("REDIS_PORT", "6379")),
+                       password=os.getenv("REDIS_PASSWORD") or None,
+                       ssl=_env_truthy("REDIS_TLS"), **options)
 
-    return redis.Redis(
-        host=os.getenv('REDIS_HOST', 'localhost'),
-        port=int(os.getenv('REDIS_PORT', 6379)),
-        decode_responses=True,
-    )
+
+def close_redis_client():
+    if get_redis_client.cache_info().currsize:
+        get_redis_client().close()
+    get_redis_client.cache_clear()
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,102 @@
+/*
+ * Host-adaptive design tokens.  ChatGPT renders widgets in a sandboxed iframe,
+ * so parent-page CSS variables are not a reliable theme API.  We consume the
+ * host theme from `window.openai.theme` and keep local light/dark fallbacks;
+ * host-injected CSS variables still win when a host chooses to provide them.
+ *
+ * Fallback chain when a host doesn't inject a variable:
+ *   font   →  system-ui / ui-monospace
+ *   colour →  local light/dark values sized for iframe rendering
+ */
+:root {
+  /* Typography — host-injected with system fallback */
+  --w-font-sans: var(--font-sans, system-ui, sans-serif);
+  --w-font-mono: var(--font-mono, ui-monospace, "SFMono-Regular", Menlo, monospace);
+
+  /* Surface */
+  --w-surface: var(--color-background-primary, transparent);
+  /* Overlays and frozen table cells need an opaque, theme-aware fallback. */
+  --w-surface-solid: var(--color-background-primary, #ffffff);
+  --w-surface-muted: var(--color-background-secondary, #f2f7f6);
+  --w-border: var(--color-border-primary, rgba(0, 0, 0, 0.12));
+  --w-border-strong: var(--color-border-strong, rgba(0, 0, 0, 0.32));
+
+  /* Text */
+  --w-ink: var(--color-text-primary, #0c1f2c);
+  --w-ink-muted: var(--color-text-secondary, #4c606b);
+  --w-ink-faint: var(--color-text-tertiary, #60717b);
+
+  /* Semantic colour — Précis maps favourable/unfavourable to host tokens */
+  --w-positive: var(--color-text-success, #15803d);
+  --w-negative: var(--color-text-danger, #b91c1c);
+
+  /* Chart series — the Précis brand chart palette (light). Hosts don't inject
+     a chart palette, so these are fixed brand values; dark overrides below keep
+     them legible on a dark host. */
+  --w-chart-1: #0d9488;
+  --w-chart-2: #c8a97e;
+  --w-chart-3: #0c1f2c;
+  --w-chart-4: #6366f1;
+  --w-chart-5: #2aa161;
+
+  /* Rhythm */
+  --w-radius: var(--border-radius-md, 5px);
+  --w-shadow: var(--shadow-sm, none);
+  --w-tooltip-shadow: var(--shadow-sm, 0 4px 16px rgba(12, 31, 44, 0.04));
+}
+
+:root[data-theme="dark"] {
+  --w-chart-1: #14b8a6;
+  --w-chart-2: #c8a97e;
+  --w-chart-3: #94a3b8;
+  --w-chart-4: #818cf8;
+  --w-chart-5: #34d399;
+
+  --w-surface: var(--color-background-primary, transparent);
+  --w-surface-solid: var(--color-background-primary, #1f2937);
+  --w-surface-muted: var(--color-background-secondary, #1a2332);
+  --w-tooltip-shadow: var(--shadow-sm, 0 4px 16px rgba(0, 0, 0, 0.08));
+  --w-border: var(--color-border-primary, rgba(255, 255, 255, 0.16));
+  --w-border-strong: var(--color-border-strong, rgba(255, 255, 255, 0.34));
+
+  --w-ink: var(--color-text-primary, #f3f4f6);
+  --w-ink-muted: var(--color-text-secondary, #c7cbd1);
+  --w-ink-faint: var(--color-text-tertiary, #9ca3af);
+
+  --w-positive: var(--color-text-success, #86efac);
+  --w-negative: var(--color-text-danger, #fca5a5);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --w-surface: var(--color-background-primary, transparent);
+    --w-surface-solid: var(--color-background-primary, #1f2937);
+    --w-surface-muted: var(--color-background-secondary, #1a2332);
+    --w-tooltip-shadow: var(--shadow-sm, 0 4px 16px rgba(0, 0, 0, 0.08));
+    --w-border: var(--color-border-primary, rgba(255, 255, 255, 0.16));
+    --w-border-strong: var(--color-border-strong, rgba(255, 255, 255, 0.34));
+
+    --w-ink: var(--color-text-primary, #f3f4f6);
+    --w-ink-muted: var(--color-text-secondary, #c7cbd1);
+    --w-ink-faint: var(--color-text-tertiary, #9ca3af);
+
+    --w-positive: var(--color-text-success, #86efac);
+    --w-negative: var(--color-text-danger, #fca5a5);
+
+    --w-chart-1: #14b8a6;
+    --w-chart-2: #c8a97e;
+    --w-chart-3: #94a3b8;
+    --w-chart-4: #818cf8;
+    --w-chart-5: #34d399;
+  }
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  background: var(--w-surface);
+  color: var(--w-ink);
+  font-family: var(--w-font-sans);
+  font-size: 14px;
+  line-height: 1.4;
+}

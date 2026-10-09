@@ -27,7 +27,7 @@ from tests.factories.auth import (
 )
 
 
-# The open tool set: read tools + ingestion reads + validation.
+# The open tool set: finance reads, datasets/charts and artifact tools.
 # Anything beyond this in build_descriptors() under open_only is a leak.
 OPEN_TOOLS = {
     "run_statement", "run_metric", "list_scenarios", "list_kpis",
@@ -35,6 +35,7 @@ OPEN_TOOLS = {
     "search_hierarchy", "list_dimensions", "list_variants",
     "resolve_to_cc_list", "reload_catalogue", "list_load_history",
     "get_load_status", "list_bindings", "get_binding", "reload_integrations",
+    "eval_chart_transform", "export_dataset", "begin_file_upload", "complete_file_upload", "get_file_download", "import_chatgpt_file",
 }
 
 # A sample of Précis platform tools that must be ABSENT from the open assembly.
@@ -42,7 +43,7 @@ OPEN_TOOLS = {
 # the write path. web_fetch is a Précis tool — it depends on the
 # Anthropic SDK + an API key, outside the open package's zero-LLM read surface.
 COMMERCIAL_ABSENT = {
-    "save_plan_entries", "commit_plan", "create_report", "eval_chart_transform",
+    "save_plan_entries", "commit_plan", "create_report",
     "emit_analysis", "list_commits", "get_pending_changes", "execute_python",
     "create_routine", "create_workstream", "activate_skill", "list_users",
     "run_validation_check", "web_fetch",
@@ -74,7 +75,7 @@ def open_only(monkeypatch):
 
 def test_open_dispatch_assembles_exactly_the_open_tool_set(open_only, catalogue):
     """With no Précis loader registered, build_descriptors yields exactly the
-    open read-only tool set — no write/plan/report/chart/analysis tools."""
+    open tool set — no finance-write, report or orchestration tools."""
     from precis_mcp.dispatch import build_descriptors
 
     descriptors = build_descriptors(_MockRef(catalogue))
@@ -84,6 +85,15 @@ def test_open_dispatch_assembles_exactly_the_open_tool_set(open_only, catalogue)
     assert all(
         d.access not in {"write", "plan_manager"} for d in descriptors.values()
     )
+
+
+def test_remote_assembly_ignores_product_loader(catalogue, monkeypatch):
+    from precis_mcp import dispatch
+    called = []
+    monkeypatch.setattr(dispatch, "_EXTRA_TOOL_LOADERS", [lambda *_: called.append(True)])
+    descriptors = dispatch.build_descriptors(_MockRef(catalogue), include_commercial=False)
+    assert called == []
+    assert set(descriptors) == OPEN_TOOLS
 
 
 @pytest.mark.skipif(
@@ -121,7 +131,7 @@ def test_open_core_serves_a_read_query_over_mcp(open_only, client, ch_client):
         user_id="alice", scenarios={"BUD-2026": make_scenario_permissions()},
     )
     with patch(
-        "precis_mcp.mcp_external.server.load_permissions", return_value=perms,
+        "precis_mcp.request_auth.load_permissions", return_value=perms,
     ), patch(
         "precis_mcp.tools.read_tools.get_clickhouse_client", return_value=ch_client,
     ):
@@ -139,7 +149,7 @@ def test_open_core_serves_a_read_query_over_mcp(open_only, client, ch_client):
 
     names = {t["name"] for t in listed.json()["result"]["tools"]}
     assert "run_statement" in names              # an open tool is advertised
-    assert "eval_chart_transform" not in names   # a Précis mcp_read tool is absent
+    assert "eval_chart_transform" in names   # chart creation is shared core
     result = called.json()["result"]
     assert result["isError"] is False
     assert "structuredContent" in result
@@ -157,18 +167,23 @@ def test_app_open_entrypoint_boots_standalone(open_only, ch_client):
     # The open app mounts only the open surface — no Précis routers.
     paths = {getattr(r, "path", None) for r in app.routes}
     assert {"/mcp", "/health", "/.well-known/oauth-protected-resource"} <= paths
-    assert not any(p and p.startswith("/api/") for p in paths)
+    assert {p for p in paths if p and p.startswith("/api/")} == {"/api/artifacts/download", "/api/artifacts/upload"}
 
     perms = make_permissions(
         user_id="alice", scenarios={"BUD-2026": make_scenario_permissions()},
     )
-    with TestClient(app) as tc, patch(
-        "precis_mcp.mcp_external.server.load_permissions", return_value=perms,
+    from tests.fakes.fake_redis import FakeRedis
+    with patch("precis_mcp.artifacts.lifecycle.check_artifacts"), patch("precis_mcp.db.get_redis_client", return_value=FakeRedis()), TestClient(app) as tc, patch(
+        "precis_mcp.request_auth.load_permissions", return_value=perms,
     ), patch(
         "precis_mcp.tools.read_tools.get_clickhouse_client", return_value=ch_client,
     ):
         assert tc.get("/health").json() == {"status": "ok"}
-        assert tc.get("/.well-known/oauth-protected-resource").status_code == 200
+        discovery = tc.get("/.well-known/oauth-protected-resource")
+        metadata = tc.get("/.well-known/oauth-authorization-server")
+        assert discovery.status_code == metadata.status_code == 200
+        assert discovery.json()["authorization_servers"] == [metadata.json()["issuer"]]
+        assert metadata.json()["authorization_response_iss_parameter_supported"] is True
         listed = tc.post(
             "/mcp",
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
@@ -183,28 +198,22 @@ def test_app_open_entrypoint_boots_standalone(open_only, ch_client):
 
     names = {t["name"] for t in listed.json()["result"]["tools"]}
     assert "run_statement" in names
-    assert "eval_chart_transform" not in names
+    assert "eval_chart_transform" in names
     result = called.json()["result"]
     assert result["isError"] is False
     assert "structuredContent" in result
 
 
 def test_open_instructions_exclude_commercial_surface(monkeypatch, catalogue):
-    """The open MCP-connector instructions describe only the open read surface —
-    no charts (`eval_chart_transform`), no Excel (`_excel`). The Précis
-    product registers a full template override that re-introduces them
-    (covered by test_mcp_external); here we assert the *open* default.
-
-    The conftest installs the Précis tools (and thus the template override)
-    session-wide, so we clear the override to exercise the open path."""
+    """One core orientation describes datasets, charts and artifacts."""
     import precis_mcp.mcp_external.instructions as instr
 
-    monkeypatch.setattr(instr, "_TEMPLATE_OVERRIDE", None)
     text = instr.build_mcp_instructions(catalogue, scenario_registry=None)
 
-    assert "eval_chart_transform" not in text
+    assert "eval_chart_transform" in text
     assert "_excel" not in text
-    assert "## Charts" not in text
+    assert "## Charts" in text
+    assert "export_dataset" in text
     # The open read surface is still described.
     assert "run_statement_data" in text and "inspect_rows" in text
     assert "use `full_pnl` for a general P&L request" in text

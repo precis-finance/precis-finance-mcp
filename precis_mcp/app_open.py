@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Sergio Naval Marimont
 """Open-core ASGI entrypoint — the standalone remote MCP server.
 
-The app a query-only open deployment runs — it installs and serves reads with
+The app a standalone open deployment runs — it installs and serves reads with
 no Précis platform present, exposing exactly the open remote surface:
 
 - ``/mcp`` — the OAuth2-protected JSON-RPC transport. It authenticates every
@@ -11,14 +11,13 @@ no Précis platform present, exposing exactly the open remote surface:
 - ``/.well-known/oauth-protected-resource`` — RFC 9728 discovery.
 - ``/.well-known/oauth-authorization-server`` + ``/authorize`` ``/register``
   ``/token`` — the RFC 8414 shims for the legacy claude.ai client.
-- ``/health`` — liveness.
+- ``/health`` — liveness; ``/readyz`` — shared dependency readiness.
+- ``/api/artifacts/upload`` and ``/api/artifacts/download`` — capability-authorized byte transfer.
 
-It mounts none of the Précis routers (conversations, files, reports,
-workstreams, the LangGraph agent), runs none of the Précis seam
-registrations (chart render builder, report renderer, Excel dispatch), and
-does not import the agent application. The Précis agent app is the
-superset that adds those on top of this same open transport; this module is
-the subset extracted so the open package ships without the agent application.
+It mounts none of the Précis routers (conversations, reports,
+workstreams, the LangGraph agent) and does not import the agent application.
+Charts, datasets and file export/transfer belong to this common core. The
+Précis agent app adds commercial workflows around the same external transport.
 
 Run: ``uvicorn precis_mcp.app_open:app --host 0.0.0.0 --port 8769``.
 """
@@ -59,22 +58,32 @@ async def lifespan(_app: FastAPI):
     from precis_mcp.db import open_platform_pool, close_platform_pool
     open_platform_pool()
 
-    # Opt-in conformance preflight (gap 5): when PRECIS_AUTH_PREFLIGHT is on,
-    # verify the issuer/JWKS/audience are reachable + consistent at boot rather
-    # than letting a misconfig surface as an opaque 401. Off by default (it does
-    # network I/O — operators enable it for a clear-failure deploy).
-    if os.environ.get("PRECIS_AUTH_PREFLIGHT", "").strip().lower() in ("1", "true", "yes"):
-        from precis_mcp.oidc import check_token_contract
+    from precis_mcp.artifacts.lifecycle import start_artifacts, stop_artifacts
+    from precis_mcp.db import close_redis_client
+    cleanup = None
+    try:
+        # Opt-in conformance preflight (gap 5): when PRECIS_AUTH_PREFLIGHT is on,
+        # verify the issuer/JWKS/audience are reachable + consistent at boot rather
+        # than letting a misconfig surface as an opaque 401. Off by default (it does
+        # network I/O — operators enable it for a clear-failure deploy).
+        if os.environ.get("PRECIS_AUTH_PREFLIGHT", "").strip().lower() in ("1", "true", "yes"):
+            from precis_mcp.oidc import check_token_contract
 
-        problems = check_token_contract()
-        if problems:
-            raise RuntimeError(
-                "auth preflight failed:\n  - " + "\n  - ".join(problems)
-            )
-        logger.info("auth preflight OK")
-    yield
-
-    close_platform_pool()
+            problems = check_token_contract()
+            if problems:
+                raise RuntimeError(
+                    "auth preflight failed:\n  - " + "\n  - ".join(problems)
+                )
+            logger.info("auth preflight OK")
+        cleanup = await start_artifacts()
+        yield
+    finally:
+        try:
+            if cleanup is not None:
+                await stop_artifacts(cleanup)
+        finally:
+            close_redis_client()
+            close_platform_pool()
 
 
 app = FastAPI(title="Précis Finance MCP", lifespan=lifespan)
@@ -90,37 +99,24 @@ async def health() -> dict:
 def readyz() -> JSONResponse:
     """Readiness — the dependencies the open server needs to serve a request:
     the platform DB (auth + audit) and ClickHouse (the read data plane). Redis
-    is not used by the open package and the server calls no LLM, so neither is
-    probed. Returns 503 until both are reachable, so an orchestrator holds
+    backs temporary datasets; artifact checks verify schema, signing and local
+    storage. Returns 503 until these are available, so an orchestrator holds
     traffic off a starting or degraded instance.
 
     A sync def so FastAPI runs the blocking driver calls in its threadpool
     rather than on the event loop.
     """
-    from precis_mcp.db import query_clickhouse, query_platform
-
-    checks: dict[str, str] = {}
-    for name, probe in (
-        ("postgres", lambda: query_platform("SELECT 1")),
-        ("clickhouse", lambda: query_clickhouse("SELECT 1")),
-    ):
-        try:
-            probe()
-            checks[name] = "ok"
-        except Exception as exc:
-            checks[name] = f"error: {type(exc).__name__}"
-
-    ready = all(v == "ok" for v in checks.values())
-    return JSONResponse(
-        status_code=200 if ready else 503,
-        content={"status": "ready" if ready else "not_ready", "checks": checks},
-    )
+    from precis_mcp.artifacts.lifecycle import readiness_response
+    return readiness_response()
 
 
 # /mcp self-authenticates per request; the discovery + proxy paths are
 # anonymous by design. No JWTAuthMiddleware — it exists in the Précis agent app only to gate
 # the Précis routers this app does not mount.
 app.include_router(mcp_router)
+from precis_mcp.artifacts.routes import router as artifact_router, RedactTransferTokens
+app.include_router(artifact_router)
+app.add_middleware(RedactTransferTokens)
 app.include_router(discovery_router)
 app.include_router(oauth_proxy_router)
 # Excel add-in bundle + host-templated manifest at /excel — self-gates on the

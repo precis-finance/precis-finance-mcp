@@ -27,6 +27,21 @@ you have.
 
 ## Multi-user bundle
 
+### 0.3.0 shared artifact cutover
+
+Sync the matching Compose files: changing only the application tag does not
+add Valkey or the managed artifact volume. Configure `ARTIFACT_SIGNING_KEY`
+independently of OAuth and database secrets, and route `/api/artifacts/` through
+HTTPS ingress with transfer-URL logging disabled. Migration `008` creates
+the new artifact registry. If an older `files` table exists, back up its rows
+and blobs and explicitly reset the affected artifact tables before migrating;
+the migration does not convert legacy file state. Preserve users and finance
+data. Verify `/readyz`, a query → export → HTTPS download, URL renewal and a
+tool call after token expiry. External receiving defaults off; enable it only
+when intended. See [Files and agent hosts](../reference/files-and-hosts.md).
+
+### Upgrade procedure
+
 1. **Back up first.**
 
     !!! warning "There are no reverse migrations"
@@ -84,7 +99,7 @@ set `PRECIS_MCP_TAG` to a published image version and bring the stack up
 *without* `--build`:
 
 ```bash
-PRECIS_MCP_TAG=0.2.7 docker compose -f deploy/docker-compose.yml up -d
+PRECIS_MCP_TAG=0.3.0 docker compose -f deploy/docker-compose.yml up -d
 ```
 
 Compose pulls `ghcr.io/precis-finance/precis-finance-mcp:<tag>` (falling back to a
@@ -136,3 +151,7 @@ and `instance/integrations/` changes need the daemons restarted
 
 - [Backups & restore](backups.md) — the rollback mechanism.
 - [Troubleshooting](troubleshooting.md) — if the post-upgrade verify fails.
+
+## Shared datasets/artifacts breaking cutover
+
+The shared chart/file release requires Redis/Valkey, a managed user-data volume, `ARTIFACT_SIGNING_KEY`, a public HTTPS `PRECIS_BASE_URL`, and the open artifact schema before startup. Chart calls now require `data_refs` arrays; per-query `_excel` aliases are replaced by `export_dataset`. Old dataset references and download tokens are unsupported. This change targets unused development state and provides no compatibility migration; applying it over an older commercial file table requires an explicitly authorized clean cutover. Do not reset platform or financial data automatically. Build the MCP widgets and verify the installed wheel contains its three HTML resources.

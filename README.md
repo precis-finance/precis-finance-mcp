@@ -6,8 +6,8 @@
 [![Docs](https://img.shields.io/badge/docs-precis.finance-0D9488)](https://docs.precis.finance/)
 
 A read-only, self-hosted [MCP](https://modelcontextprotocol.io) server for FP&A
-and management reporting: governed metrics, financial statements, and row-level
-drill-down over a SQL semantic layer — **your own warehouse, not market data.**
+and management reporting: governed metrics, financial statements, row-level
+drill-down, charts and snapshot file exports over a SQL semantic layer — **your own warehouse, not market data.**
 The open core of **Précis**, the agentic Finance Intelligence Platform.
 
 You describe your business metrics once — KPIs, hierarchies, and
@@ -37,7 +37,8 @@ identity, and the MCP transport — and depends on nothing outside it.
 - **Docker** — Engine + Compose v2. Everything runs in containers; there is
   nothing else to install.
 - **No warehouse to provision** — the stack bundles ClickHouse (the engine's
-  analytical store) and PostgreSQL (platform state — users, sessions, audit). A
+  analytical store), PostgreSQL (platform and artifact state), and Valkey
+  (temporary snapshots). A
   local trial runs with nothing else and loads a sample finance model.
 - **Already run ClickHouse?** — optionally point the engine at your own instance
   instead of the bundled one; see
@@ -79,12 +80,13 @@ for other MCP clients and the limits of this shared instance.
 
 ```sh
 export MCP_DEV_KEY=$(openssl rand -hex 32)
+export ARTIFACT_SIGNING_KEY=$(openssl rand -hex 32)
 docker compose -f deploy/docker-compose.local.yml up -d --build
 docker compose -f deploy/docker-compose.local.yml exec precis-mcp \
   python -m precis_mcp.sample_data   # populate the demo model
 ```
 
-One stack — the server plus a bundled ClickHouse and Postgres — a shared dev
+One stack — the server plus ClickHouse, Postgres and Valkey — a shared dev
 key, bound to `127.0.0.1`. Point any MCP client at `http://127.0.0.1:8768/mcp`
 with the dev key as bearer token. For example, with Claude Code:
 
@@ -107,7 +109,7 @@ against their own warehouse — [precis.finance](https://precis.finance) or
 ## Multi-user deployment
 
 `deploy/docker-compose.yml` runs the multi-user stack — the open server,
-PostgreSQL, ClickHouse, and OAuth 2.1 + PKCE sign-in. Deployment is modular
+PostgreSQL, ClickHouse, Valkey, artifact storage, and OAuth 2.1 + PKCE sign-in. Deployment is modular
 along independent axes:
 
 - **Data** — bundled ClickHouse (empty or with sample data) or your own:

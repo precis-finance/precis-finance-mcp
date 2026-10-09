@@ -31,7 +31,7 @@ from mcp.server.fastmcp import FastMCP
 
 # Injected params whose leading underscore FastMCP's schema builder rejects.
 # ``user_id`` is also injected but carries no underscore, so FastMCP accepts it.
-_HIDDEN_PARAMS: frozenset[str] = frozenset({"_scope"})
+_HIDDEN_PARAMS: frozenset[str] = frozenset({"_scope", "user_id"})
 
 
 def _strip_hidden(func: Callable) -> Callable:
@@ -47,6 +47,9 @@ def _strip_hidden(func: Callable) -> Callable:
         return func
 
     def shim(**kwargs: Any) -> Any:
+        if "user_id" in hidden:
+            from precis_mcp.auth import get_auth_context
+            kwargs["user_id"] = get_auth_context().user_id
         return func(**kwargs)
 
     shim.__name__ = func.__name__

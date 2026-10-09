@@ -9,21 +9,20 @@ document relative to the MCP server's own origin (anthropics/claude-ai-mcp#82,
 closed "not planned"). This router hosts those endpoints at the origin and
 forwards them to Keycloak so that legacy path can still complete.
 
-That origin-relative path only engages when the ``401`` omits the
-``WWW-Authenticate: Bearer resource_metadata="…"`` header. Because we always send
-that header, an up-to-date client — claude.ai, ChatGPT, Claude Code — instead
-reads ``/.well-known/oauth-protected-resource`` (discovery.py), follows it to the
-Keycloak issuer, and talks to Keycloak directly, never touching this shim. The
-shim is therefore a compatibility fallback rather than the primary path, kept
-because a client's discovery behaviour is version- and configuration-dependent
-and the shim is transparent (mints no tokens, holds no secrets) and cheap.
+The primary discovery path reads ``/.well-known/oauth-protected-resource``
+(discovery.py), follows its Keycloak issuer, and talks to Keycloak directly.
+Clients may still use origin-relative discovery depending on their version or
+login entrypoint. Both paths must identify the same real issuer: the shim's
+origin aliases do not create a second authorization server. In particular,
+Keycloak's authorization response ``iss`` must agree with the metadata read
+by a strict client.
 
 The proxy is transparent: it mints no tokens, holds no secrets, adds no
 policy.  ``/register`` and ``/token`` are forwarded to Keycloak
 server-to-server (internal URL); ``/authorize`` is a browser 302 to
 Keycloak's public authorize endpoint.  It exposes nothing that ``/auth/``
-doesn't already expose publicly — these are origin-path aliases that exist
-solely to satisfy claude.ai's base-relative URL construction.
+doesn't already expose publicly — these origin-path aliases support clients
+that construct their OAuth endpoints relative to the MCP origin.
 """
 from __future__ import annotations
 
@@ -73,16 +72,16 @@ def _registration_endpoint_internal() -> str:
 async def authorization_server_metadata(request: Request) -> dict:
     """RFC 8414 AS metadata at the origin (old-spec location claude.ai uses).
 
-    The endpoints point back at our origin so claude.ai's view is
-    self-consistent — though claude.ai ignores these values and rebuilds
-    them base-relative regardless.  ``issuer`` is our origin (the AS
-    claude.ai believes it's talking to is this proxy); the access token it
-    ultimately receives carries Keycloak's ``iss``, which only the ``/mcp``
-    middleware inspects.
+    Endpoint aliases remain at our origin for base-relative clients. The
+    issuer is Keycloak's canonical realm, matching protected-resource
+    discovery, its authorization response ``iss`` and its issued tokens.
+    Bundled Keycloak supports RFC 9207 issuer identification; advertise it
+    so clients require and validate that response parameter.
     """
     base = oidc.public_base(str(request.base_url))
     return {
-        "issuer": base,
+        "issuer": oidc.config.issuer,
+        "authorization_response_iss_parameter_supported": True,
         "authorization_endpoint": f"{base}/authorize",
         "token_endpoint": f"{base}/token",
         "registration_endpoint": f"{base}/register",

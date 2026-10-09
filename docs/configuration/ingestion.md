@@ -26,14 +26,12 @@ files are a working reference configuration.
 - **PostgreSQL** — required. Every load writes an audit row to the
   `load_history` table, and the platform database also backs the per-binding
   advisory lock that serialises loads so two loads can't write the same table
-  concurrently. No Redis or other coordination service is needed.
+  concurrently. Ingestion locks do not use Redis; Redis/Valkey backs the
+  separate analytical snapshot service.
 
-  Note: the single-user [quickstart](../getting-started/quickstart.md) bundle
-  ships *without* PostgreSQL, so it cannot run this pipeline. To
-  ingest, use the multi-user bundle (`deploy/docker-compose.yml` — both are
-  included) or point the daemons at instances you already run. On the
-  single-user stack you can still bring your own data by populating
-  ClickHouse yourself.
+  Both reference bundles include PostgreSQL and can run this pipeline. The
+  single-user [quickstart](../getting-started/quickstart.md) populates its
+  sample data through the same ingestion path.
 - A reachable **source**: a Postgres, MSSQL, Snowflake, BigQuery, or
   Databricks warehouse, or files (CSV / Parquet / XLSX) in a drop location.
   Sources are read through [Ibis](https://ibis-project.org/). Postgres and file

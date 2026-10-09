@@ -19,6 +19,19 @@
 
 {
 	order rate_limit before reverse_proxy
+	# Runtime/error logs also contain request URIs. Remove transfer capabilities
+	# before encoding them; access logging remains disabled by default.
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					delete t
+				}
+				request>headers>Referer delete
+			}
+		}
+	}
 }
 
 {$PRECIS_DOMAIN} {

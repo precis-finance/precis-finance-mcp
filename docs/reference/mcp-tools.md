@@ -3,7 +3,7 @@
 The tools an MCP client sees on the authenticated `/mcp` endpoint, with their
 parameters and behaviours. The single-user dev server
 ([quickstart](../getting-started/quickstart.md)) serves the same underlying
-tools over Streamable HTTP. Every tool is **read-only**.
+tools over Streamable HTTP. Financial access is read-only. Artifact tools can create owned temporary files and upload reservations; they never ingest or mutate financial data.
 
 ## Conventions that apply to every tool
 
@@ -53,9 +53,14 @@ follow the MCP Apps extension (`_meta.ui.resourceUri` on the tool, bundle
 fetched via `resources/read`); a widget is only advertised when its bundle is
 built. Hosts that don't render widgets still get the full result as JSON. Three parameters are stripped from every advertised schema (`out`,
 `report_id`, `position` — output paths that don't exist on this transport).
-The reporting tools also advertise a few Excel-related parameters (`target`,
-`layout`, `filename`, `sheet_name`, `overwrite`); they belong to the Précis
-platform's Excel output mode and have no effect here.
+Report persistence and workbook-editing parameters are absent from this remote surface. Use `export_dataset` for temporary JSON/XLSX downloads.
+
+Financial widgets follow the host's light/dark theme and supplied fonts and
+colours. Statement labels use sans-serif text and figures use monospace with
+financial formatting. Chart series retain the Précis palette; tooltips and
+heatmaps use solid, theme-aware fallbacks when the host supplies only a theme
+signal. Heatmaps keep primary text over a restrained teal tint. These
+presentation choices do not alter the raw figures returned by tools.
 
 ## Orientation
 
@@ -185,9 +190,7 @@ The drill-through from a figure to the rows behind it.
 Returns a capped sample of rows plus the inspection grid for rendering
 hosts. The external inspection widget displays at most its first 50 preview
 rows and does not provide server-side pagination; refine filters or use an
-available export mode for a broader bounded extract. A downstream product may
-register the optional result-cache hook and add a `data_ref`, but the open
-package has no Redis dependency and provides no cached paging service. Profile
+`export_dataset` with the returned `data_ref` for the complete bounded result. The shared Redis/Valkey cache supplies that snapshot before preview truncation; the open server provides no authenticated SPA paging route. Profile
 scope applies to the rows themselves. In the result metadata,
 `truncated=true` means the database inspection hit its hard/query limit;
 `agent_truncated=true` means only the returned reasoning/preview payload was
@@ -264,3 +267,21 @@ inspect_rows(source_key="gl", scenario_id="actuals",
   scoping every call above passes through.
 - [Catalogue & semantic model](../configuration/catalogue-and-semantic.md) —
   where the keys these tools accept are defined.
+
+## Charts and artifacts
+
+| Tool | Parameters | Behaviour |
+|---|---|---|
+| `eval_chart_transform` | `data_refs: list[str]`, `transform_code: str`, `chart_spec: object` | Transform cached snapshots with bounded QuickJS; supports line, bar, area, waterfall, scatter, horizontal_bar, forecast_line, cohort_heatmap and sparkline_row. Always pass an array, even for one input. |
+| `export_dataset` | `data_ref: str`, `format: json/xlsx` | Export the cached result without rerunning the query; returns an owned artifact and HTTPS download link. |
+| `get_file_download` | `file_id: str` | Renew a download URL while the file remains available and authorized. |
+| `begin_file_upload` | `filename: str`, `mime_type: str`, `size_bytes: int` | Reserve quota and return a short-lived PUT URL. |
+| `complete_file_upload` | `upload_id: str` | Register received raw bytes once; retry returns the same identity. |
+| `import_chatgpt_file` (optional) | `file: object` | Import a host attachment through the explicitly configured HTTPS hostname allow-list. |
+
+Upload reservation/completion and attachment import are disabled by default.
+Set `PRECIS_MCP_UPLOADS_ENABLED=true` to enable them; the ChatGPT importer also
+requires `PRECIS_FILE_IMPORT_HOSTS`. Disabled tools are hidden and direct calls
+are rejected. `export_dataset` and `get_file_download` remain enabled.
+
+Read tools return opaque `ds_` references when snapshot caching succeeds. Idle/absolute expiry, owner isolation and current-grant revalidation apply. Cache unavailability leaves the read usable with `dataset_available=false`; rerun after recovery to obtain a reference. No query-specific `_excel` tools are advertised. See [Files and external agent hosts](files-and-hosts.md) for transfer lifecycle, host limitations and operator requirements.

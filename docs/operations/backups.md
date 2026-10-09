@@ -168,3 +168,7 @@ unused disk definition is inert). Existing bundles are untouched.
 - [Observability](observability.md) — alerting; `backup_history` is the
   outcome record.
 - [Troubleshooting](troubleshooting.md)
+
+## Shared artifacts
+
+Artifact identities, upload reservations and retired-blob cleanup metadata live in the platform PostgreSQL database. Managed bytes live in `USER_DATA_DIR`, mounted read-only by the open backup sidecar. Back up and restore these together. Redis snapshots are disposable and excluded: rerun queries after losing or restoring the cache. Renew transfer capabilities for restored files under current grants; expired URLs are not durable recovery identifiers.

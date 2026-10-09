@@ -31,6 +31,9 @@ class FakePlatformDB:
         self.client_prompt_guidance: list[dict] = []
         self.reports: list[dict] = []
         self.files: list[dict] = []
+        self.file_context: list[dict] = []
+        self.artifact_uploads: list[dict] = []
+        self.artifact_blob_gc: list[dict] = []
         self.conversation_audit: list[dict] = []
         self.security_audit_log: list[dict] = []
         self.backup_history: list[dict] = []
@@ -41,6 +44,8 @@ class FakePlatformDB:
         # raises this exception on the clean-exit path, simulating a
         # transaction commit failure.
         self._commit_should_fail: Exception | None = None
+        import threading
+        self._artifact_lock = threading.RLock()
 
     # ------------------------------------------------------------------
     # Public interface matching query_platform / execute_platform
@@ -75,6 +80,26 @@ class FakePlatformDB:
     # ------------------------------------------------------------------
 
     def _route_query(self, sql_lower: str, sql: str, params) -> list[dict]:
+        if "union all" in sql_lower and "storage_path" in sql_lower:
+            return [{"storage_path": r["storage_path"]} for r in (*self.files, *self.artifact_uploads, *self.artifact_blob_gc)]
+        if "from artifact_blob_gc" in sql_lower and " as used" not in sql_lower:
+            rows = self.artifact_blob_gc
+            if "storage_path = %s" in sql_lower: rows = [r for r in rows if r["storage_path"] == params[0]]
+            if "user_id = %s" in sql_lower: rows = [r for r in rows if r["user_id"] == params[0]]
+            return [dict(r) for r in rows]
+        if "from artifact_uploads" in sql_lower and " as used" not in sql_lower:
+            now = datetime.now(timezone.utc)
+            rows = self.artifact_uploads
+            if "upload_id = %s" in sql_lower:
+                rows = [r for r in rows if r["upload_id"] == params[0] and (len(params) < 2 or r["user_id"] == params[1])]
+            if "expires_at > now()" in sql_lower: rows = [r for r in rows if r["expires_at"] > now]
+            if "expires_at <= now()" in sql_lower: rows = [r for r in rows if r["expires_at"] <= now]
+            return [dict(r) for r in rows]
+        if "from file_context" in sql_lower:
+            if "where file_id = %s" in sql_lower:
+                return [dict(r) for r in self.file_context if r["file_id"] == params[0]]
+            owners = {r["file_id"] for r in self.files if r["user_id"] == params[0]}
+            return [dict(r) for r in self.file_context if r["file_id"] in owners]
         # Postgres advisory-lock helper used by registry.update_file_blob
         # to serialise concurrent updates per user. The single-threaded
         # in-memory store doesn't need real locking — return an empty
@@ -118,6 +143,44 @@ class FakePlatformDB:
         return []
 
     def _route_execute(self, sql_lower: str, sql: str, params) -> dict | None:
+        if sql_lower.startswith("insert into artifact_blob_gc"):
+            path, owner, size = params
+            self.artifact_blob_gc.append(dict(storage_path=path, user_id=owner, size_bytes=size))
+            return None
+        if sql_lower.startswith("delete from artifact_blob_gc"):
+            self.artifact_blob_gc[:] = [r for r in self.artifact_blob_gc if r["storage_path"] != params[0]]
+            return None
+        if sql_lower.startswith("insert into file_context"):
+            if "conversation_id" in sql_lower.split("values")[0]:
+                file_id, conversation_id, workstream_id = params
+                row = {"file_id": file_id, "conversation_id": conversation_id, "workstream_id": workstream_id}
+            else:
+                file_id, workstream_id = params
+                row = {"file_id": file_id, "workstream_id": workstream_id}
+            existing = next((r for r in self.file_context if r["file_id"] == file_id),None)
+            if existing is not None: existing.update(row)
+            else:self.file_context.append(row)
+            return None
+        if sql_lower.startswith("insert into artifact_uploads"):
+            upload_id,user_id,basename,mime_type,size_bytes,storage_path,expires_at = params
+            self.artifact_uploads.append(dict(upload_id=upload_id,user_id=user_id,basename=basename,mime_type=mime_type,size_bytes=size_bytes,storage_path=storage_path,expires_at=expires_at,state="pending",file_id=None))
+            return None
+        if sql_lower.startswith("delete from artifact_uploads"):
+            self.artifact_uploads[:] = [r for r in self.artifact_uploads if r["upload_id"] != params[0]]
+            return None
+        if sql_lower.startswith("update artifact_uploads"):
+            complete = "state = 'complete'" in sql_lower
+            upload_id = params[1] if complete else params[0]
+            row = next((r for r in self.artifact_uploads if r["upload_id"] == upload_id),None)
+            if row is None:return None
+            if complete:row.update(state="complete",file_id=params[0]);return dict(row)
+            if row["user_id"] != params[1]:return None
+            for required in ["pending","receiving"]:
+                if f"and state = '{required}'" in sql_lower and row["state"] != required:return None
+            if "expires_at > now()" in sql_lower and row["expires_at"] <= datetime.now(timezone.utc):return None
+            for state in ["receiving","uploaded","pending"]:
+                if f"set state = '{state}'" in sql_lower:row["state"] = state
+            return dict(row)
         if sql_lower.startswith("with cascaded as"):
             return self._cascade_archive_conversations(params)
         if sql_lower.startswith("insert into user_profile_ext"):
@@ -1261,229 +1324,61 @@ class FakePlatformDB:
     # Files registry
     # ------------------------------------------------------------------
 
-    def _query_files(self, sql_lower: str, params) -> list[dict]:
-        """Routes for the queries issued by precis/files/registry.py."""
-        # quota_used: SELECT COALESCE(SUM(size_bytes), 0) AS used FROM files
-        #             WHERE user_id = %s AND deleted_at IS NULL
-        if "coalesce(sum(size_bytes)" in sql_lower:
-            user_id = params[0]
-            used = sum(
-                int(r["size_bytes"]) for r in self.files
-                if r["user_id"] == user_id and r.get("deleted_at") is None
-            )
-            return [{"used": used}]
-
-        # gc_expired pass 1: SELECT file_id FROM files WHERE expires_at IS NOT NULL
-        #                    AND expires_at < now() AND deleted_at IS NULL
-        #                    AND workstream_id IS NULL
-        if (
-            "expires_at is not null" in sql_lower
-            and "expires_at < now()" in sql_lower
-            and "deleted_at is null" in sql_lower
-            and "workstream_id is null" in sql_lower
-        ):
-            now = datetime.now(timezone.utc)
-            return [
-                {"file_id": r["file_id"]}
-                for r in self.files
-                if r.get("expires_at") is not None
-                and r["expires_at"] < now
-                and r.get("deleted_at") is None
-                and r.get("workstream_id") is None
-            ]
-
-        # gc_expired pass 2: SELECT file_id, user_id, storage_path FROM files
-        #                    WHERE deleted_at IS NOT NULL
-        if (
-            "select file_id, user_id, storage_path" in sql_lower
-            and "deleted_at is not null" in sql_lower
-        ):
-            return [
-                {
-                    "file_id": r["file_id"],
-                    "user_id": r["user_id"],
-                    "storage_path": r["storage_path"],
-                }
-                for r in self.files
-                if r.get("deleted_at") is not None
-            ]
-
-        # get_file / update_file_blob row lock:
-        # WHERE file_id = %s AND user_id = %s AND deleted_at IS NULL
-        # (the trailing FOR UPDATE is a no-op against the in-memory store)
-        if "where file_id = %s and user_id = %s and deleted_at is null" in sql_lower:
-            file_id, user_id = params[0], params[1]
-            return [
-                dict(r) for r in self.files
-                if r["file_id"] == file_id
-                and r["user_id"] == user_id
-                and r.get("deleted_at") is None
-            ]
-
-        # list_files: WHERE user_id = %s AND deleted_at IS NULL [+ filters]
-        if "where user_id = %s and deleted_at is null" in sql_lower:
-            param_idx = 0
-            user_id = params[param_idx]; param_idx += 1
-            results = [
-                dict(r) for r in self.files
-                if r["user_id"] == user_id and r.get("deleted_at") is None
-            ]
-            if "and conversation_id = %s" in sql_lower:
-                conv_id = params[param_idx]; param_idx += 1
-                results = [r for r in results if r.get("conversation_id") == conv_id]
-            if "and workstream_id = %s" in sql_lower:
-                ws_id = params[param_idx]; param_idx += 1
-                results = [r for r in results if r.get("workstream_id") == ws_id]
-            if "and (expires_at is null or expires_at > now())" in sql_lower:
-                now = datetime.now(timezone.utc)
-                results = [
-                    r for r in results
-                    if r.get("expires_at") is None or r["expires_at"] > now
-                ]
-            results.sort(key=lambda r: r.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-            return results
-
-        return []
-
-    def _insert_file(self, params) -> dict | None:
-        # INSERT INTO files (file_id, user_id, basename, mime_type, size_bytes,
-        #   sha256, storage_path, expires_at, conversation_id, workstream_id,
-        #   source, producing_tool) VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
-        #   %s, %s, %s, %s) RETURNING ...
-        (file_id, user_id, basename, mime_type, size_bytes, sha256,
-         storage_path, expires_at, conversation_id, workstream_id,
-         source, producing_tool) = params
+    def _query_files(self, sql_lower, params):
         now = datetime.now(timezone.utc)
-        row = {
-            "file_id": file_id,
-            "user_id": user_id,
-            "basename": basename,
-            "mime_type": mime_type,
-            "size_bytes": size_bytes,
-            "sha256": sha256,
-            "storage_path": storage_path,
-            "created_at": now,
-            "expires_at": expires_at,
-            "deleted_at": None,
-            "conversation_id": conversation_id,
-            "workstream_id": workstream_id,
-            "source": source,
-            "producing_tool": producing_tool,
-        }
+        if " as used" in sql_lower:
+            owner = params[0]
+            excluded = params[3] if len(params)>3 else None
+            stored = sum(r["size_bytes"] for r in self.files if r["user_id"]==owner)
+            reserved = sum(r["size_bytes"] for r in self.artifact_uploads if r["user_id"]==owner and r["state"]!="complete" and r["upload_id"]!=excluded)
+            retired = sum(r["size_bytes"] for r in self.artifact_blob_gc if r["user_id"] == owner)
+            return [{"used":stored+reserved+retired}]
+        rows = list(self.files)
+        if "where file_id = %s" in sql_lower:
+            rows = [r for r in rows if r["file_id"]==params[0]]
+            if "and user_id = %s" in sql_lower:rows = [r for r in rows if r["user_id"]==params[1]]
+        elif "where user_id = %s" in sql_lower:rows = [r for r in rows if r["user_id"]==params[0]]
+        if "deleted_at is null" in sql_lower:rows = [r for r in rows if r.get("deleted_at") is None]
+        if "(expires_at is null or expires_at > now())" in sql_lower:rows = [r for r in rows if r.get("expires_at") is None or r["expires_at"]>now]
+        if "deleted_at is not null or expires_at <= now()" in sql_lower:rows = [r for r in rows if r.get("deleted_at") is not None or (r.get("expires_at") is not None and r["expires_at"]<=now)]
+        if "limit 0" in sql_lower:return []
+        return [dict(r) for r in rows]
+
+    def _insert_file(self, params):
+        (file_id,user_id,basename,mime_type,size_bytes,sha256,storage_path,expires_at,source,producing_tool,provenance,access) = params
+        now = datetime.now(timezone.utc)
+        row=dict(file_id=file_id,user_id=user_id,basename=basename,mime_type=mime_type,size_bytes=size_bytes,sha256=sha256,storage_path=storage_path,
+                 expires_at=expires_at,source=source,producing_tool=producing_tool,provenance=_parse_jsonb(provenance),access=_parse_jsonb(access),version=1,created_at=now,updated_at=now,deleted_at=None)
         self.files.append(row)
         return dict(row)
 
-    def _update_file(self, sql_lower: str, params) -> dict | None:
-        # update_file_blob: UPDATE files SET size_bytes = %s, sha256 = %s,
-        #   mime_type = %s, producing_tool = %s, updated_at = now()
-        #   WHERE file_id = %s AND user_id = %s RETURNING ...
-        if "set size_bytes = %s" in sql_lower and "sha256 = %s" in sql_lower:
-            (size_bytes, sha256, mime_type, producing_tool,
-             file_id, user_id) = params
-            for r in self.files:
-                if (r["file_id"] == file_id
-                        and r["user_id"] == user_id
-                        and r.get("deleted_at") is None):
-                    r["size_bytes"] = size_bytes
-                    r["sha256"] = sha256
-                    r["mime_type"] = mime_type
-                    r["producing_tool"] = producing_tool
-                    r["updated_at"] = datetime.now(timezone.utc)
-                    return dict(r)
-            return None
-
-        # soft_delete: UPDATE files SET deleted_at = now() WHERE file_id = %s
-        #              AND user_id = %s AND deleted_at IS NULL RETURNING file_id
-        if (
-            "set deleted_at = now()" in sql_lower
-            and "where file_id = %s and user_id = %s" in sql_lower
-        ):
-            file_id, user_id = params[0], params[1]
-            for r in self.files:
-                if (r["file_id"] == file_id
-                        and r["user_id"] == user_id
-                        and r.get("deleted_at") is None):
-                    r["deleted_at"] = datetime.now(timezone.utc)
-                    return {"file_id": file_id}
-            return None
-
-        # gc_expired update: UPDATE files SET deleted_at = now() WHERE file_id = %s
-        #                    AND deleted_at IS NULL RETURNING file_id
-        if (
-            "set deleted_at = now()" in sql_lower
-            and "where file_id = %s and deleted_at is null" in sql_lower
-        ):
-            file_id = params[0]
-            for r in self.files:
-                if r["file_id"] == file_id and r.get("deleted_at") is None:
-                    r["deleted_at"] = datetime.now(timezone.utc)
-                    return {"file_id": file_id}
-            return None
-
-        # set_workstream pin: UPDATE files SET workstream_id = %s, expires_at = NULL ...
-        if "set workstream_id = %s, expires_at = null" in sql_lower:
-            ws_id, file_id, user_id = params[0], params[1], params[2]
-            for r in self.files:
-                if (r["file_id"] == file_id
-                        and r["user_id"] == user_id
-                        and r.get("deleted_at") is None):
-                    r["workstream_id"] = ws_id
-                    r["expires_at"] = None
-                    return dict(r)
-            return None
-
-        # set_workstream unpin (+ restore expiry):
-        # UPDATE files SET workstream_id = NULL, expires_at = now() + INTERVAL '24 hours' ...
-        if "set workstream_id = null" in sql_lower and "interval '24 hours'" in sql_lower:
-            file_id, user_id = params[0], params[1]
-            for r in self.files:
-                if (r["file_id"] == file_id
-                        and r["user_id"] == user_id
-                        and r.get("deleted_at") is None):
-                    r["workstream_id"] = None
-                    r["expires_at"] = datetime.now(timezone.utc) + timedelta(hours=24)
-                    return dict(r)
-            return None
-
-        # set_workstream unpin (no expiry change):
-        # UPDATE files SET workstream_id = NULL WHERE file_id = %s AND user_id = %s ...
-        if "set workstream_id = null" in sql_lower:
-            file_id, user_id = params[0], params[1]
-            for r in self.files:
-                if (r["file_id"] == file_id
-                        and r["user_id"] == user_id
-                        and r.get("deleted_at") is None):
-                    r["workstream_id"] = None
-                    return dict(r)
-            return None
-
+    def _update_file(self, sql_lower, params):
+        if "set size_bytes = %s" in sql_lower:
+            size,sha,tool,storage_path,access,file_id=params
+            row=next((r for r in self.files if r["file_id"]==file_id),None)
+            if row is None:return None
+            row.update(size_bytes=size,sha256=sha,storage_path=storage_path,access=_parse_jsonb(access),producing_tool=tool or row.get("producing_tool"),version=row.get("version",1)+1,updated_at=datetime.now(timezone.utc))
+            return dict(row)
+        if "set expires_at = %s" in sql_lower:
+            expiry,file_id=params
+            row=next((r for r in self.files if r["file_id"]==file_id),None)
+            if row is None:return None
+            row["expires_at"]=expiry
+            return dict(row)
+        if "deleted_at =" in sql_lower:
+            row=next((r for r in self.files if r["file_id"]==params[0] and (len(params)<2 or r["user_id"]==params[1])),None)
+            if row is None or row.get("deleted_at") is not None:return None
+            row["deleted_at"]=datetime.now(timezone.utc)
+            return dict(row)
         return None
 
-    def _delete_files(self, sql_lower: str, params) -> dict | None:
-        # gc_expired hard-delete: DELETE FROM files WHERE deleted_at IS NOT NULL
-        if "where deleted_at is not null" in sql_lower:
-            self.files = [r for r in self.files if r.get("deleted_at") is None]
-            return None
+    def _delete_files(self, sql_lower, params):
+        file_id=params[0]
+        self.files[:] = [r for r in self.files if r["file_id"]!=file_id]
+        self.file_context[:] = [r for r in self.file_context if r["file_id"]!=file_id]
+        for upload in self.artifact_uploads:
+            if upload.get("file_id")==file_id:upload["file_id"]=None
         return None
-
-    # ------------------------------------------------------------------
-    # Generic delete
-    # ------------------------------------------------------------------
-
-    def _delete_from(self, table: str, sql_lower: str, params) -> dict | None:
-        store = getattr(self, table)
-        if "user_id = %s" in sql_lower:
-            user_id = params[0]
-            setattr(self, table, [r for r in store if r.get("user_id") != user_id])
-        elif "created_by = %s" in sql_lower:
-            created_by = params[0]
-            setattr(self, table, [r for r in store if r.get("created_by") != created_by])
-        return None
-
-
-# ------------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------------
 
 
 def _parse_jsonb(value: Any) -> Any:
@@ -1500,7 +1395,7 @@ class _FakeCursor:
     """Minimal psycopg-style cursor backed by FakePlatformDB.
 
     Supports the SELECT ... FOR UPDATE / UPDATE ... RETURNING pattern
-    used by ``precis.files.registry.update_file_blob``. SELECT
+    used by ``precis_mcp.artifacts.registry.update_file_blob``. SELECT
     routes to ``db.query``; UPDATE routes to ``db.execute``. The
     last result is buffered for ``fetchone``.
     """
@@ -1540,12 +1435,19 @@ class _FakeTransaction:
         self._db = db
 
     def __enter__(self) -> _FakeCursor:
+        import copy
+        self._db._artifact_lock.acquire()
+        self._before = tuple(copy.deepcopy(getattr(self._db,name)) for name in ("files","file_context","artifact_uploads","artifact_blob_gc"))
         return _FakeCursor(self._db)
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        if exc_type is None:
-            failure = getattr(self._db, "_commit_should_fail", None)
+        failure = self._db._commit_should_fail if exc_type is None else None
+        try:
+            if exc_type is not None or failure is not None:
+                for name,value in zip(("files","file_context","artifact_uploads","artifact_blob_gc"),self._before):setattr(self._db,name,value)
             if failure is not None:
-                self._db._commit_should_fail = None
+                self._db._commit_should_fail=None
                 raise failure
+        finally:
+            self._db._artifact_lock.release()
         return None

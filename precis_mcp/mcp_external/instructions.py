@@ -26,36 +26,6 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "mcp_external.md"
 
-# Commercial override. The open package ships the read-only template
-# (`mcp_external.md`, co-located) describing only the open surface — statements,
-# metrics, the `_data` variants, and inspection. The Précis platform
-# advertises more tools (charts, Excel download variants) and registers its
-# own *full* template here at startup, which
-# replaces the open one wholesale (same `{company_name}` / `{statements}` /
-# `{scenarios}` / `{dimensions}` placeholders). An open deployment registers
-# none and serves the co-located open template. Two-prompt overwrite, not a
-# fragment merge — the Précis surface diverges enough that a full
-# replacement is cleaner than stitching.
-_TEMPLATE_OVERRIDE: str | None = None
-
-
-def register_instructions_template(text: str) -> None:
-    """Commercial seam: replace the open instructions template wholesale.
-
-    Idempotent; last registration wins. Called once at Précis startup
-    (alongside the Précis tool-loader registration)."""
-    global _TEMPLATE_OVERRIDE
-    _TEMPLATE_OVERRIDE = text
-
-
-def _template_text() -> str:
-    """The active template body — the Précis override if registered, else
-    the co-located open read-only template."""
-    if _TEMPLATE_OVERRIDE is not None:
-        return _TEMPLATE_OVERRIDE
-    return _TEMPLATE_PATH.read_text(encoding="utf-8")
-
-
 def build_mcp_instructions(catalogue, scenario_registry=None) -> str:
     """Compose the instructions block: the active template with `{company_name}`
     and the catalogue's data-model sections injected. `catalogue=None` (dev with
@@ -66,7 +36,19 @@ def build_mcp_instructions(catalogue, scenario_registry=None) -> str:
         render_statements_table,
     )
 
-    text = _template_text()
+    text = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    from precis_mcp.artifacts.policy import external_uploads_enabled
+    upload_guidance = (
+        "To receive a file, call `begin_file_upload(filename, mime_type, size_bytes)`, "
+        "send the exact raw bytes to its `upload_url` using HTTP PUT, then call "
+        "`complete_file_upload(upload_id)`. Completion is idempotent. This registers "
+        "a file; it does not ingest or mutate financial data. An agent host must "
+        "support HTTP transfer from its sandbox or provide an attachment adapter; "
+        "an MCP resource link alone does not copy bytes into that sandbox."
+        if external_uploads_enabled()
+        else "Receiving files is disabled on this connector. Exports and downloads remain available."
+    )
+    text = text.replace("{upload_guidance}", upload_guidance)
     company = (os.environ.get("COMPANY_NAME") or "").strip() or "your organisation"
     text = text.replace("{company_name}", company)
 

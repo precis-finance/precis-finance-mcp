@@ -9,8 +9,7 @@ search, ingestion reads) behind a single shared dev key. No OAuth, no Keycloak
 server use the OAuth2 transport in ``app_open`` instead.
 
 This is the open counterpart to the Précis dev server: same dev-key
-gate + Streamable HTTP scaffolding, but it registers no write/plan/report/chart/
-excel/sandbox tools and imports nothing from the ``precis`` package.
+gate + Streamable HTTP scaffolding, but it registers no write/plan/report/sandbox tools and imports nothing from the ``precis`` package.
 
 Run via the bundle (deploy/docker-compose.local.yml) or directly:
     ENABLE_MCP_DEV_SERVER=1 MCP_DEV_KEY=$(openssl rand -hex 32) \
@@ -50,6 +49,10 @@ from precis_mcp.tools._dev_mcp import DevMcpRegistrar  # noqa: E402
 # DevMcpRegistrar strips it at this dev-server boundary. The agent/external
 # transports register the raw functions and inject `_scope` themselves.
 register_read_tools(DevMcpRegistrar(mcp), catalogue_ref)
+from precis_mcp.tools.chart_tools import register_chart_tools
+from precis_mcp.tools.artifact_tools import register_artifact_tools
+register_chart_tools(DevMcpRegistrar(mcp))
+register_artifact_tools(DevMcpRegistrar(mcp))
 
 # Ingestion subsystem (open): registers the ingestion read tools + builds the
 # IntegrationRegistryRef the engine resolves federated reads through. Shared with
@@ -78,6 +81,7 @@ if __name__ == "__main__":
 
     try:
         resolve_for_devkey()
+        os.environ.setdefault("PRECIS_AUTH_MODE", "devkey")
     except AuthModeError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
@@ -134,6 +138,8 @@ if __name__ == "__main__":
         async def __call__(self, scope, receive, send):
             if scope["type"] != "http":
                 return await self.app(scope, receive, send)
+            if scope.get("path") in {"/api/artifacts/download", "/api/artifacts/upload"}:
+                return await self.app(scope, receive, send)
             auth = dict(scope["headers"]).get(b"authorization", b"").decode()
             if not auth.startswith("Bearer "):
                 resp = JSONResponse({"detail": "missing bearer token"}, status_code=401)
@@ -146,5 +152,25 @@ if __name__ == "__main__":
     # Streamable HTTP transport on /mcp. The returned app carries FastMCP's
     # session-manager lifespan, so running it directly starts the manager.
     _app = mcp.streamable_http_app()
+    from precis_mcp.artifacts.routes import router as artifact_router, RedactTransferTokens
+    # Transfer capabilities authorize byte transfer independently of the dev key.
+    for route in artifact_router.routes:
+        _app.router.routes.append(route)
+    from contextlib import asynccontextmanager
+    from precis_mcp.artifacts.lifecycle import start_artifacts, stop_artifacts
+    original_lifespan = _app.router.lifespan_context
+    @asynccontextmanager
+    async def dev_lifespan(app):
+        async with original_lifespan(app):
+            cleanup = await start_artifacts()
+            try:
+                yield
+            finally:
+                await stop_artifacts(cleanup)
+                from precis_mcp.db import close_redis_client, close_platform_pool
+                close_redis_client()
+                close_platform_pool()
+    _app.router.lifespan_context = dev_lifespan
+    _app.add_middleware(RedactTransferTokens)
     _app.add_middleware(_DevKeyAuth)
     uvicorn.run(_app, host=_bind_host, port=_bind_port)

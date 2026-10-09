@@ -1,7 +1,6 @@
 /*
- * Précis brand theme for the docs site.
- * Palette from cmo/precis-brand-identity-v3.jsx — Deep Ink #0C1F2C,
- * Précis Teal #0D9488, Warm Gold #C8A97E, Paper #F7F5F0.
+ * Précis documentation adaptation of the approved Precision direction.
+ * Rules and owners: cmo/precis-docs-precision.md.
  *
  * Fonts are self-hosted (no third-party requests) — the same Fontsource
  * faces the marketing site uses, copied into assets/fonts/. Material's
@@ -15,7 +14,6 @@
 @font-face { font-family: "DM Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/dm-mono-latin-400-normal.woff2") format("woff2"); }
 @font-face { font-family: "DM Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/dm-mono-latin-500-normal.woff2") format("woff2"); }
 @font-face { font-family: "Cormorant Garamond"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/cormorant-garamond-latin-600-normal.woff2") format("woff2"); }
-@font-face { font-family: "Cormorant Garamond"; font-style: normal; font-weight: 700; font-display: swap; src: url("fonts/cormorant-garamond-latin-700-normal.woff2") format("woff2"); }
 
 /* ── Fonts (Material reads these family vars) ──────────────────────── */
 :root {
@@ -25,39 +23,187 @@
   --md-code-font-family: "DM Mono", "SF Mono", Menlo, Consolas, monospace;
 }
 
-/* ── Palette: light scheme — Deep Ink header/nav, teal accent ──────── */
-[data-md-color-primary=custom] {
-  --md-primary-fg-color:        #0C1F2C;
-  --md-primary-fg-color--light: #1E3A4F;
-  --md-primary-fg-color--dark:  #0A1822;
-  --md-primary-bg-color:        #F7F5F0;
-}
-[data-md-color-accent=custom] {
-  --md-accent-fg-color: #0D9488;
-}
+/* ── Scheme tokens: light canvas and quiet, solid chrome ──────────── */
 [data-md-color-scheme=default] {
-  --md-default-bg-color: #F7F5F0;   /* Paper page surface */
-  --md-typeset-a-color:  #0D9488;   /* teal links */
+  color-scheme: light;
+  --precis-surface: #FFFFFF;
+  --precis-surface-muted: #F2F7F6;
+  --precis-ink: #0C1F2C;
+  --precis-ink-muted: #4C606B;
+  --precis-border: #DDE7E8;
+  --precis-action: #08786F;
+  --precis-action-hover: #06665F;
+  --md-default-bg-color: #FCFDFD;
+  --md-default-fg-color: var(--precis-ink);
+  --md-default-fg-color--light: var(--precis-ink-muted);
+  --md-default-fg-color--lighter: #0C1F2C42;
+  --md-default-fg-color--lightest: var(--precis-border);
+  --md-accent-fg-color--transparent: #08786F14;
+  --md-code-bg-color: var(--precis-surface-muted);
+  --md-code-fg-color: var(--precis-ink);
 }
 
-/* ── Palette: dark scheme — Deep Ink family ───────────────────────── */
+/* Keep the docs' existing dark-mode feature; use readable dark chrome. */
 [data-md-color-scheme=slate] {
+  color-scheme: dark;
+  --precis-surface: #122B3A;
+  --precis-surface-muted: #183544;
+  --precis-ink: #E8EFF2;
+  --precis-ink-muted: #B0C2CD;
+  --precis-border: #294858;
+  --precis-action: #2DD4BF;
+  --precis-action-hover: #5EEAD4;
   --md-default-bg-color: #0C1F2C;
-  --md-primary-fg-color: #0C1F2C;
-  --md-accent-fg-color:  #14B8A6;   /* teal light reads better on dark */
-  --md-typeset-a-color:  #14B8A6;
+  --md-default-fg-color: var(--precis-ink);
+  --md-default-fg-color--light: var(--precis-ink-muted);
+  --md-default-fg-color--lighter: #E8EFF242;
+  --md-default-fg-color--lightest: var(--precis-border);
+  --md-accent-fg-color--transparent: #2DD4BF14;
+  --md-code-bg-color: var(--precis-surface-muted);
+  --md-code-fg-color: var(--precis-ink);
 }
 
-/* ── Brand voice: Cormorant page titles, warm-gold accent rule ────── */
+[data-md-color-scheme] {
+  --md-primary-fg-color: var(--precis-action);
+  --md-primary-fg-color--light: var(--precis-action-hover);
+  --md-primary-fg-color--dark: var(--precis-action-hover);
+  --md-primary-bg-color: var(--precis-surface);
+  --md-primary-bg-color--light: var(--precis-ink-muted);
+  --md-accent-fg-color: var(--precis-action-hover);
+  --md-accent-bg-color: var(--precis-surface);
+  --md-typeset-a-color: var(--precis-action);
+  --md-footer-bg-color: var(--precis-surface);
+  --md-footer-bg-color--dark: var(--precis-surface);
+  --md-footer-fg-color: var(--precis-ink);
+  --md-footer-fg-color--light: var(--precis-ink-muted);
+  --md-footer-fg-color--lighter: var(--precis-ink-muted);
+  --md-shadow-z1: 0 2px 8px rgb(12 31 44 / 4%);
+  --md-shadow-z2: 0 4px 16px rgb(12 31 44 / 6%);
+  --md-shadow-z3: 0 8px 24px rgb(12 31 44 / 8%);
+}
+
+/* ── Typography: serif only in the brand wordmark ─────────────────── */
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-typeset h4 {
+  font-family: var(--md-text-font-family);
+  font-weight: 500;
+  color: var(--precis-ink);
+  letter-spacing: -0.025em;
+}
 .md-typeset h1 {
+  font-size: clamp(1.6rem, 3vw, 2rem);
+  line-height: 1.2;
+  margin-bottom: 1em;
+}
+.md-typeset strong,
+.md-typeset table:not([class]) th,
+.md-nav__title {
+  font-weight: 600;
+}
+.md-header__topic:first-child {
+  font-weight: 500;
+}
+.precis-docs-wordmark {
   font-family: "Cormorant Garamond", Georgia, serif;
   font-weight: 600;
-  font-size: 2.3rem;
-  letter-spacing: 0.2px;
-  border-bottom: 2px solid #C8A97E;
-  padding-bottom: 0.2em;
+  font-size: 1.5rem;
+  letter-spacing: -0.025em;
+}
+.precis-docs-product {
+  margin-inline-start: 0.55rem;
+  font-size: 0.75rem;
+  color: var(--precis-ink-muted);
 }
 
-/* Header logo sizing */
+/* ── Header, mobile drawer and search ─────────────────────────────── */
+.md-header {
+  background-color: var(--precis-surface);
+  color: var(--precis-ink);
+  border-bottom: 1px solid var(--precis-border);
+  box-shadow: none;
+}
 .md-header__button.md-logo img,
-.md-header__button.md-logo svg { height: 1.5rem; width: auto; }
+.md-header__button.md-logo svg {
+  height: 1.4rem;
+  width: auto;
+}
+[dir] .md-header__title {
+  margin-inline-start: 0.3rem;
+  min-width: 0;
+}
+.md-header__button:hover {
+  opacity: 1;
+  color: var(--precis-action);
+}
+.md-search__form,
+.md-search__form:hover {
+  background-color: var(--precis-surface-muted);
+  border-radius: 5px;
+}
+.md-search__input,
+.md-search__input::placeholder,
+.md-search__input ~ .md-search__icon {
+  color: var(--precis-ink-muted);
+}
+.md-search__input {
+  color: var(--precis-ink);
+}
+.md-search-result mark {
+  color: var(--precis-action);
+}
+.md-footer {
+  border-top: 1px solid var(--precis-border);
+}
+
+/* ── Reference surfaces: preserve density and semantic callouts ───── */
+.md-typeset pre > code,
+.md-typeset table:not([class]),
+.md-typeset .admonition,
+.md-typeset details {
+  border-radius: 5px;
+}
+.md-typeset table:not([class]) {
+  background-color: var(--precis-surface);
+  border-color: var(--precis-border);
+}
+.md-typeset table:not([class]) th {
+  background-color: var(--precis-surface-muted);
+}
+.md-typeset table:not([class]) td {
+  border-top-color: var(--precis-border);
+}
+.md-typeset hr {
+  border-color: var(--precis-border);
+}
+.md-typeset .admonition,
+.md-typeset details {
+  background-color: var(--precis-surface);
+  box-shadow: none;
+}
+.md-header a:focus-visible,
+.md-header label:focus-visible,
+.md-nav__link:focus-visible,
+.md-typeset a:focus-visible,
+.md-search__form:focus-within {
+  outline: 2px solid var(--precis-action);
+  outline-offset: 2px;
+}
+
+@media screen and (max-width: 76.234375em) {
+  .md-nav--primary .md-nav__title,
+  .md-nav--primary .md-nav__title[for=__drawer] {
+    background-color: var(--precis-surface);
+    color: var(--precis-ink);
+    box-shadow: none;
+    border-bottom: 1px solid var(--precis-border);
+  }
+}
+
+@media screen and (max-width: 29.984375em) {
+  .precis-docs-product {
+    font-size: 0.65rem;
+    margin-inline-start: 0.35rem;
+  }
+}

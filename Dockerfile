@@ -6,7 +6,7 @@
 # there is the Précis import-linter config, not the open package metadata.
 #
 # Lean vs the Précis root Dockerfile: gcc only (psycopg2-binary build), no
-# LibreOffice (server-side workbook generation is a Précis feature), the open
+# LibreOffice (core snapshot exports use openpyxl), the open
 # dependency subset from the package pyproject, and an open default CMD.
 #
 # Pinned to bookworm (not the floating python:3.12-slim, which now resolves to
@@ -23,6 +23,13 @@ WORKDIR /build/excel-addin
 COPY excel-addin/package.json excel-addin/package-lock.json ./
 RUN npm ci
 COPY excel-addin ./
+RUN npm run build
+
+FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS mcp-widget-builder
+WORKDIR /build/ui/mcp-widgets
+COPY ui/mcp-widgets/package.json ui/mcp-widgets/package-lock.json ./
+RUN npm ci
+COPY ui/mcp-widgets ./
 RUN npm run build
 
 FROM python:3.12-slim-bookworm@sha256:392307d22300de8b5986851a12d9176dfc0fc073e65bf6523ebd7dcbeb23564e
@@ -59,6 +66,7 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 # The package itself — dependencies already satisfied above, hence --no-deps.
 COPY pyproject.toml ./
 COPY precis_mcp ./precis_mcp
+COPY --from=mcp-widget-builder /build/precis_mcp/mcp_external/widgets ./precis_mcp/mcp_external/widgets
 RUN pip install --no-cache-dir --no-deps .
 
 # Optional warehouse drivers, opted into at build via PRECIS_EXTRAS (comma-
@@ -89,6 +97,7 @@ RUN if [ -n "$PRECIS_EXTRAS" ]; then \
 # (reconcile, nginx), scripts (migrate.py), and the Excel add-in manifest
 # template. .dockerignore keeps it lean.
 COPY . .
+COPY --from=mcp-widget-builder /build/precis_mcp/mcp_external/widgets ./precis_mcp/mcp_external/widgets
 
 # Built Excel add-in bundle served at /excel by precis_mcp.mcp_external.excel_static.
 COPY --from=excel-addin-builder /build/excel-addin/dist ./excel-addin/dist

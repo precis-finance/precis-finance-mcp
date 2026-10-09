@@ -61,15 +61,16 @@
 
 :root {
   --px-deep-ink: #0C1F2C;
-  --px-night: #132D3E;
-  --px-teal: #0D9488;
-  --px-teal-light: #14B8A6;
-  --px-gold: #C8A97E;
-  --px-paper: #F7F5F0;
-  --px-paper-dark: #EDE8DF;
-  --px-ink: #1A1F2E;
-  --px-ink-muted: #5A6478;
-  --px-ink-faint: #9BA3B5;
+  --px-teal: #08786F;
+  --px-teal-hover: #06665F;
+  --px-canvas: #FCFDFD;
+  --px-surface: #FFFFFF;
+  --px-surface-muted: #F2F7F6;
+  --px-border: #DDE7E8;
+  --px-border-strong: #B8CDD0;
+  --px-ink: #0C1F2C;
+  --px-ink-muted: #4C606B;
+  --px-ink-faint: #60717B;
   --px-positive: #2A8F5C;
   --px-critical: #C4453A;
   --px-ease: cubic-bezier(0.4, 0, 0.2, 1);
@@ -81,7 +82,8 @@ body {
   height: 100%;
   margin: 0;
   padding: 0;
-  background: var(--px-paper);
+  color-scheme: light;
+  background: var(--px-canvas);
   color: var(--px-ink);
   font-family: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
@@ -94,11 +96,12 @@ body {
   align-items: center;
   gap: 12px;
   padding: 18px 20px;
-  background: var(--px-deep-ink);
+  background: var(--px-surface);
+  border-bottom: 1px solid var(--px-border);
 }
 
 .px-mark {
-  width: 32px;
+  width: auto;
   height: 32px;
   flex: 0 0 auto;
 }
@@ -108,15 +111,15 @@ body {
   font-weight: 600;
   font-size: 24px;
   line-height: 1;
-  color: var(--px-paper);
+  color: var(--px-ink);
 }
 
 .px-wordmark span {
-  font-family: "DM Mono", monospace;
+  font-family: "DM Sans", sans-serif;
   font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--px-gold);
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--px-ink-muted);
   margin-left: 8px;
 }
 
@@ -133,7 +136,7 @@ body {
 .px-lead code {
   font-family: "DM Mono", monospace;
   font-size: 12.5px;
-  background: var(--px-paper-dark);
+  background: var(--px-surface-muted);
   color: var(--px-ink);
   padding: 1px 5px;
   border-radius: 4px;
@@ -155,9 +158,9 @@ body {
   width: 100%;
   box-sizing: border-box;
   padding: 9px 11px;
-  border: 1px solid var(--px-paper-dark);
-  border-radius: 6px;
-  background: #fff;
+  border: 1px solid var(--px-border-strong);
+  border-radius: 5px;
+  background: var(--px-surface);
   color: var(--px-ink);
   font-family: inherit;
   font-size: 14px;
@@ -169,9 +172,9 @@ body {
 }
 
 .px-input:focus {
-  outline: none;
+  outline: 2px solid var(--px-teal);
+  outline-offset: 2px;
   border-color: var(--px-teal);
-  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12);
 }
 
 .px-mono {
@@ -187,10 +190,10 @@ body {
   margin-top: 16px;
   padding: 10px 16px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: 5px;
   font-family: inherit;
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
   text-align: center;
   cursor: pointer;
   transition: background-color 150ms var(--px-ease), border-color 150ms var(--px-ease), color 150ms var(--px-ease);
@@ -202,16 +205,17 @@ body {
 }
 
 .px-btn--primary:hover {
-  background: var(--px-teal-light);
+  background: var(--px-teal-hover);
 }
 
 .px-btn--ghost {
   background: transparent;
-  border-color: var(--px-paper-dark);
+  border-color: var(--px-border-strong);
   color: var(--px-ink-muted);
 }
 
 .px-btn--ghost:hover {
+  background: var(--px-surface-muted);
   border-color: var(--px-ink-faint);
   color: var(--px-ink);
 }
@@ -267,7 +271,7 @@ body {
 .px-section {
   margin-top: 24px;
   padding-top: 18px;
-  border-top: 1px solid var(--px-paper-dark);
+  border-top: 1px solid var(--px-border);
 }
 
 .px-section select {
@@ -287,4 +291,10 @@ body {
 
 .px-docs a:hover {
   text-decoration: underline;
+}
+
+.px-btn:focus-visible,
+.px-main a:focus-visible {
+  outline: 2px solid var(--px-teal);
+  outline-offset: 2px;
 }

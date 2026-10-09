@@ -7,12 +7,16 @@ LangGraph path at `process_tool_call`; below that gate nothing diverges.
 """
 from __future__ import annotations
 
+from precis_mcp.chart_builder import build_chart_block
+from precis_mcp.inspection_grid_builder import build_inspection_grid_block
+from precis_mcp.table_builder import build_financial_table_block
+
 import asyncio
 import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import JSONResponse, Response
 
 from precis_mcp import oidc
@@ -30,10 +34,6 @@ from precis_mcp.dispatch import (
     process_tool_call,
 )
 from precis_mcp.auth import (
-    AccountDisabledError,
-    AuthError,
-    load_permissions,
-    resolve_user_id,
     UserPermissions,
 )
 from precis_mcp.mcp_external.framing import (
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "precis"
-SERVER_VERSION = "0.2.7"
+SERVER_VERSION = "0.3.0"
 
 # Synthetic, MCP-only tool whose *result* is the orientation block. The MCP
 # `instructions` field (initialize) is dropped by claude.ai and only partly read
@@ -115,19 +115,30 @@ _schemas_by_name: dict[str, dict] | None = None
 _wrappers: dict[str, Any] | None = None
 
 
+def _tool_enabled(name: str) -> bool:
+    from precis_mcp.artifacts.policy import EXTERNAL_UPLOAD_TOOLS, external_uploads_enabled
+
+    if name in EXTERNAL_UPLOAD_TOOLS and not external_uploads_enabled():
+        return False
+    if name == "import_chatgpt_file":
+        from precis_mcp.artifacts.host_import import allowed_hosts
+        return bool(allowed_hosts())
+    return True
+
+
 def _ensure_tools_loaded() -> None:
     global _descriptors, _schemas_by_name, _wrappers
     if _descriptors is not None:
         return
     from precis_mcp.catalogue_ref import _catalogue_ref  # open: MCP reads the live ref
-    descriptors = build_descriptors(_catalogue_ref)
+    descriptors = build_descriptors(_catalogue_ref, include_commercial=False)
     _descriptors = descriptors
     # JSON Schema is derived Pydantic-natively (no LangChain) only for the
     # tools actually advertised over MCP.
     _schemas_by_name = {
         n: build_tool_json_schema(d)
         for n, d in descriptors.items()
-        if d.mcp_read
+        if d.mcp_read or d.mcp_artifact
     }
     _wrappers = {n: _make_agent_wrapper(d) for n, d in descriptors.items()}
 
@@ -147,7 +158,9 @@ def _advertised_tools(permissions: UserPermissions) -> list[dict]:
     # Orientation tool first so the model sees the "call this first" hint early.
     out: list[dict] = [dict(_ORIENTATION_TOOL_ENTRY)]
     for name, desc in _descriptors.items():
-        if not desc.mcp_read:
+        if not _tool_enabled(name):
+            continue
+        if not (desc.mcp_read or desc.mcp_artifact):
             continue
         if desc.scenario_params and not permissions.scenarios:
             continue
@@ -166,15 +179,20 @@ def _advertised_tools(permissions: UserPermissions) -> list[dict]:
         # is a distinct MCP tool name with `out` pinned. Only the render
         # variant (the bare name in `_WIDGET_URI`) carries `_meta.ui`, so the
         # host renders a widget for it and not for the `_data` variant.
-        # `mcp_tool_variants` only returns variants whose output mode is
-        # available (e.g. the Précis `_excel` variant is dropped when file
-        # download isn't configured), so no further per-variant gating here.
+        # Common variants are rendered output and raw `_data`; downloadable
+        # snapshots use the separate artifact export contract.
         for mcp_name, pinned_out in mcp_tool_variants(name):
             entry: dict = {
                 "name": mcp_name,
                 "description": _variant_description(base_desc, pinned_out, name),
                 "inputSchema": schema,
+                "annotations": {"readOnlyHint": not desc.mcp_artifact, "destructiveHint": False, "openWorldHint": False},
             }
+            if name == "import_chatgpt_file":
+                entry["inputSchema"] = {"type": "object", "properties": {"file": {
+                    "type": "object", "properties": {key: {"type": "string"} for key in ("download_url", "file_id", "mime_type", "file_name")},
+                    "required": ["download_url", "file_id"], "additionalProperties": False}}, "required": ["file"], "additionalProperties": False}
+                entry["_meta"] = {"openai/fileParams": ["file"]}
             w_uri = widget_uri_for(mcp_name)
             if w_uri:
                 entry["_meta"] = {
@@ -217,17 +235,10 @@ def _variant_description(base: str, pinned_out: str, tool_name: str) -> str:
     if pinned_out == "agent":
         return (
             f"{base} Returns the raw figures (and a `data_ref`) for your own "
-            f"analysis or to build a chart — pass the `data_ref` to "
+            f"analysis or to build a chart — pass `[data_ref]` as `data_refs` to "
             f"eval_chart_transform. Does not show the user a table."
         )
-    if pinned_out == "excel":
-        return (
-            f"{base} Generates an Excel file and returns a download link. Present "
-            f"that link to the user as a clickable Markdown link verbatim — it is "
-            f"the only way they receive the file. The link expires, so tell them "
-            f"to click promptly."
-        )
-    return f"{base} Shows the user a formatted table."
+    return f"{base} Returns a formatted table with structured data."
 
 
 # ---------------------------------------------------------------------------
@@ -235,67 +246,7 @@ def _variant_description(base: str, pinned_out: str, tool_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class _AuthRejected(Exception):
-    def __init__(self, status_code: int, detail: str) -> None:
-        self.status_code = status_code
-        self.detail = detail
-
-
-def _check_mcp_audience(claims: dict) -> None:
-    """RFC 8707 audience binding.
-
-    Enforced whenever an audience is resolvable (`PRECIS_BASE_URL` set, or
-    an explicit `KC_MCP_AUDIENCE`); see `oidc.mcp_audience`.  Off only on a
-    dev box with no base URL configured.
-    """
-    expected = oidc.mcp_audience()
-    if not expected:
-        return
-    aud = claims.get("aud")
-    aud_list = [aud] if isinstance(aud, str) else (aud or [])
-    if expected not in aud_list:
-        # Don't fail silently. A token that verified (valid signature + issuer)
-        # but lacks our /mcp audience almost always means Keycloak is stamping a
-        # stale audience after a PRECIS_BASE_URL change, or a self-registered
-        # (DCR) client — e.g. claude.ai — never received the precis-mcp scope.
-        # Surface the actionable cause; reads only the token's own claims, so no
-        # admin credential is involved.
-        logger.warning(
-            "MCP audience mismatch: token aud=%s, expected %r. If PRECIS_BASE_URL "
-            "changed or a new connector self-registered, re-run the Keycloak realm "
-            "reconcile (the keycloak-realm-apply one-shot) to restamp the audience "
-            "mapper and re-promote the precis-mcp default client scope.",
-            aud_list, expected,
-        )
-        raise _AuthRejected(
-            401, f"Token audience does not include {expected!r}"
-        )
-
-
-def _authenticate(request: Request) -> AuthContext:
-    token = oidc.extract_session_token(request)
-    if not token:
-        raise _AuthRejected(401, "Missing Authorization header")
-    try:
-        claims = oidc.verify_keycloak_token(token)
-    except Exception as exc:
-        logger.info("MCP token verification failed: %s", exc)
-        raise _AuthRejected(401, "Invalid token")
-    _check_mcp_audience(claims)
-    # Resolve the platform user_id from the token (default: precis_user_id, with
-    # a preferred_username fallback for DCR clients; configurable per gap 2 via
-    # PRECIS_IDENTITY_CLAIM / PRECIS_IDENTITY_COLUMN).
-    user_id = resolve_user_id(claims)
-    if not user_id:
-        raise _AuthRejected(403, "Token identity claim missing or unmatched")
-    try:
-        permissions = load_permissions(user_id)
-    except AccountDisabledError as exc:
-        raise _AuthRejected(403, str(exc))
-    except AuthError:
-        raise _AuthRejected(403, f"User {user_id!r} not provisioned")
-    return AuthContext(user_id=user_id, permissions=permissions)
-
+from precis_mcp.request_auth import _AuthRejected, _authenticate
 
 # ---------------------------------------------------------------------------
 # JSON-RPC envelope helpers
@@ -400,25 +351,13 @@ async def _handle_tools_list(auth_ctx: AuthContext) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Render-block seam — open builders native, Précis registered.
+# Core render builders — identical in both remote deployments.
 # ---------------------------------------------------------------------------
-# The open MCP transport renders its own two block types directly from pure
-# builders (no `streaming`/`emit_blocks` dependency). The Précis platform
-# registers extra render builders — the chart widget — at startup via
-# `register_mcp_render_builder`, so charts (Redis + turn-scoped) stay out of the
-# open package. A builder takes the JSON-normalised tool result + the tool args +
-# the auth context and returns a single block dict, or None.
-
-from precis_mcp.inspection_grid_builder import build_inspection_grid_block
-from precis_mcp.table_builder import build_financial_table_block
-
 
 def _render_financial_table(
     data: dict, tool_args: dict, auth_ctx: AuthContext,
 ) -> dict | None:
     caption = data.get("caption") if isinstance(data, dict) else None
-    # The MCP render variant is the surface the Excel add-in consumes, so it
-    # carries the resolved `nf` / `alerts` enrichment (add-in spec §5).
     return build_financial_table_block(data, caption=caption, for_excel=True)
 
 
@@ -432,28 +371,18 @@ _MCP_RENDER_BUILDERS: dict[str, Any] = {
     "run_statement": _render_financial_table,
     "run_metric": _render_financial_table,
     "inspect_rows": _render_inspection_grid,
+    "eval_chart_transform": lambda data, args, auth: build_chart_block(data),
 }
-
-
-def register_mcp_render_builder(tool_name: str, builder) -> None:
-    """Register a render-block builder for a tool's `out='render'` variant.
-
-    The open package registers the finance-table and inspection-grid builders
-    natively; the Précis platform calls this at startup to add its premium
-    render surfaces (charts) without the open package importing them.
-    """
-    _MCP_RENDER_BUILDERS[tool_name] = builder
 
 
 def _derive_render_block(
     tool_name: str, result: Any, tool_args: dict, auth_ctx: AuthContext,
 ) -> dict | None:
-    """Derive the structured block for `out='render'` via the render-builder
-    seam. The open builders (finance table, inspection grid) run natively; the
-    Précis chart builder is registered at startup. Returns None when no
-    builder is registered for the tool — the caller then falls back to the raw
-    data envelope. Results are JSON-normalised first so a builder sees exactly
-    what Précis's renderers see (the `json.dumps(..., default=str)` round-trip)."""
+    """Derive a block using the shared table, inspection or chart builder.
+
+    Results are JSON-normalised to match the commercial streaming renderers.
+    Tools without a builder retain the raw data envelope.
+    """
     builder = _MCP_RENDER_BUILDERS.get(tool_name)
     if builder is None:
         return None
@@ -518,7 +447,10 @@ async def _handle_tools_call(params: dict, auth_ctx: AuthContext) -> dict:
         # Opt-in exposure: must be flagged mcp_read, and (defense-in-depth)
         # still hold a read-class access level — so a tool mistakenly
         # flagged mcp_read on a write/admin entry can never be invoked here.
-        if not desc.mcp_read or desc.access not in ("read", "general"):
+        from precis_mcp.tools.artifact_tools import ARTIFACT_MUTATING_TOOLS
+        exposed_read = desc.mcp_read and desc.access in {"read", "general"}
+        exposed_artifact = desc.mcp_artifact and desc.access == "artifact" and name in ARTIFACT_MUTATING_TOOLS
+        if not _tool_enabled(name) or not (exposed_read or exposed_artifact):
             span.set_attribute("precis.is_error", True)
             _audit_call(auth_ctx, name=mcp_name, out_mode="", outcome="not_exposed")
             return {
@@ -560,9 +492,11 @@ async def _handle_tools_call(params: dict, auth_ctx: AuthContext) -> dict:
                 # Bound concurrent read/engine work per user (and globally) so a
                 # workbook refresh fan-out can't flood ClickHouse. The slot wraps
                 # only the engine call, not the gate/render work around it.
-                async with read_limiter.acquire(auth_ctx.user_id):
+                from precis_mcp.artifacts.routes import transfer_slot
+                limiter = transfer_slot(auth_ctx.user_id) if desc.mcp_artifact or name == "get_file_download" else read_limiter.acquire(auth_ctx.user_id)
+                async with limiter:
                     result = await asyncio.to_thread(wrapper, **cleaned)
-            except TooBusy as exc:
+            except (TooBusy, HTTPException) as exc:
                 span.set_attribute("precis.is_error", True)
                 _audit_call(auth_ctx, name=mcp_name, out_mode=pinned_out,
                             outcome="throttled", error=str(exc),
