@@ -117,6 +117,7 @@ telemetry = [
 # (scripts/check_no_commercial_imports.py) is the boundary guard there.
 dev = [
     "pytest",
+    "pytest-asyncio",
     # Starlette 1.x moved TestClient onto the separate httpx2 package.
     "httpx2>=2.0.0",
     "fakeredis",
