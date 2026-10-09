@@ -62,6 +62,12 @@ heatmaps use solid, theme-aware fallbacks when the host supplies only a theme
 signal. Heatmaps keep primary text over a restrained teal tint. These
 presentation choices do not alter the raw figures returned by tools.
 
+The reporting render-variant descriptions instruct the agent to let the widget
+display the table and add useful interpretation, without reproducing the table
+or restating all rows in Markdown. Reproduction is allowed when explicitly
+requested or the widget is unavailable. The `_data` variants show no widget and
+keep their separate raw-data guidance.
+
 ## Orientation
 
 ### `precis_orientation` — call first

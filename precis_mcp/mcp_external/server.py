@@ -238,7 +238,13 @@ def _variant_description(base: str, pinned_out: str, tool_name: str) -> str:
             f"analysis or to build a chart — pass `[data_ref]` as `data_refs` to "
             f"eval_chart_transform. Does not show the user a table."
         )
-    return f"{base} Returns a formatted table with structured data."
+    return (
+        f"{base} Returns a formatted table with structured data. "
+        "The widget already displays this table to the user. Add useful "
+        "interpretation; do not reproduce the table or restate all its rows "
+        "in Markdown unless the user explicitly requests it or the widget "
+        "is unavailable."
+    )
 
 
 # ---------------------------------------------------------------------------
