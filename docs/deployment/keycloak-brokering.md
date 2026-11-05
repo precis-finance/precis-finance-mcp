@@ -158,6 +158,15 @@ place. It is still an unauthenticated write surface. The reference nginx
 config (`deploy/nginx/`) ships the edge mitigations; if you write your own
 ingress, reproduce them:
 
+**Unresolved client-consent boundary:** with Consent Required removed, an
+existing SSO session can authorize a newly registered client without explicit
+approval. A provisioned user's profile restricts the resulting token but does
+not establish trust in that client. Restoring the policy alone is insufficient
+while the MCP audience scope is hidden from the consent screen. Remediation
+must cover registration and registration-token updates, consent-visible scopes,
+existing DCR clients and intended connectors' expiry/retry behavior. Rate
+limiting does not close this authorization gap.
+
 - **Rate-limit the registration path** —
   `/auth/realms/precis/clients-registrations/`. Both reference ingresses do
   this per IP at 5/min: the bundled Caddy proxy via a `rate_limit` zone

@@ -17,6 +17,59 @@ from precis_mcp.engine.filter_resolver import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+
+@pytest.mark.parametrize("axis", ["cost_centre", "department", "org_structure"])
+def test_explicit_empty_allow_denies_reads_writes_and_leaf_scope(catalogue, axis):
+    from types import SimpleNamespace
+    from precis_mcp.auth import ScopeSpec, DimensionScope
+    from precis_mcp.engine.scope_enforcer import enforce_cross_scenario_scope, resolve_write_scope, resolve_scope_leaf_sets
+    from tests.fakes.fake_clickhouse import FakeClickHouseClient
+    client = FakeClickHouseClient()
+    scope = ScopeSpec(dimensions=DimensionScope(allow={axis: []}))
+    assert enforce_cross_scenario_scope({"ACT": scope}, None, "pnl", catalogue, client) == {"cost_centre": []}
+    assert resolve_write_scope(scope, SimpleNamespace(domain="pnl"), catalogue, client) == {"cost_centre": []}
+    assert resolve_scope_leaf_sets(scope, catalogue, client) == {"cost_centre": set()}
+    assert client.queries == []
+
+
+def test_allow_axes_reaching_same_leaf_intersect_but_exclusions_union(catalogue):
+    from precis_mcp.auth import ScopeSpec, DimensionScope
+    from precis_mcp.engine.scope_enforcer import resolve_scope_filters
+    from tests.fakes.fake_clickhouse import FakeClickHouseClient
+    client = FakeClickHouseClient().set_query_responses([("A",), ("B",)], [("B",), ("C",)])
+    scope = ScopeSpec(dimensions=DimensionScope(allow={"department": ["Team"], "division": ["Division"]}))
+    assert resolve_scope_filters(scope, catalogue, client) == {"cost_centre": ["B"]}
+    client.set_query_responses([("A",), ("B",), ("C",)], [("A",)], [("C",)])
+    scope = ScopeSpec(dimensions=DimensionScope(allow={"cost_centre": ["all"]}, deny={"department": ["Team"], "division": ["Division"]}))
+    assert resolve_scope_filters(scope, catalogue, client) == {"cost_centre": ["B"]}
+
+
+@pytest.mark.parametrize("empty_first", [True, False])
+def test_empty_allow_cannot_be_broadened_by_another_axis(catalogue, empty_first):
+    from precis_mcp.auth import ScopeSpec, DimensionScope
+    from precis_mcp.engine.scope_enforcer import resolve_scope_filters
+    from tests.fakes.fake_clickhouse import FakeClickHouseClient
+    members = [("department", []), ("cost_centre", ["A"])]
+    client = FakeClickHouseClient().set_query_responses([("A",)])
+    scope = ScopeSpec(dimensions=DimensionScope(allow=dict(members if empty_first else reversed(members))))
+    assert resolve_scope_filters(scope, catalogue, client) == {"cost_centre": []}
+
+
+def test_discovery_unions_scenarios_without_erasing_empty_axes(catalogue):
+    from precis_mcp.auth import ScopeSpec, DimensionScope
+    from precis_mcp.engine.scope_enforcer import union_read_member_sets
+    from tests.factories.auth import make_permissions, make_scenario_permissions
+    from tests.fakes.fake_clickhouse import FakeClickHouseClient
+    empty = ScopeSpec(dimensions=DimensionScope(allow={"department": []}))
+    allowed = ScopeSpec(dimensions=DimensionScope(allow={"cost_centre": ["A"]}))
+    client = FakeClickHouseClient().set_query_responses([("A",)])
+    permissions = make_permissions(scenarios={
+        "ACT": make_scenario_permissions(tool_scopes={"read": empty}),
+        "BUD": make_scenario_permissions(tool_scopes={"read": allowed})})
+    assert union_read_member_sets(permissions, catalogue, client) == {"cost_centre": {"A"}}
+    permissions.scenarios.pop("BUD")
+    assert union_read_member_sets(permissions, catalogue, client) == {"cost_centre": set()}
+
 def _mock_ch_client(rows: list[tuple], column_names: list[str] | None = None):
     """Create a mock ClickHouse client that returns the given rows."""
     client = MagicMock()
@@ -63,8 +116,10 @@ class TestFindFilterTarget:
             _find_filter_target("cost_centre_id", catalogue)
 
     def test_unknown_key_raises(self, catalogue):
-        with pytest.raises(FilterResolutionError, match="Unknown filter key"):
+        with pytest.raises(FilterResolutionError, match="Unknown filter key") as exc:
             _find_filter_target("nonexistent", catalogue)
+        assert "precis_orientation() or list_kpis()" in str(exc.value)
+        assert "search_hierarchy" not in str(exc.value)
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +248,23 @@ class TestResolveFiltersIntersection:
 # ---------------------------------------------------------------------------
 
 class TestResolveFiltersEdgeCases:
+    @pytest.mark.parametrize("dimension", ["cost_centre", "department", "org_structure"])
+    def test_missing_member_guidance_does_not_enumerate_members(self, catalogue, dimension):
+        from tests.fakes.fake_clickhouse import FakeClickHouseClient
+
+        client = FakeClickHouseClient().set_query_responses([])
+        with pytest.raises(FilterResolutionError) as exc:
+            resolve_filters({dimension: "invalid"}, catalogue, client)
+        message = str(exc.value)
+        assert "search_hierarchy" in message
+        assert "precis_orientation" not in message
+        assert "list_kpis" not in message
+        assert "zero records" in message
+        assert "invalid" in message
+        # The error offers discovery, never a list of master-data members.
+        assert "Valid values:" not in message
+        assert "Valid filter keys:" not in message
+
     def test_empty_filters_returns_empty(self, catalogue):
         result = resolve_filters({}, catalogue, MagicMock())
         assert result == {}

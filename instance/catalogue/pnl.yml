@@ -15,7 +15,7 @@ metrics:
   - key: revenue
     label: Revenue
     description: "Total recognised project revenue for the period."
-    calculation_note: "Sum of credit-side journal entries on revenue accounts (fs_line = 'Revenue') from gl.actuals. Stored as negative in the ledger; sign: abs converts to positive for display."
+    calculation_note: "Sum of signed ledger amounts on revenue accounts (fs_line = 'Revenue'). sign: negate displays credit revenue as positive and debit reversals as reductions, preserving actual and plan adjustments."
     where:
       - column: fs_line
         op: eq
@@ -23,7 +23,7 @@ metrics:
     source_column: amount
     aggregation: sum
     rollup_method: sum
-    sign: abs
+    sign: negate
     format: currency
     fs_group: Revenue
     style: header

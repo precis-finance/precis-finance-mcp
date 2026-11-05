@@ -1,0 +1,38 @@
+# Open multi-user bundle: -f deploy/docker-compose.yml -f deploy/docker-compose.databricks.yml
+# Compose >=2.24.4. Use a source build with PRECIS_EXTRAS=databricks-primary.
+# The warehouse and its semantic/scenario objects must already be provisioned.
+services:
+  precis-mcp:
+    environment:
+      PRECIS_ANALYTICAL_BACKEND: databricks
+      PRECIS_INGESTION_MODE: customer_managed
+      DATABRICKS_AUTH_TYPE: oauth-m2m
+      DATABRICKS_HOST: ${DATABRICKS_HOST:?set DATABRICKS_HOST}
+      DATABRICKS_HTTP_PATH: ${DATABRICKS_HTTP_PATH:?set DATABRICKS_HTTP_PATH}
+      DATABRICKS_CLIENT_ID: ${DATABRICKS_CLIENT_ID:?set DATABRICKS_CLIENT_ID}
+      DATABRICKS_CLIENT_SECRET_FILE: /run/secrets/databricks_client_secret
+      DATABRICKS_CATALOG: ${DATABRICKS_CATALOG:?set DATABRICKS_CATALOG}
+      PRECIS_DATABRICKS_SEMANTIC_SCHEMA: ${PRECIS_DATABRICKS_SEMANTIC_SCHEMA:-semantic}
+      PRECIS_DATABRICKS_PLANNING_SCHEMA: ${PRECIS_DATABRICKS_PLANNING_SCHEMA:-precis_planning}
+      PRECIS_DATABRICKS_ACTUALS_SCHEMA: ${PRECIS_DATABRICKS_ACTUALS_SCHEMA:-actuals}
+      PRECIS_DATABRICKS_SOCKET_TIMEOUT: ${PRECIS_DATABRICKS_SOCKET_TIMEOUT:-30}
+      PRECIS_DATABRICKS_STATEMENT_TIMEOUT: ${PRECIS_DATABRICKS_STATEMENT_TIMEOUT:-60}
+    secrets:
+      - databricks_client_secret
+  # Inactive even if old bundled/ingestion profiles are still configured.
+  clickhouse:
+    profiles: !override [clickhouse-only]
+  ingestion-scheduler:
+    profiles: !override [managed-ingestion-only]
+  ingestion-watcher:
+    profiles: !override [managed-ingestion-only]
+  backup-scheduler:
+    # Match the application owner so mode-0600 managed artifact files are readable.
+    user: "10001:10001"
+    environment:
+      PRECIS_ANALYTICAL_BACKEND: databricks
+      PRECIS_INGESTION_MODE: customer_managed
+
+secrets:
+  databricks_client_secret:
+    file: ${DATABRICKS_CLIENT_SECRET_FILE:?set an absolute host path to the OAuth secret file}

@@ -12,8 +12,45 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
+import pytest
+import sqlglot
+from sqlglot import exp
+from sqlglot.executor import execute
+
 from precis_mcp.engine.catalogue import load_catalogue
 from precis_mcp.ingestion.semantic_runner import apply_all
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_INSTANCE_ROOTS = [
+    path for path in (
+        _PROJECT_ROOT / "instance",
+        _PROJECT_ROOT / "instance_open",
+        _PROJECT_ROOT / "scripts" / "instance_consilio",
+    ) if path.is_dir()
+]
+
+
+@pytest.mark.parametrize("instance_root", _INSTANCE_ROOTS, ids=lambda path: path.name)
+@pytest.mark.parametrize("fraction,expected", [
+    (0.75, 75.0), (0.0, 0.0), (1.0, 100.0), (0.123456789, 12.3456789), (None, None),
+])
+def test_project_completion_semantic_projection_uses_percentage_points(instance_root, fraction, expected):
+    """Evaluate the shipped SQL projection with a pure Python SQL executor.
+
+    Raw progress remains a fraction; the semantic boundary exposes percentage
+    points without rounding. This does not require a live analytical service.
+    """
+    sql = (instance_root / "semantic" / "views" / "v_revenue_subledger.sql").read_text()
+    actuals = sqlglot.parse_one(sql, read="clickhouse").find(exp.Select)
+    projection = next(item for item in actuals.expressions if item.alias_or_name == "percent_complete")
+    query = exp.select(projection.copy()).from_("s")
+    result = execute(query, tables={"s": [{"percent_complete": fraction}]})
+    value = result.rows[0][0]
+    if expected is None:
+        assert value is None
+    else:
+        assert value == pytest.approx(expected)
 
 
 class _StubCH:
@@ -166,6 +203,11 @@ def test_apply_all_materialises_ragged_views_between_dims_and_views(tmp_path: Pa
     rollup_cmd = next(c for c in ch.commands if "semantic.dim_branch_org_rollup" in c)
     assert "FROM semantic.dim_branch" in rollup_cmd
     assert "{{" not in rollup_cmd
+    view_cmd = next(c for c in ch.commands if c.startswith("CREATE OR REPLACE VIEW semantic.dim_branch_org_rollup AS"))
+    assert view_cmd.endswith("SELECT * FROM semantic.dim_branch_org_rollup_materialized")
+    assert "WITH RECURSIVE" not in view_cmd
+    assert rollup_cmd.startswith("CREATE OR REPLACE TABLE semantic.dim_branch_org_rollup_materialized ")
+    assert ch.commands.index(rollup_cmd) < ch.commands.index(view_cmd)
 
 
 def test_apply_all_without_catalogue_skips_ragged_views(tmp_path: Path):

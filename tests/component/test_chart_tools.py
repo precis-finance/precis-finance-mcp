@@ -100,6 +100,130 @@ VALID_CHART_SPEC = {
 }
 
 
+def _formatted_metrics(catalogue, metrics, raw_values, scale, *, statement=False):
+    from precis_mcp.engine.formatter import FormatterBlock, SCALE_LABELS, format_response
+
+    result = format_response(
+        results={"actuals": {(): raw_values}},
+        blocks=[FormatterBlock(
+            alias="Actuals", scenario_key="actuals", metric_keys=metrics,
+            display_items=metrics, is_statement=statement,
+        )],
+        catalogue=catalogue, dimensions=[], period_start="2026-01",
+        period_end="2026-03", scale=scale, decimals=1,
+    )
+    result["caption"] = {"period": "Jan–Mar 2026"}
+    if SCALE_LABELS[scale]:
+        result["caption"]["scale"] = SCALE_LABELS[scale]
+    return result
+
+
+@pytest.mark.parametrize("scale", [0, 3])
+@pytest.mark.parametrize("worked,expected", [(100, 75), (0, None), (None, None)])
+def test_federated_percentage_contract_across_consumers(eval_tool, tmp_path, catalogue, scale, worked, expected):
+    """Load the actual catalogue formula, then preserve percentage points everywhere."""
+    from precis_mcp.engine.transformer import compute_derived_metrics
+
+    values = {"federated_billable_hours": 75, "federated_hours_worked": worked}
+    compute_derived_metrics({(): values}, catalogue, ["federated_utilisation"])
+    result = _formatted_metrics(catalogue, ["federated_utilisation"], values, scale, statement=True)
+    _assert_percentage_consumers(eval_tool, tmp_path, result, expected)
+
+
+@pytest.mark.parametrize("scale", [0, 3])
+@pytest.mark.parametrize("fraction,expected", [(0.75, 75.0), (0.0, 0.0), (None, None)])
+def test_project_percentage_contract_across_consumers(eval_tool, tmp_path, catalogue, scale, fraction, expected):
+    from pathlib import Path
+    import sqlglot
+    from sqlglot import exp
+    from sqlglot.executor import execute
+
+    sql = (Path(__file__).resolve().parents[2] / "instance/semantic/views/v_revenue_subledger.sql").read_text()
+    actuals = sqlglot.parse_one(sql, read="clickhouse").find(exp.Select)
+    projection = next(item for item in actuals.expressions if item.alias_or_name == "percent_complete")
+    value = execute(exp.select(projection.copy()).from_("s"), tables={"s": [{"percent_complete": fraction}]}).rows[0][0]
+    result = _formatted_metrics(
+        catalogue, ["project_percent_complete"], {"project_percent_complete": value}, scale, statement=True,
+    )
+    _assert_percentage_consumers(eval_tool, tmp_path, result, expected)
+
+
+def _assert_percentage_consumers(eval_tool, tmp_path, result, expected):
+    import openpyxl
+    from precis_mcp.excel import statement_to_excel
+    from precis_mcp.table_builder import build_financial_table_block
+
+    assert result["rows"][0]["values"]["Actuals"] == expected
+    assert result["rows"][0]["item"]["format"] == "percent"
+
+    table = build_financial_table_block(result, for_excel=True)
+    row = table["rows"][0]
+    assert row["values"]["Actuals"] == expected
+    assert row["format"] == "percent"
+    assert '"%"' in row["nf"]
+
+    path = tmp_path / "percentage.xlsx"
+    statement_to_excel(result, path)
+    workbook = openpyxl.load_workbook(path)
+    percent_cells = [cell for sheet in workbook for cells in sheet for cell in cells if '"%"' in cell.number_format]
+    assert percent_cells
+    assert all(cell.value == expected for cell in percent_cells)
+    workbook.close()
+
+    fn, redis = eval_tool
+    ref = _seed_cache(redis, result)
+    chart_result = fn(
+        data_refs=[ref],
+        transform_code="input => input.rows.map(r => ({label: r.item.label, value: r.values.Actuals}))",
+        chart_spec={**VALID_CHART_SPEC, "y_format": "percent"}, user_id="u1",
+    )
+    assert chart_result["status"] == "ok"
+    assert chart_result["chart"]["data"][0]["value"] == expected
+    assert chart_result["chart"]["y_format"] == "percent"
+    assert chart_result["chart"]["y_scale"] == 0
+
+
+@pytest.mark.parametrize("scale", [0, 3])
+@pytest.mark.parametrize("multi_source", [False, True])
+def test_currency_and_fte_chart_units(eval_tool, catalogue, scale, multi_source):
+    """Use real formatter scaling before caching; FTE stays in units on its own axis."""
+    fn, redis = eval_tool
+    raw_values = {"revenue": 2579289.74, "avg_fte_billable": 12.5}
+    if multi_source:
+        currency = _formatted_metrics(catalogue, ["revenue"], raw_values, scale)
+        fte = _formatted_metrics(catalogue, ["avg_fte_billable"], raw_values, 0)
+        refs = [_seed_cache(redis, currency), _seed_cache(redis, fte)]
+        transform = "(currency, fte) => [{label: 'Total', revenue: currency.rows[0].values.Actuals, fte: fte.rows[0].values.Actuals}]"
+    else:
+        mixed = _formatted_metrics(catalogue, list(raw_values), raw_values, scale, statement=True)
+        refs = [_seed_cache(redis, mixed)]
+        transform = "input => [{label: 'Total', revenue: input.rows.find(r => r.item.key === 'revenue').values.Actuals, fte: input.rows.find(r => r.item.key === 'avg_fte_billable').values.Actuals}]"
+    currency_unit = "€ thousands" if scale == 3 else "€"
+    output = fn(
+        data_refs=refs, transform_code=transform, user_id="u1",
+        chart_spec={
+            "chart_type": "line", "x_key": "label", "y_keys": ["revenue", "fte"],
+            "y_axis_map": {"revenue": "left", "fte": "right"},
+            "y_format": "currency", "y_format_right": "number",
+            "y_label": f"Revenue ({currency_unit})", "y_label_right": "FTE",
+            "y_decimals_right": 1,
+        },
+    )
+    assert output["status"] == "ok"
+    chart = output["chart"]
+    assert chart["data"][0]["revenue"] == pytest.approx(2579289.74 / 10 ** scale)
+    assert chart["data"][0]["fte"] == 12.5
+    assert chart["y_scale"] == 0
+    assert chart["y_decimals"] == 1 and chart["y_decimals_right"] == 1
+    assert chart["y_axis_map"] == {"revenue": "left", "fte": "right"}
+    assert chart["y_format"] == "currency" and chart["y_format_right"] == "number"
+    assert chart["y_label"] == f"Revenue ({currency_unit})" and chart["y_label_right"] == "FTE"
+    assert chart["caption"]["period"] == "Jan–Mar 2026"
+    # A source with no scale label does not remove the currency source's label;
+    # axis labels still disambiguate FTE. Conflicting nonempty labels are tested below.
+    assert chart["caption"].get("scale") == ("€ thousands" if scale == 3 else None)
+
+
 class TestEvalChartTransformValidation:
     def test_missing_data_ref(self, eval_tool):
         fn, _ = eval_tool

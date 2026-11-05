@@ -1,0 +1,12 @@
+[
+  {
+    "source": {"tool":"run_metric","params":{"metrics":["revenue","margin"],"period_start":"2026-01","period_end":"2026-03","scenarios":[{"scenario":"BUD-2026&uncommitted","alias":"Budget \"draft\""}],"dimensions":["department"],"filters":{"department":["D1","D2"]},"scale":0,"decimals":0}},
+    "layout": "extract",
+    "formula": "=PRECIS.METRIC(\"revenue,margin\",\"2026-01\",\"2026-03\",\"department\",\"BUD-2026&uncommitted as Budget \"\"draft\"\"\",\"department=D1|D2\",\"extract\",0,0)"
+  },
+  {
+    "source": {"tool":"run_statement","params":{"statement":"pnl","period_start":"2026-01","period_end":"2026-03","scenarios":[{"scenario":"actuals","alias":"Actuals"}],"scale":3,"decimals":1}},
+    "layout": "report",
+    "formula": "=PRECIS.STATEMENT(\"pnl\",\"2026-01\",\"2026-03\",\"actuals as Actuals\",\"\",\"\",3,1,\"report\")"
+  }
+]

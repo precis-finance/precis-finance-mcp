@@ -3,27 +3,30 @@
 """Derive ragged-hierarchy rollup views from the catalogue.
 
 A `type: generated` ragged dimension declares its hierarchy as ordered
-`levels` in `instance/catalogue/dimensions.yml`. The runtime needs two
-ClickHouse views per such dimension:
+`levels` in `instance/catalogue/dimensions.yml`. The runtime needs three
+logical views per such dimension:
 
   - ``dim_{leaf}_{key}_rollup`` — node_id → leaf-key mapping; the filter
     resolver and ``search_hierarchy`` query it (``filter_resolver.py``,
     ``read_tools.py``).
   - ``dim_{leaf}_{key}`` — the flattened node list (node_id, names, level,
     parent_node_id, sort_key) for display / hierarchy navigation.
+  - ``dim_{leaf}_{key}_edges`` — normalized child-to-parent edges.
 
 These views are pure derivations of the catalogue, so they are generated
 here and applied to ClickHouse by ``semantic_runner.apply_all`` — they are
 never written to ``instance/``, which holds only operator-authored config.
-A ``type: provided`` ragged dimension supplies its own rollup table and is
-skipped here.
+A ``type: provided`` ragged dimension supplies operator node/edge inputs;
+the same recursive closure builds its rollup.
 
-These views are generated in memory and emitted as plain ClickHouse SQL.
+These views are generated in memory through the selected SQL dialect. CH
+provisioning applies them directly; native provisioning renders an operator bundle.
 """
 
 from __future__ import annotations
 
 from precis_mcp.engine.catalogue import Catalogue, Dimension
+from precis_mcp.analytical.sql import CLICKHOUSE_SQL, SqlDialect
 
 
 def _resolve_level_info(ragged_dim: Dimension, catalogue: Catalogue) -> list[dict]:
@@ -90,7 +93,7 @@ def _resolve_level_info(ragged_dim: Dimension, catalogue: Catalogue) -> list[dic
     return levels
 
 
-def build_generated_edges_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
+def build_generated_edges_sql(ragged_dim: Dimension, catalogue: Catalogue, dialect: SqlDialect = CLICKHOUSE_SQL) -> str:
     """Derive child→parent edges from the leaf table's ancestor columns.
 
     The generated counterpart to a provided edge table: for each adjacent pair
@@ -103,13 +106,13 @@ def build_generated_edges_sql(ragged_dim: Dimension, catalogue: Catalogue) -> st
     leaf_dim = catalogue.dimensions.get(ragged_dim.leaf_dimension)
     if not leaf_dim or not leaf_dim.source:
         raise ValueError(f"Cannot resolve leaf dimension for {ragged_dim.key}")
-    source = leaf_dim.source.table
+    source = dialect.table(leaf_dim.source.table)
     levels = _resolve_level_info(ragged_dim, catalogue)
 
     def node_id(level: dict) -> str:
         prefix = level["node_prefix"]
         col = level["column"]
-        return f"concat('{prefix}', toString({col}))" if prefix else f"toString({col})"
+        return f"concat('{prefix}', {dialect.string(col)})" if prefix else dialect.string(col)
 
     unions: list[str] = []
     # Deeper → shallower for each adjacent level pair (leaf-most first).
@@ -136,7 +139,7 @@ def build_generated_edges_sql(ragged_dim: Dimension, catalogue: Catalogue) -> st
     return header + "\n\nUNION ALL\n\n".join(unions) + "\n"
 
 
-def build_rollup_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
+def build_rollup_sql(ragged_dim: Dimension, catalogue: Catalogue, dialect: SqlDialect = CLICKHOUSE_SQL) -> str:
     """Recursive node → leaf rollup over the hierarchy's ``*_edges`` view.
 
     Shared by generated and provided hierarchies — both read the fixed-name
@@ -152,16 +155,17 @@ def build_rollup_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
         leaf_source=leaf_dim.source.table,
         leaf_key=leaf_dim.source.key_column,
         edges_view=f"semantic.{stem}_edges",
+        dialect=dialect,
     )
 
 
-def build_hierarchy_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
+def build_hierarchy_sql(ragged_dim: Dimension, catalogue: Catalogue, dialect: SqlDialect = CLICKHOUSE_SQL) -> str:
     """Generate the flattened hierarchy view SQL (``dim_{leaf}_{key}``)."""
     leaf_dim = catalogue.dimensions.get(ragged_dim.leaf_dimension)
     if not leaf_dim or not leaf_dim.source:
         raise ValueError(f"Cannot resolve leaf dimension for {ragged_dim.key}")
 
-    source = leaf_dim.source.table
+    source = dialect.table(leaf_dim.source.table)
     levels = _resolve_level_info(ragged_dim, catalogue)
 
     lines: list[str] = []
@@ -186,7 +190,7 @@ def build_hierarchy_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
         # that table to resolve display names.  Qualify columns with _m / _d.
         has_join = bool(level.get("join_source"))
         if has_join:
-            join_tbl = level["join_source"]
+            join_tbl = dialect.table(level["join_source"])
             from_clause = (
                 f"{source} _m\n"
                 f"    JOIN {join_tbl} _d\n"
@@ -201,9 +205,9 @@ def build_hierarchy_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
 
         # node_id
         if prefix:
-            node_id_expr = f"concat('{prefix}', toString({col_ref}))"
+            node_id_expr = f"concat('{prefix}', {dialect.string(col_ref)})"
         else:
-            node_id_expr = f"toString({col_ref})"
+            node_id_expr = dialect.string(col_ref)
 
         # node_name — use display column (joined name) when available
         if is_leaf and level["display_attribute_col"]:
@@ -228,7 +232,7 @@ def build_hierarchy_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
             parent_col = parent_level["column"]
             parent_col_ref = f"_m.{parent_col}" if has_join else parent_col
             if parent_level["node_prefix"]:
-                parent_expr = f"concat('{parent_level['node_prefix']}', toString({parent_col_ref}))"
+                parent_expr = f"concat('{parent_level['node_prefix']}', {dialect.string(parent_col_ref)})"
             else:
                 parent_expr = parent_col_ref
 
@@ -239,11 +243,11 @@ def build_hierarchy_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
             lv_col = lv["column"]
             if has_join and lv.get("join_display_col"):
                 if i == level_num:
-                    sort_parts.append(f"toString({display_col})")
+                    sort_parts.append(dialect.string(display_col))
                 else:
-                    sort_parts.append(f"toString({('_m.' + lv_col) if has_join else lv_col})")
+                    sort_parts.append(dialect.string(('_m.' + lv_col) if has_join else lv_col))
             else:
-                sort_parts.append(f"toString({('_m.' + lv_col) if has_join else lv_col})")
+                sort_parts.append(dialect.string(('_m.' + lv_col) if has_join else lv_col))
         concat_args = ", '|', ".join(sort_parts)
         sort_key_expr = f"concat({concat_args}, '|')" if not is_leaf else f"concat({concat_args})"
 
@@ -317,7 +321,8 @@ def build_hierarchy_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
     return result
 
 
-def build_recursive_rollup_sql(*, leaf_source: str, leaf_key: str, edges_view: str) -> str:
+def build_recursive_rollup_sql(*, leaf_source: str, leaf_key: str, edges_view: str,
+                             dialect: SqlDialect = CLICKHOUSE_SQL) -> str:
     """Generate the node → leaf rollup as a recursive walk over an edge view.
 
     The TO-BE rollup shared by the provided and (post-homogenisation) generated
@@ -333,7 +338,7 @@ def build_recursive_rollup_sql(*, leaf_source: str, leaf_key: str, edges_view: s
     the single-parent UNION-ALL derivation is not a drop-in port.
     """
     return _recursive_rollup_cte(
-        leaf_source=leaf_source, leaf_key=leaf_key, edges_view=edges_view
+        leaf_source=leaf_source, leaf_key=leaf_key, edges_view=edges_view, dialect=dialect
     ) + (
         "SELECT DISTINCT\n"
         "    node_id,\n"
@@ -342,7 +347,8 @@ def build_recursive_rollup_sql(*, leaf_source: str, leaf_key: str, edges_view: s
     )
 
 
-def _recursive_rollup_cte(*, leaf_source: str, leaf_key: str, edges_view: str) -> str:
+def _recursive_rollup_cte(*, leaf_source: str, leaf_key: str, edges_view: str,
+                          dialect: SqlDialect = CLICKHOUSE_SQL) -> str:
     """The ``WITH RECURSIVE rollup AS (...)`` block shared by the rollup view and
     the diamond check. One row per ``(node_id, leaf, path)`` — the caller either
     dedups (the rollup) or counts paths (the diamond check)."""
@@ -350,25 +356,26 @@ def _recursive_rollup_cte(*, leaf_source: str, leaf_key: str, edges_view: str) -
         "WITH RECURSIVE rollup AS (\n"
         "    -- Base: every leaf resolves to itself\n"
         "    SELECT\n"
-        f"        toString({leaf_key}) AS node_id,\n"
-        f"        toString({leaf_key}) AS {leaf_key},\n"
-        f"        [toString({leaf_key})] AS _path\n"
-        f"    FROM {leaf_source}\n"
+        f"        {dialect.string(leaf_key)} AS node_id,\n"
+        f"        {dialect.string(leaf_key)} AS {leaf_key},\n"
+        f"        {dialect.array([dialect.string(leaf_key)])} AS _path\n"
+        f"    FROM {dialect.table(leaf_source)}\n"
         "    UNION ALL\n"
         "    -- Step: climb one child→parent edge, guarding against cycles\n"
         "    SELECT\n"
         "        e.parent_node_id AS node_id,\n"
         f"        r.{leaf_key} AS {leaf_key},\n"
-        "        arrayPushBack(r._path, e.parent_node_id) AS _path\n"
+        f"        {dialect.array_append('r._path', 'e.parent_node_id')} AS _path\n"
         "    FROM rollup AS r\n"
-        f"    INNER JOIN {edges_view} AS e ON e.child_node_id = r.node_id\n"
-        "    WHERE NOT has(r._path, e.parent_node_id)\n"
+        f"    INNER JOIN {dialect.table(edges_view)} AS e ON e.child_node_id = r.node_id\n"
+        f"    WHERE NOT {dialect.array_contains('r._path', 'e.parent_node_id')}\n"
         ")\n"
     )
 
 
 def build_diamond_check_sql(
-    *, leaf_source: str, leaf_key: str, edges_view: str, limit: int = 50
+    *, leaf_source: str, leaf_key: str, edges_view: str, limit: int = 50,
+    dialect: SqlDialect = CLICKHOUSE_SQL
 ) -> str:
     """Rows where a leaf reaches a node by **more than one path** (a diamond).
 
@@ -378,21 +385,22 @@ def build_diamond_check_sql(
     an operator-log warning — the rollup itself dedups, so this never blocks.
     """
     return _recursive_rollup_cte(
-        leaf_source=leaf_source, leaf_key=leaf_key, edges_view=edges_view
+        leaf_source=leaf_source, leaf_key=leaf_key, edges_view=edges_view, dialect=dialect
     ) + (
         "SELECT\n"
         "    node_id,\n"
         f"    {leaf_key},\n"
-        "    count() AS paths\n"
+        f"    {dialect.count_rows()} AS paths\n"
         "FROM rollup\n"
         f"GROUP BY node_id, {leaf_key}\n"
-        "HAVING count() > 1\n"
+        f"HAVING {dialect.count_rows()} > 1\n"
         "ORDER BY paths DESC, node_id\n"
         f"LIMIT {int(limit)}\n"
     )
 
 
-def build_orphan_edges_sql(*, node_master: str, edges_view: str, limit: int = 50) -> str:
+def build_orphan_edges_sql(*, node_master: str, edges_view: str, limit: int = 50,
+                           dialect: SqlDialect = CLICKHOUSE_SQL) -> str:
     """Edge endpoints absent from the node master — orphan edges.
 
     The node master carries every valid node (operator/level nodes, the injected
@@ -403,16 +411,16 @@ def build_orphan_edges_sql(*, node_master: str, edges_view: str, limit: int = 50
     """
     return (
         "SELECT node_id, role FROM (\n"
-        f"    SELECT DISTINCT child_node_id AS node_id, 'child' AS role FROM {edges_view}\n"
+        f"    SELECT DISTINCT child_node_id AS node_id, 'child' AS role FROM {dialect.table(edges_view)}\n"
         "    UNION ALL\n"
-        f"    SELECT DISTINCT parent_node_id AS node_id, 'parent' AS role FROM {edges_view}\n"
+        f"    SELECT DISTINCT parent_node_id AS node_id, 'parent' AS role FROM {dialect.table(edges_view)}\n"
         ")\n"
-        f"WHERE node_id NOT IN (SELECT node_id FROM {node_master})\n"
+        f"WHERE node_id NOT IN (SELECT node_id FROM {dialect.table(node_master)})\n"
         f"LIMIT {int(limit)}\n"
     )
 
 
-def build_provided_edges_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
+def build_provided_edges_sql(ragged_dim: Dimension, catalogue: Catalogue, dialect: SqlDialect = CLICKHOUSE_SQL) -> str:
     """Normalise a provided edge table to ``(child_node_id, parent_node_id)``.
 
     The operator's edge table may name its columns anything; this view renames
@@ -427,11 +435,11 @@ def build_provided_edges_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str
         "SELECT\n"
         f"    {rs.child_column} AS child_node_id,\n"
         f"    {rs.parent_column} AS parent_node_id\n"
-        f"FROM {rs.edge_table}"
+        f"FROM {dialect.table(rs.edge_table)}"
     )
 
 
-def build_provided_node_master_sql(ragged_dim: Dimension, catalogue: Catalogue) -> str:
+def build_provided_node_master_sql(ragged_dim: Dimension, catalogue: Catalogue, dialect: SqlDialect = CLICKHOUSE_SQL) -> str:
     """Node master for a provided hierarchy: operator nodes + injected leaves.
 
     The operator supplies only the non-leaf nodes; every leaf is auto-injected
@@ -446,7 +454,7 @@ def build_provided_node_master_sql(ragged_dim: Dimension, catalogue: Catalogue) 
         raise ValueError(f"Cannot resolve leaf dimension for {ragged_dim.key}")
     leaf_src = leaf_dim.source.table
     leaf_key = leaf_dim.source.key_column
-    leaf_name = f"toString({leaf_key})"
+    leaf_name = dialect.string(leaf_key)
     if leaf_dim.display_attribute:
         disp = leaf_dim.source.attribute_mapping.get(leaf_dim.display_attribute, "")
         if disp:
@@ -458,19 +466,19 @@ def build_provided_node_master_sql(ragged_dim: Dimension, catalogue: Catalogue) 
         "    node_name,\n"
         "    node_name AS display_name,\n"
         "    node_type\n"
-        f"FROM {rs.node_table}\n"
+        f"FROM {dialect.table(rs.node_table)}\n"
         "UNION ALL\n"
         f"-- Auto-injected leaf nodes ({ragged_dim.leaf_dimension}).\n"
         "SELECT\n"
-        f"    toString({leaf_key}) AS node_id,\n"
+        f"    {dialect.string(leaf_key)} AS node_id,\n"
         f"    {leaf_name} AS node_name,\n"
         f"    {leaf_name} AS display_name,\n"
         f"    '{ragged_dim.leaf_dimension}' AS node_type\n"
-        f"FROM {leaf_src}"
+        f"FROM {dialect.table(leaf_src)}"
     )
 
 
-def build_ragged_views(catalogue: Catalogue) -> list[tuple[str, str]]:
+def build_ragged_views(catalogue: Catalogue, dialect: SqlDialect = CLICKHOUSE_SQL) -> list[tuple[str, str]]:
     """Return ``(view_name, sql_body)`` for every ragged dimension.
 
     ``sql_body`` is bare SQL (no ``CREATE OR REPLACE VIEW`` wrapper — the caller
@@ -494,10 +502,10 @@ def build_ragged_views(catalogue: Catalogue) -> list[tuple[str, str]]:
         stem = f"dim_{dim.leaf_dimension}_{dim.key}"
         rs = dim.ragged_source
         if rs and rs.type == "provided":
-            views.append((f"{stem}_edges", build_provided_edges_sql(dim, catalogue)))
-            views.append((stem, build_provided_node_master_sql(dim, catalogue)))
+            views.append((f"{stem}_edges", build_provided_edges_sql(dim, catalogue, dialect)))
+            views.append((stem, build_provided_node_master_sql(dim, catalogue, dialect)))
         else:
-            views.append((f"{stem}_edges", build_generated_edges_sql(dim, catalogue)))
-            views.append((stem, build_hierarchy_sql(dim, catalogue)))
-        views.append((f"{stem}_rollup", build_rollup_sql(dim, catalogue)))
+            views.append((f"{stem}_edges", build_generated_edges_sql(dim, catalogue, dialect)))
+            views.append((stem, build_hierarchy_sql(dim, catalogue, dialect)))
+        views.append((f"{stem}_rollup", build_rollup_sql(dim, catalogue, dialect)))
     return views

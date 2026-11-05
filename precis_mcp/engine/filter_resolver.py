@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from precis_mcp.analytical.sql import dialect_for
 
 from precis_mcp.engine.catalogue import (
     Catalogue,
@@ -53,10 +54,9 @@ def _find_filter_target(
     """
     dim = catalogue.dimensions.get(filter_key)
     if dim is None:
-        valid_keys = sorted(catalogue.dimensions.keys())
         raise FilterResolutionError(
             f"Unknown filter key {filter_key!r}. "
-            f"Valid filter keys: {valid_keys}"
+            f"Use precis_orientation() or list_kpis() to find valid dimension keys."
         )
 
     if dim.is_leaf:
@@ -87,9 +87,11 @@ def _resolve_leaf_filter(
     exists in the source table.  Returns [value] if found, empty list if not.
     """
     assert dim.source is not None
+    sql = dialect_for(ch_client)
+    key = sql.string(dim.source.key_column)
     result = ch_client.query(
-        f"SELECT toString({dim.source.key_column}) FROM {dim.source.table} "
-        f"WHERE toString({dim.source.key_column}) = {{val:String}} LIMIT 1",
+        f"SELECT {key} FROM {sql.table(dim.source.table)} "
+        f"WHERE {key} = {sql.parameter('val')} LIMIT 1",
         parameters={"val": value},
     )
     return [row[0] for row in result.result_rows]
@@ -115,10 +117,11 @@ def _resolve_derived_filter(
 
     # Use the first transitive resolution (typically there's only one)
     resolution = next(iter(dim._transitive.values()))
+    sql = dialect_for(ch_client)
     result = ch_client.query(
-        f"SELECT DISTINCT toString({resolution.leaf_key_column}) "
-        f"FROM {resolution.source_table} "
-        f"WHERE toString({resolution.filter_column}) = {{val:String}}",
+        f"SELECT DISTINCT {sql.string(resolution.leaf_key_column)} "
+        f"FROM {sql.table(resolution.source_table)} "
+        f"WHERE {sql.string(resolution.filter_column)} = {sql.parameter('val')}",
         parameters={"val": value},
     )
     return [row[0] for row in result.result_rows]
@@ -150,9 +153,10 @@ def _resolve_ragged_filter(
             f"for leaf_dimension {dim.leaf_dimension!r}"
         )
 
+    sql = dialect_for(ch_client)
     result = ch_client.query(
-        f"SELECT toString({resolution.leaf_key_column}) FROM {view} "
-        f"WHERE node_id = {{node_id:String}}",
+        f"SELECT {sql.string(resolution.leaf_key_column)} FROM {sql.table(view)} "
+        f"WHERE node_id = {sql.parameter('node_id')}",
         parameters={"node_id": value},
     )
     return [row[0] for row in result.result_rows]

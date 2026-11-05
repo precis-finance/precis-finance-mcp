@@ -13,6 +13,7 @@ import os
 import threading
 import time
 from collections.abc import Callable
+from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
@@ -550,32 +551,38 @@ def _comparison_metadata_row(s: ScenarioRef, registry: ScenarioRegistry) -> dict
 
 
 def load_scenario_registry(client: Any) -> ScenarioRegistry:
-    """Load ``ScenarioRegistry`` from a ClickHouse client."""
-    result = client.query("""
+    """Load ``ScenarioRegistry`` from the selected analytical client."""
+    from precis_mcp.analytical.sql import dialect_for
+    table = dialect_for(client).table("semantic.scenarios")
+    result = client.query(f"""
         SELECT scenario_id, alias, name, base_scenario, status, description,
                created_by, created_at, locked_at, horizon_start, horizon_end,
                actuals_cutoff, granularity, owner_user_id, updated_at,
                variant_of, locks, kind
-        FROM semantic.scenarios
+        FROM {table}
         ORDER BY scenario_id
     """)
     rows = [dict(zip(result.column_names, row)) for row in result.result_rows]
     return ScenarioRegistry.from_rows(rows)
 
 
-_REGISTRY_TTL_SECONDS = float(os.getenv("PRECIS_SCENARIO_REGISTRY_TTL", "5"))
+_REGISTRY_TTL_SECONDS = float(os.getenv("PRECIS_SCENARIO_REGISTRY_TTL", "60"))
 _registry_cache: tuple[float, ScenarioRegistry] | None = None
 _registry_cache_lock = threading.Lock()
 
 
-def get_scenario_registry(client_factory: Callable[[], Any]) -> ScenarioRegistry:
+def get_scenario_registry(
+    client_factory: Callable[[], Any] | None = None, *, client: Any = None,
+) -> ScenarioRegistry:
     """Process-wide, short-TTL cached view of ``load_scenario_registry``.
 
     Hot per-call paths (the tool permission gate, skill routing) hit this
     instead of re-querying ``semantic.scenarios`` per invocation.
-    ``client_factory`` is only called on a cache miss. Same-process scenario
-    writes invalidate eagerly (``ScenarioStore``); cross-process writes are
-    bounded by the TTL.
+    ``client_factory`` is only called on a cache miss (the selected analytical
+    factory is the default). A supplied ``client`` is borrowed, never closed.
+    Same-process scenario writes invalidate eagerly (``ScenarioStore``);
+    cross-process writes are bounded by the TTL. Refresh failures propagate;
+    expired snapshots are not served as a fallback.
     """
     global _registry_cache
     now = time.monotonic()
@@ -586,11 +593,19 @@ def get_scenario_registry(client_factory: Callable[[], Any]) -> ScenarioRegistry
         cached = _registry_cache
         if cached is not None and time.monotonic() - cached[0] < _REGISTRY_TTL_SECONDS:
             return cached[1]
-        registry = load_scenario_registry(client_factory())
+        if client is None and client_factory is None:
+            from precis_mcp.analytical import get_analytical_client
+            client_factory = get_analytical_client
+        context = nullcontext(client) if client is not None else closing(client_factory())
+        with context as source:
+            registry = load_scenario_registry(source)
         _registry_cache = (time.monotonic(), registry)
         return registry
 
 
 def invalidate_scenario_registry_cache() -> None:
     global _registry_cache
-    _registry_cache = None
+    # Serialize with publication: a completed invalidation cannot be undone
+    # by an older load that was still in flight when invalidation started.
+    with _registry_cache_lock:
+        _registry_cache = None

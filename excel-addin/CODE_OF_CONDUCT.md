@@ -1,9 +1,6 @@
-# Microsoft Open Source Code of Conduct
+# Code of conduct
 
-This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
+The Précis [Code of Conduct](../CODE_OF_CONDUCT.md) applies to this add-in.
 
-Resources:
-
-- [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/)
-- [Microsoft Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/)
-- Contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with questions or concerns
+Report conduct concerns to [hello@precis.finance](mailto:hello@precis.finance),
+as described in that policy.

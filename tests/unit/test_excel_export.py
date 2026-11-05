@@ -13,6 +13,175 @@ from precis_mcp.excel import (
     metric_to_excel,
     hierarchy_to_excel,
 )
+from precis_mcp.excel.meta import read_meta
+from precis_mcp.excel.worksheet import report_worksheet
+from precis_mcp.table_builder import build_financial_table_block
+
+
+def test_python_formula_codec_consumes_shared_addin_fixtures():
+    import json
+    from precis_mcp.excel.formulas import parse_financial_formula
+    fixtures = json.loads((Path(__file__).parents[2]/"excel-addin/tests/fixtures/financial-formulas.json").read_text())
+    for fixture in fixtures:
+        definition = parse_financial_formula(fixture["formula"], lambda ref:pytest.fail(f"Unexpected reference {ref}"))
+        assert definition.params == fixture["source"]["params"]
+        assert definition.tool == fixture["source"]["tool"]
+        assert definition.layout == fixture["layout"]
+
+
+@pytest.mark.parametrize("prefix", ["", "_xlfn.", "_xludf.", "_xlfn._xlws."])
+def test_formula_codec_preserves_defaults_and_resolves_scalar_arguments(prefix):
+    from precis_mcp.excel.formulas import parse_financial_formula
+    resolved = {"B1":"revenue", "StartMonth":"2026-01", "'Control sheet'!$C$2":"2026-03"}
+    definition = parse_financial_formula(f"={prefix}PRECIS.METRIC(B1,StartMonth,'Control sheet'!$C$2)", resolved.__getitem__)
+    assert definition.params == {"metrics":["revenue"],"period_start":"2026-01","period_end":"2026-03","scale":3,"decimals":1}
+    assert definition.layout == "report"
+
+
+@pytest.mark.parametrize("function", ["STATEMENT", "METRIC"])
+@pytest.mark.parametrize("prefix", ["_xldudf_PRECIS_", "_xlfn._xldudf_PRECIS_", "_XLDudf_PRECIS_"])
+def test_formula_codec_recognizes_excel_saved_functions_without_rewriting_arguments(function, prefix):
+    from precis_mcp.excel.formulas import contains_precis_function, parse_financial_formula
+    arguments = '"_xldudf_PRECIS_name","2026-01","2026-08"'
+    formula = f'={prefix}{function}({arguments})'
+    definition = parse_financial_formula(formula, lambda ref: pytest.fail(ref))
+    canonical = parse_financial_formula(f'=PRECIS.{function}({arguments})', lambda ref: pytest.fail(ref))
+    assert definition == canonical
+    assert contains_precis_function(formula)
+
+
+@pytest.mark.parametrize("formula,expected", [
+    ('=SUM(_xldudf_PRECIS_METRIC("a","2026-01","2026-03"))', True),
+    ('=_xldudf_PRECIS_MEMBERS("cost_centre")', True),
+    ('="_xldudf_PRECIS_METRIC(""a"")"', False),
+    ('="PRECIS.METRIC("', False),
+    ('=Other_xldudf_PRECIS_METRIC("a")', False),
+    ('=1+2', False),
+])
+def test_live_function_detection_ignores_text_literals(formula, expected):
+    from precis_mcp.excel.formulas import contains_precis_function
+    assert contains_precis_function(formula) is expected
+
+
+@pytest.mark.parametrize("formula", ['=SUM(PRECIS.METRIC("a","2026-01","2026-03"))', '=PRECIS.METRIC("a","2026-01","2026-03",NOW())', '=PRECIS.METRIC("a","2026-13","2026-03")'])
+def test_formula_codec_rejects_expressions_and_invalid_periods(formula):
+    from precis_mcp.excel.formulas import ConversionError, parse_financial_formula
+    with pytest.raises(ConversionError):
+        parse_financial_formula(formula, lambda ref:None)
+
+
+@pytest.mark.parametrize("formula", [
+    '=PRECIS.METRIC("revenue","2026-01","2026-03","","actuals","","extract",0,2,"default")',
+    '=PRECIS.STATEMENT("pnl","2026-01","2026-03","actuals","","",0,2,"report","default")',
+])
+def test_formula_codec_rejects_removed_tenth_argument(formula):
+    from precis_mcp.excel.formulas import ConversionError, parse_financial_formula
+    with pytest.raises(ConversionError, match="3 to 9 worksheet arguments"):
+        parse_financial_formula(formula, lambda ref: pytest.fail(ref))
+
+
+def test_financial_caption_footer_has_the_platform_context_order_and_cell_limit():
+    from precis_mcp.excel.worksheet import caption_text
+    caption = {"description":"User maintained title", "scenarios":["Actuals","Budget"],
+               "period":"2026-01 to 2026-08", "filters":{"department":["D1","D2"]},
+               "dimensions":["cost_centre"], "scale":"€ thousands", "duration_ms":125,
+               "generated_at":"2026-10-22 18:00 UTC"}
+    assert caption_text(caption) == "Actuals · Budget · 2026-01 to 2026-08 · department: D1, D2 · cost_centre · € thousands · 125 ms · Data as at 2026-10-22 18:00 UTC"
+    with pytest.raises(ValueError, match="cell text limit"):
+        caption_text({"period":"x" * 32768})
+
+
+@pytest.mark.parametrize("fixture_name", ["aggregate_statement_result", "grouped_statement_result"])
+@pytest.mark.parametrize("include_title", [False, True])
+def test_report_exports_and_live_projection_share_values_formats_and_boundaries(tmp_path, monkeypatch, request, fixture_name, include_title):
+    result = request.getfixturevalue(fixture_name)
+    monkeypatch.setenv("PRECIS_BASE_URL", "https://finance.example/")
+    result["rows"][0]["values"]["Actuals"] = 1.23456789012345
+    source = {"tool":"run_statement", "params":{"statement":"pnl", "scale":3, "decimals":None}}
+    path = tmp_path / "shared.xlsx"
+    statement_to_excel(result, path, meta_source=source, sheet_name="Finance's report", include_title=include_title)
+    wb = openpyxl.load_workbook(path)
+    ws = wb["Finance's report"]
+    region = read_meta(wb)["sheets"][ws.title]["regions"][0]
+    _, ref = next(wb.defined_names[region["range_name"]].destinations)
+    c1,r1,c2,r2 = openpyxl.utils.range_boundaries(ref)
+    projection = report_worksheet(build_financial_table_block(result, caption=result["caption"]))
+    actual = list(ws.iter_rows(min_row=r1,max_row=r2,min_col=c1,max_col=c2))
+    # Static grouped headers merge the label vertically; the live spill cannot.
+    values = [[c.value if c.value is not None else "" for c in row] for row in actual]
+    if projection["header_rows"] == 2:
+        values[1][0],values[0][0] = values[0][0],""
+    assert values == projection["grid"]
+    assert region["shape"]["row_count"] == projection["data_rows"]
+    assert region["shape"]["footer_rows"] == 1
+    assert region["shape"]["header_row"] == 1
+    assert region["origin"] == "https://finance.example"
+    assert "caption_mode" not in region["presentation"]
+    assert not ws.cell(r2,1).alignment.wrap_text
+    assert ws.cell(r2,1).number_format == "General"
+    assert ws.cell(r2,1).value == projection["grid"][-1][0]
+    assert r1 == (3 if include_title else 1)
+    if include_title:
+        assert ws["A1"].value == result["caption"]["description"]
+    body = actual[projection["header_rows"]:-1]
+    assert [[c.number_format for c in row] for row in body] == projection["number_formats"][projection["header_rows"]:-1]
+    original = region.copy()
+    statement_to_excel(result,path,meta_source=source,target="append",sheet_name="Another report",include_title=not include_title)
+    appended = openpyxl.load_workbook(path)
+    assert read_meta(appended)["sheets"][ws.title]["regions"][0] == original
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_shared_excel_rows_preserve_semantic_blanks_zeroes_and_totals(tmp_path, grouped):
+    from copy import deepcopy
+    from precis_mcp.excel.block_emit import write_block_to_sheet
+    block = {"caption":{"period":"2026-01 to 2026-03"},
+             "columns":[{"key":"label","label":"Line"},{"key":"value","label":"Actuals",**({"group":"Metric"} if grouped else {})}],
+             "rows":[{"row_type":"separator"},{"row_type":"group_header","label":"Group","values":{}},
+                     {"row_type":"group_header","label":"","values":{}},
+                     {"row_type":"line_item","label":"Missing","values":{}},
+                     {"row_type":"separator"},{"row_type":"line_item","label":"Zero","values":{"value":0}},
+                     {"row_type":"subtotal","label":"Subtotal","values":{"value":0}},
+                     {"row_type":"total","label":"Total","values":{"value":12.3456789}},{"row_type":"separator"}]}
+    original = deepcopy(block)
+    wb = openpyxl.Workbook()
+    shape = write_block_to_sheet(wb.active,block,include_title=False)
+    path = tmp_path / "rows.xlsx"; wb.save(path)
+    ws = openpyxl.load_workbook(path).active
+    body = list(ws.iter_rows(min_row=shape["data_start_row"],max_row=ws.max_row-1))
+    assert len(body) == shape["row_count"] == 6
+    assert all(c.value is None for c in body[1])
+    assert body[3][1].value == 0 and body[3][1].data_type == "n"
+    assert body[4][0].font.bold and body[5][0].font.bold
+    assert body[5][0].border.bottom.style is not None
+    assert ws.cell(ws.max_row,1).value == "2026-01 to 2026-03"
+    assert block == original
+
+
+@pytest.mark.parametrize("tool", ["run_statement", "run_metric"])
+@pytest.mark.parametrize("include_title", [False, True])
+def test_financial_snapshot_has_one_footer_and_optional_external_title(tmp_path, aggregate_statement_result, tool, include_title):
+    from precis_mcp.excel.snapshot_export import write_snapshot_xlsx
+    result = aggregate_statement_result
+    source = {"tool":tool,"args":{"statement":"pnl"} if tool=="run_statement" else {"metrics":["revenue"]}}
+    path = tmp_path / "snapshot.xlsx"
+    write_snapshot_xlsx(result,source,path,include_title=include_title)
+    wb = openpyxl.load_workbook(path); ws=wb.worksheets[0]
+    region=read_meta(wb)["sheets"][ws.title]["regions"][0]
+    assert region["source"]["tool"] == tool
+    assert region["shape"]["footer_rows"] == 1
+    assert "caption_mode" not in region["presentation"]
+    assert not ws.cell(ws.max_row,1).alignment.wrap_text
+
+
+@pytest.mark.parametrize("writer", [statement_to_excel, metric_to_excel])
+@pytest.mark.parametrize("include_title", [False, True])
+def test_empty_financial_report_has_no_data_marker(tmp_path, writer, include_title):
+    path = tmp_path/"empty.xlsx"
+    writer({"scenarios":[],"rows":[],"caption":{"description":"Empty report"}},path,include_title=include_title)
+    ws=openpyxl.load_workbook(path).active
+    assert ws.cell(1,1).value == ("Empty report" if include_title else "No data")
+    assert ws.cell(ws.max_row,1).value == "No data"
 
 
 def _unified_item(line: dict, separator_above: bool = False) -> dict:
@@ -391,10 +560,9 @@ class TestStatementAggregate:
         wb = _load(path)
         ws = _active(wb)
         hr = _find_header_row(ws)
-        # 4 line items + 1 standalone separator row (the block emits separators
-        # as their own row, mirroring the rendered table).
-        data_rows = ws.max_row - hr
-        assert data_rows == 5
+        # Decorative separator rows are omitted, matching the live spill.
+        data_rows = ws.max_row - hr - 1
+        assert data_rows == 4
 
     def test_header_style_bold(self, tmp_path, aggregate_statement_result):
         """Rows with style='header' should have bold font."""
@@ -414,8 +582,8 @@ class TestStatementAggregate:
         wb = _load(path)
         ws = _active(wb)
         hr = _find_header_row(ws)
-        # Rows: Revenue, Direct Costs, [separator], Gross Profit, GP Margin %.
-        gp_cell = ws.cell(row=hr + 4, column=1)
+        # Rows: Revenue, Direct Costs, Gross Profit, GP Margin %.
+        gp_cell = ws.cell(row=hr + 3, column=1)
         assert gp_cell.font.bold is True
         assert gp_cell.fill.patternType is not None
 
@@ -448,8 +616,8 @@ class TestStatementAggregate:
         wb = _load(path)
         ws = _active(wb)
         hr = _find_header_row(ws)
-        # GP Margin % has indent=1; it is the 5th data row (after the separator).
-        gp_margin_cell = ws.cell(row=hr + 5, column=1)
+        # GP Margin % has indent=1; it is the fourth semantic data row.
+        gp_margin_cell = ws.cell(row=hr + 4, column=1)
         assert gp_margin_cell.alignment.indent is not None
         assert gp_margin_cell.alignment.indent >= 1
 
@@ -476,24 +644,20 @@ class TestStatementAggregate:
         hr = _find_header_row(ws)
         headers = _col_headers(ws)
         actuals_col = headers.index("Actuals") + 1
-        # GP Margin % is the 5th data row (after the separator row).
-        pct_cell = ws.cell(row=hr + 5, column=actuals_col)
+        pct_cell = ws.cell(row=hr + 4, column=actuals_col)
         assert "%" in pct_cell.number_format
         assert "\u2013" in pct_cell.number_format
 
-    def test_separator_is_standalone_row(self, tmp_path, aggregate_statement_result):
-        """Separators render as their own empty row with a bottom border,
-        matching the rendered table; the next item follows below it."""
+    def test_decorative_separator_does_not_consume_a_row(self, tmp_path, aggregate_statement_result):
+        """Subtotal follows detail directly; its border preserves emphasis."""
         path = tmp_path / "stmt.xlsx"
         statement_to_excel(aggregate_statement_result, path)
         wb = _load(path)
         ws = _active(wb)
         hr = _find_header_row(ws)
-        sep_row = ws.cell(row=hr + 3, column=1)
-        assert sep_row.value in (None, "")
-        assert sep_row.border.bottom.style is not None
-        # Gross Profit follows the separator row.
-        assert ws.cell(row=hr + 4, column=1).value == "Gross Profit"
+        subtotal = ws.cell(row=hr + 3, column=1)
+        assert subtotal.value == "Gross Profit"
+        assert subtotal.border.top.style is not None
 
     def test_freeze_panes(self, tmp_path, aggregate_statement_result):
         """Freeze panes should be set below header row + after label column."""
@@ -704,8 +868,8 @@ class TestStatementPeriodCrossTab:
         else:
             raise AssertionError("Direct Costs row not found")
 
-    def test_percent_values_divided_by_100(self, tmp_path, period_grouped_result):
-        """Percent values should be divided by 100 for Excel % format."""
+    def test_percent_values_retain_engine_units(self, tmp_path, period_grouped_result):
+        """The literal percent suffix must not change numeric percentage units."""
         path = tmp_path / "period.xlsx"
         statement_to_excel(period_grouped_result, path)
         wb = _load(path)
@@ -716,9 +880,8 @@ class TestStatementPeriodCrossTab:
         for r in range(hr + 2, ws.max_row + 1):
             if ws.cell(row=r, column=1).value == "GP Margin %":
                 val = ws.cell(row=r, column=total_col).value
-                # -16.3% should be stored as -0.163
-                assert val is not None
-                assert abs(val - (-0.163)) < 0.001
+                assert val == -16.3
+                assert '"%"' in ws.cell(row=r, column=total_col).number_format
                 break
 
     def test_single_scenario_no_alias_suffix(self, tmp_path, sample_caption):
@@ -812,7 +975,7 @@ class TestMetricBasic:
         hr = _find_header_row(ws)
         # Grouped by the leftmost dimension: 2 group headers (CC-SENG-01,
         # CC-SALES-01) + 3 indented detail rows = 5.
-        assert ws.max_row - hr == 5
+        assert ws.max_row - hr - 1 == 5
 
     def test_header_styling(self, tmp_path, metric_result):
         """Header row should have dark bg, white text, bold."""
@@ -925,7 +1088,7 @@ class TestMetricGrouped:
         assert headers[0] == "Cost Centre"
         assert "Revenue" in headers
         assert "Hours Worked" in headers
-        assert ws.max_row - hr == 2
+        assert ws.max_row - hr - 1 == 2
 
 
 # ===========================================================================
@@ -998,96 +1161,18 @@ class TestHierarchy:
 # ===========================================================================
 
 class TestCaption:
-
-    def test_caption_rows_present_in_statement(self, tmp_path, aggregate_statement_result):
-        """Caption metadata should appear above the column headers."""
-        path = tmp_path / "stmt.xlsx"
-        statement_to_excel(aggregate_statement_result, path)
-        wb = _load(path)
-        ws = _active(wb)
-        hr = _find_header_row(ws)
-        # Caption rows are above the header row
-        assert hr > 1, "Header row should be offset by caption rows"
-        # First cell should be the description
-        assert ws.cell(row=1, column=1).value == "Full P&L with KPIs"
-
-    def test_caption_contains_scenarios(self, tmp_path, aggregate_statement_result):
-        path = tmp_path / "stmt.xlsx"
-        statement_to_excel(aggregate_statement_result, path)
-        wb = _load(path)
-        ws = _active(wb)
-        all_vals = [ws.cell(row=r, column=1).value for r in range(1, 10)]
-        scenarios_row = [v for v in all_vals if v and "Scenarios:" in str(v)]
-        assert scenarios_row, "Scenarios caption row not found"
-        assert "Actuals" in scenarios_row[0]
-
-    def test_caption_contains_period(self, tmp_path, aggregate_statement_result):
-        path = tmp_path / "stmt.xlsx"
-        statement_to_excel(aggregate_statement_result, path)
-        wb = _load(path)
-        ws = _active(wb)
-        all_vals = [ws.cell(row=r, column=1).value for r in range(1, 10)]
-        period_row = [v for v in all_vals if v and "Period:" in str(v)]
-        assert period_row, "Period caption row not found"
-        assert "2026-01 to 2026-12" in period_row[0]
-
-    def test_caption_contains_filters(self, tmp_path, aggregate_statement_result):
-        path = tmp_path / "stmt.xlsx"
-        statement_to_excel(aggregate_statement_result, path)
-        wb = _load(path)
-        ws = _active(wb)
-        all_vals = [ws.cell(row=r, column=1).value for r in range(1, 10)]
-        filter_row = [v for v in all_vals if v and "Filters:" in str(v)]
-        assert filter_row, "Filters caption row not found"
-        assert "Cloud & Infrastructure" in filter_row[0]
-
-    def test_caption_contains_scale(self, tmp_path, aggregate_statement_result):
-        path = tmp_path / "stmt.xlsx"
-        statement_to_excel(aggregate_statement_result, path)
-        wb = _load(path)
-        ws = _active(wb)
-        all_vals = [ws.cell(row=r, column=1).value for r in range(1, 10)]
-        scale_row = [v for v in all_vals if v and "Scale:" in str(v)]
-        assert scale_row, "Scale caption row not found"
-        assert "€ thousands" in scale_row[0]
-
-    def test_caption_contains_timestamp(self, tmp_path, aggregate_statement_result):
-        path = tmp_path / "stmt.xlsx"
-        statement_to_excel(aggregate_statement_result, path)
-        wb = _load(path)
-        ws = _active(wb)
-        all_vals = [ws.cell(row=r, column=1).value for r in range(1, 10)]
-        ts_row = [v for v in all_vals if v and "UTC" in str(v)]
-        assert ts_row, "Timestamp caption row not found"
-
-    def test_no_caption_when_empty(self, tmp_path):
-        """Without a caption dict, header row should be row 1."""
-        result = {
-            "metadata": {
-                "period_start": "2026-01", "period_end": "2026-12",
-                "dimensions": [], "blocks": ["Actuals"],
-                "block_scenarios": ["actuals"], "scale": 0, "decimals": None,
-            },
-            "rows": [
-                {"key": "revenue", "label": "Revenue", "format": "currency",
-                 "style": "default", "indent": 0, "values": {"Actuals": 100}},
-            ],
-        }
-        path = tmp_path / "no_caption.xlsx"
-        statement_to_excel(_unify_result(result), path)
-        wb = _load(path)
-        ws = _active(wb)
-        assert _find_header_row(ws) == 1
-
-    def test_metric_caption_present(self, tmp_path, metric_result):
-        """Metric exports should also have caption rows."""
-        path = tmp_path / "metric.xlsx"
-        metric_to_excel(metric_result, path)
-        wb = _load(path)
-        ws = _active(wb)
-        hr = _find_header_row(ws)
-        assert hr > 1, "Metric header row should be offset by caption rows"
-        assert ws.cell(row=1, column=1).value == "Full P&L with KPIs"
+    @pytest.mark.parametrize("writer,fixture", [(statement_to_excel,"aggregate_statement_result"),(metric_to_excel,"metric_result")])
+    def test_context_is_one_unwrapped_footer_and_title_is_separate(self,tmp_path,request,writer,fixture):
+        result=request.getfixturevalue(fixture)
+        path=tmp_path/"caption.xlsx"; writer(result,path)
+        ws=_active(_load(path))
+        footer=ws.cell(ws.max_row,1)
+        assert not footer.alignment.wrap_text
+        assert ws.row_dimensions[ws.max_row].height is None
+        for value in ("Actuals","2026-01 to 2026-12","Cloud & Infrastructure","€ thousands","Data as at"):
+            assert value in footer.value
+        assert ws["A1"].value == "Full P&L with KPIs"
+        assert all(ws.cell(ws.max_row,c).value is None for c in range(2,ws.max_column+1))
 
 
 # ===========================================================================
@@ -1159,7 +1244,7 @@ class TestEdgeCases:
         wb = _load(path)
         ws = _active(wb)
         hr = _find_header_row(ws)
-        assert ws.max_row == hr + 1  # header + 1 data row
+        assert ws.max_row == hr + 2  # header + data + footer
         assert ws.cell(row=hr + 1, column=1).value == "Revenue"
 
     def test_long_sheet_name_truncated(self, tmp_path):
@@ -1188,6 +1273,59 @@ class TestEdgeCases:
 # ---------------------------------------------------------------------------
 # Variance font coloring
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("include_title", [False, True])
+def test_report_source_strings_are_literal_and_numbers_keep_their_type(tmp_path, grouped, include_title):
+    from precis_mcp.excel.block_emit import write_block_to_sheet
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    block = {
+        "caption": {"description": "=1+1", "generated_at": "=2+2"},
+        "columns": [
+            {"key": "label", "label": "=3+3"},
+            {"key": "value", "label": "=4+4", **({"group": "=5+5"} if grouped else {})},
+        ],
+        "rows": [
+            {"label": "=6+6", "values": {"value": "=7+7"}},
+            {"label": "-123", "values": {"value": -123.5}},
+        ],
+    }
+    write_block_to_sheet(ws, block, include_title=include_title)
+    path = tmp_path / "report.xlsx"
+    wb.save(path)
+    restored = openpyxl.load_workbook(path).active
+    assert not any(cell.data_type == "f" for row in restored for cell in row)
+    values = {cell.value: cell.data_type for row in restored for cell in row if cell.value is not None}
+    for text in ("=3+3", "=4+4", "=6+6", "=7+7", "-123"):
+        assert values[text] == "s"
+    if include_title:
+        assert values["=1+1"] == "s"
+    else:
+        assert "=1+1" not in values
+    assert values["Data as at =2+2"] == "s"
+    assert values[-123.5] == "n"
+    if grouped:
+        assert values["=5+5"] == "s"
+
+
+def test_hierarchy_source_strings_are_literal(tmp_path):
+    path = tmp_path / "hierarchy.xlsx"
+    hierarchy_to_excel({
+        "records": [{"=header": "=1+1", "code": "-42"}],
+        "hierarchy_nodes": [{"node_name": "=2+2"}],
+    }, path)
+    wb = openpyxl.load_workbook(path)
+    for sheet, address, expected in [
+        ("Records", "A1", "=header"),
+        ("Records", "A2", "=1+1"),
+        ("Records", "B2", "-42"),
+        ("Hierarchy Nodes", "D2", "=2+2"),
+    ]:
+        assert wb[sheet][address].value == expected
+        assert wb[sheet][address].data_type == "s"
+
 
 class TestVarianceFontColoring:
     """Variance columns get green/red font based on metric variance_effect."""

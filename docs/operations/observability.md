@@ -2,26 +2,47 @@
 
 What the server emits, how to point it at your collector, and what to alert
 on. Everything here is optional and off by default — the baseline you always
-get is structured JSON logs and a liveness endpoint.
+get is structured JSON logs and health endpoints.
 
 ## The baseline (no setup)
 
 - **Structured logs.** The server logs JSON (structlog: ISO timestamps,
   event keys) on stdout — ready for your log shipper as-is.
 - **Liveness.** `GET /health` on the multi-user server returns
-  `{"status": "ok"}` — point your load balancer or container healthcheck at
-  it. It is *liveness only* (process up), not readiness: it checks no
-  dependencies. The deep checks are explicit commands —
-  `clickhouse_init --scope open --check` for the data side,
-  `admin_cli check-auth` for identity.
+  `{"status": "ok"}`. Use it for a process-liveness probe; it checks no
+  dependencies.
+- **Readiness.** Use `GET /readyz` for load-balancer routing or a readiness
+  probe. It returns HTTP 200 with `status: ready` when PostgreSQL, Redis,
+  artifact schema/signing/storage and the selected analytical backend check
+  pass; otherwise it returns HTTP 503. ClickHouse is checked with a query.
+  For Databricks, the check validates configuration only, not warehouse
+  connectivity.
+
+For explicit operator diagnostics, use `clickhouse_init --scope open --check`
+for ClickHouse and `admin_cli check-auth` for identity.
 
 ## Enabling telemetry
 
-Tracing and metrics are OpenTelemetry, behind an extra and one switch:
+Tracing is optional. First install its dependencies:
 
 ```bash
-pip install ".[telemetry]"          # bundled in the Docker image
+pip install ".[telemetry]"
 ```
+
+Then set `PRECIS_TELEMETRY_ENABLED=true` and point
+`OTEL_EXPORTER_OTLP_ENDPOINT` at your collector before starting the server.
+Both the OAuth server and the single-user dev-key server initialize tracing
+before serving requests. Installing the extra alone leaves export disabled.
+
+The default Docker image excludes telemetry dependencies. For either supplied
+Compose bundle, build from source with `PRECIS_EXTRAS=telemetry` (or append
+`,telemetry` to your existing extras), then recreate the application with the
+enable switch and collector endpoint set. The Compose files pass these settings
+to `precis-mcp`. The collector must be reachable from the container; the bundle
+does not start one for you.
+
+The deployment helper also accepts `--extras telemetry`; this installs the
+dependencies but leaves the enable switch under your control.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -29,27 +50,33 @@ pip install ".[telemetry]"          # bundled in the Docker image
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://otel-collector:4318` | OTLP **HTTP** receiver. |
 | `OTEL_SERVICE_NAME` | `precis-mcp` | `service.name` on emitted spans. |
 | `OTEL_RESOURCE_ATTRIBUTES` | unset | Extra `key=value` resource attributes. |
-| `PRECIS_TELEMETRY_CAPTURE_CONTENT` | `false` | Also put request/response *content* on spans — see [privacy](#privacy). |
 
-Bootstrap is deliberately non-fatal: if the exporter is unreachable or an
-instrumentor fails, the server logs the problem and runs uninstrumented —
-telemetry can never take the service down.
+Bootstrap is deliberately non-fatal: missing dependencies or an initialization
+failure are logged and the server keeps running. Individual instrumentation
+failures do not prevent the remaining tracing from starting. An unreachable
+collector causes export failures without preventing requests from being served.
 
 Any OTLP-HTTP-capable backend works: an OpenTelemetry Collector, Grafana
 Tempo/Alloy, Jaeger, or a vendor endpoint.
 
 ## What gets emitted
 
-**Spans.** HTTP server spans for every request (FastAPI
-auto-instrumentation), plus client spans for outbound httpx/urllib3
-calls, plus two Précis-specific families:
+**Spans.** HTTP server spans, plus client spans for outbound httpx/urllib3 and
+Redis calls. Signed artifact download/upload routes are excluded to keep
+capability URLs out of traces. The remote OAuth transport additionally records
+`mcp.tool_call` spans. The shared ingestion code defines the `ingest.*` spans
+below; a separately launched ingestion worker needs its own tracing setup.
 
 | Span | Attributes | Emitted when |
 |---|---|---|
-| `mcp.tool_call` | `precis.transport=mcp`, `precis.user_id`, `precis.tool_name`, `precis.out_mode`, `precis.is_error` | Every `/mcp` tool call — who called what, with what outcome. |
-| `ingest.attempt` → `ingest.extract` / `ingest.validate` / `ingest.swap` | `ingest.load_id`, `ingest.binding_id`, `ingest.source_id`, `ingest.source.kind` | Every load — one parent per attempt, one child per stage, so a slow or failing stage is visible directly in the trace. |
+| `mcp.tool_call` | `precis.transport=mcp`, `precis.user_id`, `precis.tool_name`, `precis.out_mode`, `precis.is_error` | A tool call through the remote OAuth transport. |
+| `ingest.attempt` → `ingest.extract` / `ingest.validate` / `ingest.swap` | `ingest.load_id`, `ingest.binding_id`, `ingest.source_id`, `ingest.source.kind` | A load running in a process with tracing configured. |
 
-**Metrics** (ingestion):
+**Metric instruments** (ingestion):
+
+These counters and histograms exist in the ingestion code, but the package does
+not configure a metric provider or metric exporter. The tracing switch does not
+export them; an embedding deployment must supply that separate metrics setup.
 
 | Instrument | Type | Labels |
 |---|---|---|
@@ -57,8 +84,8 @@ calls, plus two Précis-specific families:
 | `precis.ingest.duration_seconds` | histogram | `binding`, `stage` |
 | `precis.ingest.rows_landed` | histogram | `binding` |
 
-**Log–trace correlation.** With telemetry on, every JSON log line carries
-the active `trace_id`/`span_id` — a log line found in your aggregator pivots
+**Log–trace correlation.** With telemetry on, JSON logs emitted within an active
+span carry its `trace_id`/`span_id` — a log line found in your aggregator pivots
 straight to its trace.
 
 ## Alerting on failed loads
@@ -66,7 +93,7 @@ straight to its trace.
 The question that matters in production is "did last night's load fail, and
 who finds out first?" Three tiers, by what you run:
 
-1. **Metrics (preferred).** Alert on
+1. **With a separately configured metrics pipeline.** Alert on
    `precis.ingest.attempts_total{status=~"failed_.*"}` increasing — one rule
    covers every binding, labelled by which one failed and at which stage
    (`duration_seconds{stage=…}` tells you where time went).
@@ -87,14 +114,12 @@ and drill lands an outcome row in `backup_history`
 
 ## Privacy
 
-!!! warning "Content capture sends financial figures to your collector"
-    `PRECIS_TELEMETRY_CAPTURE_CONTENT` is a second, separate switch for a
-    reason: with it on, tool inputs and outputs — financial figures — ride
-    on spans into your collector. Leave it off unless the collector is
-    inside the same trust boundary as the data.
-
-Everything else emitted (span names, tool names, user ids, durations,
-statuses) is operational metadata.
+Précis MCP does not attach raw tool arguments or returned financial data as span
+attributes. `PRECIS_TELEMETRY_CAPTURE_CONTENT` does not enable MCP payload
+capture. Trace metadata includes tool names, user IDs, timing and status;
+recorded exceptions can also contain error details. Use a collector within the
+appropriate trust boundary. Signed transfer routes are excluded independently
+of content-capture settings.
 
 ## Related
 

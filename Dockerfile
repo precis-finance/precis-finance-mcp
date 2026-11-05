@@ -14,27 +14,44 @@
 # postgresql-client-16 it serves links libpq5/glibc built for bookworm. A
 # trixie userland makes that dependency unsatisfiable. Keep the codename here in
 # lockstep with the PGDG suite below.
-FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS excel-addin-builder
+FROM node:24.22.2-bookworm-slim@sha256:6042915a8b58012e6699f998ed96bca43ec9d8582447bdb68bc2445d0fafeb79 AS frontend-builder
+
+# Patch npm's bundled dependencies as well as the Node/OS image.
+RUN npm install --global npm@12.2.2
+
+FROM frontend-builder AS excel-addin-builder
 
 WORKDIR /build/excel-addin
 
 # Build the server-hosted Excel add-in bundle from source. Node/npm stay in this
 # builder stage; the final Python runtime image receives only dist/.
 COPY excel-addin/package.json excel-addin/package-lock.json ./
-RUN npm ci
+# The desktop login/sideload CLI is a peer-only dependency of Office's dev
+# settings. It is not used by webpack or served by the application. Exclude it
+# from the release builder; CI audits this same closure and separately reports
+# the full developer installation's advisories.
+RUN npm ci --omit=peer --ignore-scripts
 COPY excel-addin ./
+COPY LICENSE ../LICENSE
 RUN npm run build
 
-FROM node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS mcp-widget-builder
+FROM frontend-builder AS mcp-widget-builder
 WORKDIR /build/ui/mcp-widgets
 COPY ui/mcp-widgets/package.json ui/mcp-widgets/package-lock.json ./
 RUN npm ci
 COPY ui/mcp-widgets ./
 RUN npm run build
 
-FROM python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
+FROM python:3.12.16-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
 
 WORKDIR /app
+
+# Bootstrap the APT security fix before installing any other packages. Disabling
+# retries prevents CVE-2026-109518 during this upgrade with the older APT client.
+RUN apt-get -o Acquire::Retries=0 update \
+    && apt-get -o Acquire::Retries=0 install -y --no-install-recommends \
+       apt=2.6.2 libapt-pkg6.0=2.6.2 \
+    && rm -rf /var/lib/apt/lists/*
 
 # gcc is kept defensively for any dependency without a manylinux wheel on slim
 # (the data + DB stack — psycopg3-binary, clickhouse-connect, pyarrow — all ship
@@ -70,7 +87,7 @@ COPY --from=mcp-widget-builder /build/precis_mcp/mcp_external/widgets ./precis_m
 RUN pip install --no-cache-dir --no-deps .
 
 # Optional warehouse drivers, opted into at build via PRECIS_EXTRAS (comma-
-# separated warehouse names: bigquery, snowflake, mssql, databricks). The core
+# separated warehouse names, or databricks-primary for the native client). The core
 # above stays hash-pinned; the opted-in driver is version-pinned by
 # constraints-extras.txt — the industry norm for optional connectors
 # (dbt/Grafana/Airflow version-pin their drivers; none hash-lock them, because

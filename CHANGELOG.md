@@ -4,11 +4,165 @@ New features, fixes and upgrade requirements for users of the
 `precis-finance-mcp` open package. Format follows
 [Keep a Changelog](https://keepachangelog.com/).
 
-<!-- Maintainers: add entries under [Unreleased] as part of every publish
-     ritual (scripts/publish_open.py); move them under a dated heading when
-     the sync is pushed to the mirror. -->
+<!-- Maintainers: add entries under [Unreleased]; move them under a dated
+     version heading when releasing. -->
 
 ## [Unreleased]
+
+## [0.4.0] - 2026-11-05
+
+This release adds **Databricks as a primary analytical backend** and **live
+Excel formulas from exported reports**. Use the same governed metrics,
+financial statements and scenario comparisons on ClickHouse or Databricks,
+then take an exported report into Excel and refresh it through the add-in.
+
+### Added
+
+- **Native Databricks reporting.** Select Databricks SQL as the deployment's
+  primary backend for metric and statement queries, scenario comparisons,
+  dimension and hierarchy discovery, scoped reads and bounded row inspection.
+  The shared catalogue, financial calculations, permissions and result formats
+  apply on both backends. ClickHouse remains the default.
+- **Customer-managed analytical inputs.** Databricks deployments query the
+  semantic views maintained by your data team, without requiring a ClickHouse
+  copy. Your team loads and refreshes actuals and master data through its own
+  pipelines. Précis does not run ingestion jobs or expose ingestion controls
+  in this configuration.
+- **Excel: convert a selected export to a live formula.** Select a region in
+  a statement or metric XLSX downloaded through `export_dataset`, then choose
+  **Convert selected export** in the add-in. Both report and extract layouts
+  are supported. The selected region becomes a `PRECIS.STATEMENT` or
+  `PRECIS.METRIC` spill at the same position. Headers, figures and a context
+  footer refresh together.
+
+### Changed
+
+- **Excel add-in package identity.** Package metadata and conduct reporting now
+  identify Précis. The built bundle carries the Précis license and the original
+  Microsoft template's MIT notice.
+- **Security dependency refresh.** Update the Python TLS trust bundle and MCP
+  SDK, optional Snowflake driver, bundled PostgreSQL/Valkey/Keycloak images,
+  Caddy toolchain and frontend dependencies. CI now gates frontend release-builder
+  dependencies, including build tools, on High/Critical issues; the Excel builder
+  excludes its unused developer login/sideload CLI peers. Full local developer
+  installs retain Microsoft CLI MSAL/ZIP advisories, reported separately in CI.
+- **Shared reporting execution.** Native reads reuse database connections and
+  Databricks authentication. Independent financial queries run with bounded
+  parallelism, and compatible additive/period-average metrics share a query.
+  Reports retain deterministic result assembly and fail if a required query
+  fails, rather than returning an incomplete statement.
+- **Scenario metadata caching.** `PRECIS_SCENARIO_REGISTRY_TTL` now defaults to
+  60 seconds instead of 5. Reporting reuses one scenario snapshot across its
+  columns. Permissions and financial results are not cached by this mechanism;
+  external metadata changes become visible after cache expiry and refresh.
+- **Materialized hierarchy mappings.** Both backends can provision stored
+  node-to-leaf mappings behind the existing rollup views. Reporting and scope
+  resolution reuse those mappings instead of expanding the hierarchy each time.
+- **Consistent empty sums.** On both native backends, SUM over no matching rows
+  returns zero. A nonempty group containing only null values still returns null.
+  This changes the former ClickHouse nullable-empty result from null to zero.
+- **Shared Excel layouts and precision.** Static financial exports and live
+  formulas use the same headers, semantic rows and single context footer.
+  Extract Tables and value-column names exclude the footer. Values retain
+  available engine/Excel precision; decimal settings control display.
+
+### Upgrade required
+
+- **Refresh bundled services.** Pull updated Valkey and Keycloak images and
+  build PostgreSQL's embedded APT patch layer and bundled Caddy. Compose 2.17+
+  is required; restarting the application alone does not update these services.
+- **Apply pending open PostgreSQL migrations before starting the server.**
+  Migration `009_upgrade_legacy_artifacts.sql` adds version, provenance and
+  access metadata to legacy file registries while preserving file IDs and blob
+  paths. Legacy generated files without recorded read grants must be
+  regenerated under current permissions. Untouched uploads retain owner-only
+  access. See [Upgrading](docs/operations/upgrades.md).
+- **Databricks requires explicit setup.** Install the `databricks-primary`
+  extra, or build the image with `PRECIS_EXTRAS=databricks-primary`. Configure
+  `PRECIS_ANALYTICAL_BACKEND=databricks`, customer-managed ingestion, warehouse
+  access through service-principal OAuth M2M, catalogue/schema mappings and
+  compatible semantic inputs. Provision
+  the scenario registry and hierarchy objects with operator credentials; keep
+  the serving identity read-only. PostgreSQL and Valkey remain required. The
+  supplied Compose quickstart remains ClickHouse-based; installing the extra
+  alone does not configure a Databricks deployment. See
+  [Analytical backend configuration](docs/configuration/analytical-client.md).
+- **Provision and refresh hierarchies.** To adopt materialized mappings, run
+  `precis-finance-mcp-admin hierarchy refresh --provision` with operator
+  credentials. Précis-managed ClickHouse snapshot ingestion refreshes mappings
+  after source updates; customer-managed pipelines must call
+  `precis-finance-mcp-admin hierarchy refresh` after hierarchy changes. Serialize
+  publication and keep affected reporting unavailable until all mappings are
+  refreshed: replacement is atomic per mapping table, not across the full
+  update. See [Hierarchy provisioning and refresh](docs/configuration/analytical-client.md#explicit-hierarchy-provisioning-and-refresh).
+- **Update the Excel bundle and manifest together.** Add-in manifest version
+  is `1.0.0.9`; reload or redeploy the updated hosted manifest through your
+  installation route. Older exports and live markers without the new region
+  and context-footer metadata must be regenerated. Both financial functions
+  now accept at most nine arguments: remove the former tenth decimal-mode
+  argument and use `decimals` for display precision. Selected conversion
+  requires ExcelApi 1.13 or later. Fixed-cell references may point to different
+  lines after a refresh changes row order. See [Précis for Excel](docs/excel/index.md)
+  and the [function reference](docs/excel/functions.md).
+- **Reconcile Keycloak user provisioning where used.** User lifecycle commands
+  now use the scoped `precis-user-provisioner` service account, configured with
+  `KC_PROVISIONING_CLIENT_SECRET` or its `_FILE` variant. Bootstrap administrator
+  credentials remain operator-only and are no longer accepted by the user
+  provisioning client. See [Sign-in and identity modes](docs/deployment/oauth-keycloak.md).
+
+### Known security issue
+
+- **Bundled Keycloak:** the upstream 26.8.1 image includes Guava affected by
+  **CVE-2026-102554**, a denial-of-service issue when deserializing untrusted
+  Java objects. The maintainers accepted this availability risk for the reviewed
+  upstream image until **December 5, 2026, 00:00 UTC**. CI suppresses only this
+  CVE in that image's Guava JAR; the exception expires independently of the next
+  release. Exploit reachability in this deployment has not been disproved.
+  Deployments using external OIDC do not run the bundled image.
+
+### Fixed
+
+- `make lock-extras` works from the public repository using its published
+  metadata and core lock, without requiring private dependency inputs.
+
+- Published tests now use dedicated public fixtures and helpers. Publication
+  checks every shipped test-support file and rejects undeclared dependencies.
+  Tests requiring optional Databricks or telemetry packages skip when those
+  extras are absent, so the core development installation can run the suite.
+
+- Initialize optional tracing in both MCP server entrypoints. Installing the
+  telemetry extra leaves export disabled until explicitly enabled; the Compose
+  bundles now forward the switch and collector settings. Signed artifact
+  transfer routes remain excluded from tracing.
+
+- Excel exports preserve formula-like source text as literal cells, and static
+  and live outputs use consistent per-cell financial number formats.
+- Backup restore rejects explicitly requested stores that have no successful
+  artifact, rather than silently restoring only the available subset.
+- ClickHouse ingestion, provisioning and sample-data connections honour the
+  configured TLS verification and CA settings; the remote Compose bundle
+  forwards the supported warehouse TLS configuration.
+
+### Security
+
+- Patched Debian APT in application and PostgreSQL images, refreshed the
+  upstream Keycloak digest, and rebuilt Caddy 2.11.9 with patched Go dependencies.
+  Optional warehouse drivers use pyasn1 0.6.5. Frontend builders use patched npm;
+  CI audits both release-builder dependency sets and reports the separate Office
+  developer-tool advisories.
+- Allowed dimension-scope clauses resolving to the same leaf axis now
+  intersect, preserving empty allowances as deny-all instead of broadening
+  access. Exclusions continue to combine by union.
+- **Resolved the Databricks authentication dependency finding
+  ([CVE-2026-49265](https://github.com/oauthlib/oauthlib/security/advisories/GHSA-xpv3-w29h-x7cv)).**
+  Optional Databricks dependencies now use SQL Connector 4.7.0 with OAuthlib
+  4.0.0, which includes the fix for the PKCE verification timing vulnerability.
+  The earlier temporary audit exception has been removed. Existing
+  optional-driver images need rebuilding to receive the fix.
+
+Précis Finance MCP and its Excel add-in remain read-only for financial data.
+Commercial planning and agent-side workbook conversion workflows belong to
+the full Précis platform and are not added to the open MCP tool surface.
 
 ## [0.3.0] - 2026-10-09
 
@@ -53,8 +207,8 @@ mcp_compose up -d
 ```
 
 These commands use the published 0.3.0 image, install the Valkey sidecar and
-apply pending open migrations before starting the server. For an **unpushed
-candidate or a source build**, replace the `pull` command with
+apply pending open migrations before starting the server. For **source builds**,
+replace the `pull` command with
 `mcp_compose pull postgres redis` followed by
 `mcp_compose build precis-mcp migrate`; the image build installs the new Python
 dependencies and builds the widgets. Standard 0.2.x open installations need no

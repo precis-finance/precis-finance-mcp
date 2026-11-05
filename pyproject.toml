@@ -17,14 +17,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "precis-finance-mcp"
-version = "0.3.0"
-description = "Read-only financial-data access over MCP — the open core of Précis (metric engine, semantic layer, ingestion, ClickHouse read layer, MCP transport, OIDC auth)."
+version = "0.4.0"
+description = "Read-only financial-data access over MCP — the open core of Précis (metric engine, semantic layer, ingestion, ClickHouse and Databricks analytical backends, MCP transport, OIDC auth)."
 readme = "README.md"
 requires-python = ">=3.12"
 # Elastic License 2.0 — source-available, not OSI open source.
 license = "Elastic-2.0"
 authors = [{ name = "Précis" }]
-keywords = ["mcp", "fpa", "finance", "clickhouse", "metrics", "semantic-layer"]
+keywords = ["mcp", "fpa", "finance", "clickhouse", "databricks", "metrics", "semantic-layer"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Financial and Insurance Industry",
@@ -44,9 +44,9 @@ dependencies = [
     # are compatible (fastapi 0.136.3 accepts starlette 1.3.1).
     "fastapi<0.137",
     "uvicorn",
-    # Stay on the stable v1 SDK line and include the Host/Origin validation fix
-    # for CVE-2026-59950. MCP SDK v2 has a separate migration path.
-    "mcp>=1.28.1,<2",
+    # Stay on v1 with the Host/Origin, session-retention, audience and client
+    # transport/validation security fixes. SDK v2 has a separate migration path.
+    "mcp>=1.30.0,<2",
     "starlette>=1.3.1",
     # ClickHouse read layer + ingestion / metric engine
     "clickhouse-connect",
@@ -60,6 +60,8 @@ dependencies = [
     # Auth — IdP-agnostic OIDC verifier, JWKS fetch
     "pyjwt[crypto]",
     "httpx",
+    # Remove trust in the compromised emSign intermediate CA chain.
+    "certifi>=2026.10.19",
     # File-reader ingestion (xlsx) + ingestion binding scheduler
     "openpyxl",
     "redis==7.4.0",
@@ -93,9 +95,11 @@ sftp = ["paramiko>=3.2"]
 # default `ibis-framework[duckdb,postgres]` above; self-hosters opt in only to
 # the warehouse they actually have. The driver pins are Ibis's, not ours.
 mssql = ["ibis-framework[mssql]"]
-snowflake = ["ibis-framework[snowflake]"]
+snowflake = ["ibis-framework[snowflake]", "snowflake-connector-python>=4.8.1,<5", "filelock>=4.2.1"]
 bigquery = ["ibis-framework[bigquery]"]
-databricks = ["ibis-framework[databricks]"]
+databricks = ["ibis-framework[databricks]", "databricks-sql-connector>=4.7.0,<5", "oauthlib>=4.0.0,<5"]
+# Native primary-client foundation; independent of the Ibis federation extra.
+databricks-primary = ["databricks-sql-connector==4.7.0", "databricks-sdk==0.156.0", "oauthlib>=4.0.0,<5"]
 
 # Opt-in telemetry — observability.py wraps every import in try/except and is
 # gated by PRECIS_TELEMETRY_ENABLED. Infra instrumentation only; the LLM
@@ -104,8 +108,10 @@ telemetry = [
     "opentelemetry-api>=1.31",
     "opentelemetry-sdk>=1.31",
     "opentelemetry-exporter-otlp-proto-http>=1.31",
+    "opentelemetry-instrumentation-asgi>=0.52b0",
     "opentelemetry-instrumentation-fastapi>=0.52b0",
     "opentelemetry-instrumentation-httpx>=0.52b0",
+    "opentelemetry-instrumentation-redis>=0.52b0",
     "opentelemetry-instrumentation-urllib3>=0.52b0",
     "wrapt<2",
 ]

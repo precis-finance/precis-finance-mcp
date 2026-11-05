@@ -11,7 +11,12 @@ from unittest.mock import patch
 import pytest
 
 from precis_mcp import admin_cli
-from precis_mcp.backup import BACKUP_EXIT_CODE, BackupConfigError, BundleNotFoundError
+from precis_mcp.backup import (
+    BACKUP_EXIT_CODE,
+    BackupConfigError,
+    BundleNotFoundError,
+    RestoreGuardError,
+)
 from precis_mcp.backup.destination import LocalDestination
 from precis_mcp.backup.manifest import ArtifactEntry, BackupManifest, manifest_key
 from precis_mcp.backup.runner import BackupResult, StoreResult
@@ -63,6 +68,25 @@ def test_restore_unknown_bundle_exits_not_found(tmp_path, capsys):
     assert exc.value.code == BACKUP_EXIT_CODE[BundleNotFoundError]
 
 
+@pytest.mark.parametrize("drill_args", [[], ["--drill"]])
+def test_restore_missing_requested_store_exits_guard_error(tmp_path, capsys, drill_args):
+    config = _write_config(tmp_path)
+    dest = LocalDestination(tmp_path / "dest")
+    manifest = BackupManifest(
+        run_id="20260610T023000Z", created_at="2026-06-10T02:30:00+00:00",
+        mode="dump", trigger="cli", package_version="t", instance_git_sha=None,
+        scopes={"files": "external"}, artifacts=[], outcome="partial",
+    )
+    dest.put_bytes(manifest.to_json().encode(), manifest_key(manifest.run_id))
+    with pytest.raises(SystemExit) as exc:
+        admin_cli.main([
+            "backup", "restore", "--config", str(config),
+            "--id", manifest.run_id, "--stores", "files", *drill_args,
+        ])
+    assert exc.value.code == BACKUP_EXIT_CODE[RestoreGuardError]
+    assert "no successful artifact" in capsys.readouterr().err
+
+
 def test_init_renders_xml_and_warns_on_missing_disk(tmp_path, ch_client, capsys):
     config = _write_config(tmp_path)
     out = tmp_path / "rendered" / "precis_backup_disk.xml"
@@ -89,6 +113,20 @@ def test_init_no_clickhouse_check_passes_clean(tmp_path, capsys):
         "--no-clickhouse-check",
     ])
     assert "all checks passed" in capsys.readouterr().out
+
+
+def test_databricks_init_does_not_render_or_check_clickhouse(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("PRECIS_ANALYTICAL_BACKEND", "databricks")
+    config = _write_config(tmp_path)
+    out = tmp_path / "unused.xml"
+    with patch("precis_mcp.db.get_clickhouse_client", side_effect=AssertionError("no CH")) as open_ch:
+        admin_cli.main(["backup", "init", "--config", str(config), "--out", str(out)])
+    open_ch.assert_not_called()
+    captured = capsys.readouterr()
+    assert not out.exists()
+    assert "customer/operator managed" in captured.out
+    assert "rendered ClickHouse" not in captured.out
+    assert "all checks passed" in captured.out
 
 
 def test_list_prints_bundles(tmp_path, capsys):

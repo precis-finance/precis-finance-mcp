@@ -38,6 +38,13 @@ class BackupManifest:
     artifacts: list[ArtifactEntry] = field(default_factory=list)
     row_counts: dict[str, int] = field(default_factory=dict)
     outcome: str = "success"
+    analytical_backend: str = "clickhouse"  # legacy manifests are CH bundles
+    clickhouse_databases: list[str] | None = None
+
+    @property
+    def included_clickhouse_databases(self) -> tuple[str, ...]:
+        # Old bundles predate planning coverage; never drop/restore it for them.
+        return tuple(self.clickhouse_databases) if self.clickhouse_databases is not None else ("live", "staging", "semantic")
 
     def artifact(self, store: str) -> ArtifactEntry | None:
         for entry in self.artifacts:
@@ -51,6 +58,14 @@ class BackupManifest:
     @classmethod
     def from_json(cls, raw: str | bytes) -> "BackupManifest":
         data = json.loads(raw)
+        if data.get("analytical_backend", "clickhouse") not in {"clickhouse", "databricks"}:
+            raise ValueError("Unknown analytical backend in backup manifest")
+        databases = data.get("clickhouse_databases")
+        if databases is not None and databases not in (
+            ["live", "staging", "semantic"],
+            ["live", "staging", "semantic", "planning"],
+        ):
+            raise ValueError("Invalid ClickHouse database inventory in backup manifest")
         data["artifacts"] = [ArtifactEntry(**a) for a in data.get("artifacts", [])]
         return cls(**data)
 

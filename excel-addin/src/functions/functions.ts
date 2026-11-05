@@ -1,14 +1,13 @@
-﻿/* global CustomFunctions */
+/* global CustomFunctions */
 
 import {
-  blockToGrid,
-  flattenToGrid,
   objectsToGrid,
   FinancialTableBlock,
-  MetricDataResult,
+  sanitizeGrid,
 } from "./block";
 import { getMcpUrl, getToken, setBlock } from "../config";
 import { callTool } from "../mcp";
+import { financialRead, worksheetProjection } from "../worksheet";
 
 /** Resolve the configured /mcp URL + bearer, or throw a cell-friendly error. */
 function requireConn(): { mcpUrl: string; token: string } {
@@ -28,7 +27,7 @@ function requireConn(): { mcpUrl: string; token: string } {
  *
  * Rows are statement lines (Revenue → EBITDA); columns are scenarios. Fetches a
  * live `financial_table` block from the configured `/mcp` (`run_statement`,
- * reading the block from result `_meta`) and spills it via `blockToGrid`. Style the spill
+ * reading the shared worksheet projection from result `_meta`). Style the spill
  * with "Apply Précis formatting" on the Home ribbon. Trailing args are optional.
  *
  * @customfunction STATEMENT
@@ -41,6 +40,7 @@ function requireConn(): { mcpUrl: string; token: string } {
  * @param filters key=value pairs (comma-separated); multi-value with "|", e.g. "cost_centre=CC-100|CC-200".
  * @param scale Currency scaling power: 0=units, 3=thousands, 6=millions.
  * @param decimals Decimal places.
+ * @param layout "report" (default) or "extract".
  * @param invocation Invocation handler (provides the anchor address).
  * @requiresAddress
  * @returns A statement grid (line items × scenarios) that spills into the cells.
@@ -54,6 +54,7 @@ export async function statement(
   filters = "",
   scale = NaN,
   decimals = NaN,
+  layout = "report",
   invocation: CustomFunctions.Invocation
   // a statement grid mixes string labels and numbers; the metadata plugin maps
   // `any[][]` to a matrix of "any" (unions like `(string|number)[][]` are unsupported).
@@ -74,13 +75,19 @@ export async function statement(
   };
   applyCommonArgs(args, scenarios, dimensions, filters, scale, decimals);
 
-  const block = await callTool<FinancialTableBlock>(mcpUrl, token, "run_statement", args);
+  const resolvedLayout = (layout || "report").trim().toLowerCase();
+  if (resolvedLayout !== "report" && resolvedLayout !== "extract") throw new Error("Use report or extract layout.");
+  const tool = resolvedLayout === "extract" ? "run_statement_data" : "run_statement";
+  const envelope = await financialRead(mcpUrl, token, tool, args, invocation.address);
+  if (resolvedLayout === "extract") return sanitizeGrid(worksheetProjection(envelope).grid);
+  const block = envelope._meta?.["precis/renderBlock"] as FinancialTableBlock;
+  if (!block) throw new Error("Précis returned no report block.");
   // Cache the block keyed by this cell's anchor so the ribbon formatter can
-  // style the spill (re-warmed on every recalc). See spec §5.1.
+  // style the spill. Recalculation refreshes the cached block.
   if (invocation.address) {
     setBlock(invocation.address, block);
   }
-  return blockToGrid(block);
+  return sanitizeGrid(worksheetProjection(envelope, "report").grid);
 }
 
 export function splitCsv(s: string | undefined): string[] {
@@ -220,18 +227,17 @@ export async function metric(
   };
   applyCommonArgs(args, scenarios, dimensions, filters, scale, decimals);
 
-  if ((layout || "report").trim().toLowerCase() === "extract") {
-    // Flat leaf table: the raw _data variant + the extract flatten (ribbon-free).
-    const data = await callTool<MetricDataResult>(mcpUrl, token, "run_metric_data", args);
-    return flattenToGrid(data);
-  }
-
-  // Report layout: the render variant's block → cache for the ribbon → spill.
-  const block = await callTool<FinancialTableBlock>(mcpUrl, token, "run_metric", args);
+  const resolvedLayout = (layout || "report").trim().toLowerCase();
+  if (resolvedLayout !== "report" && resolvedLayout !== "extract") throw new Error("Use report or extract layout.");
+  const tool = resolvedLayout === "extract" ? "run_metric_data" : "run_metric";
+  const envelope = await financialRead(mcpUrl, token, tool, args, invocation.address);
+  if (resolvedLayout === "extract") return sanitizeGrid(worksheetProjection(envelope).grid);
+  const block = envelope._meta?.["precis/renderBlock"] as FinancialTableBlock;
+  if (!block) throw new Error("Précis returned no report block.");
   if (invocation.address) {
     setBlock(invocation.address, block);
   }
-  return blockToGrid(block);
+  return sanitizeGrid(worksheetProjection(envelope, "report").grid);
 }
 
 /**

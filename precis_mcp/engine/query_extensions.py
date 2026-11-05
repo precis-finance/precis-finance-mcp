@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable
+from precis_mcp.analytical.sql import CLICKHOUSE_SQL, SqlDialect
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,7 @@ class ScenarioSqlScope:
 
 
 _DataFactory = Callable[[Any, Any], dict[str, Any]]
-_SqlFactory = Callable[[Any, bool], ScenarioSqlScope | None]
+_SqlFactory = Callable[..., ScenarioSqlScope | None]
 
 _data_factory: _DataFactory | None = None
 _sql_factory: _SqlFactory | None = None
@@ -47,8 +48,13 @@ def scenario_query_data(scenario_ref: Any, registry: Any) -> dict[str, Any]:
     return dict(_data_factory(scenario_ref, registry))
 
 
-def scenario_sql_scope(data_query: Any, delta_only: bool) -> ScenarioSqlScope | None:
+def scenario_sql_scope(data_query: Any, delta_only: bool, *,
+                       dialect: SqlDialect = CLICKHOUSE_SQL) -> ScenarioSqlScope | None:
     """Return an application-owned SQL scope when one is registered."""
     if _sql_factory is None:
         return None
-    return _sql_factory(data_query, delta_only)
+    # Existing two-argument CH extensions remain compatible. A non-CH renderer
+    # must explicitly accept the dialect; never translate an opaque SQL string.
+    if dialect.backend == "clickhouse":
+        return _sql_factory(data_query, delta_only)
+    return _sql_factory(data_query, delta_only, dialect=dialect)

@@ -9,6 +9,7 @@ export_dataset; commercial adapters own reports and persistent workbooks.
 from __future__ import annotations
 
 import contextvars
+from contextlib import closing
 import json
 import logging
 import math
@@ -22,7 +23,8 @@ from typing import TYPE_CHECKING
 from datetime import timezone
 
 from mcp.server.fastmcp import FastMCP
-from precis_mcp.db import get_clickhouse_client
+from precis_mcp.analytical import get_analytical_client, selected_backend
+from precis_mcp.analytical.sql import dialect_for
 from precis_mcp.db import execute_platform
 from precis_mcp.engine import execute_report
 from precis_mcp.datasets import cache_read_result
@@ -42,10 +44,11 @@ from precis_mcp.engine.filter_resolver import FilterResolutionError, resolve_fil
 from precis_mcp.engine.formatter import SCALE_LABELS
 from precis_mcp.engine.resolver import ResolverError
 from precis_mcp.engine.scenario_registry import (
+    get_scenario_registry,
     NonWritableScenarioError,
     UnknownScenarioError,
 )
-from precis_mcp.engine.scenario_store import ScenarioStore
+from precis_mcp.engine.scenario_store import ScenarioStore, _looks_like_literal_scenario_id
 
 if TYPE_CHECKING:
     from precis_mcp.catalogue_ref import CatalogueRef
@@ -127,8 +130,11 @@ def _invalid_scenarios_error(scenarios: list) -> dict | None:
 def _resolve_writable_id(value: str) -> str | dict:
     if not value:
         return {"error": "Scenario reference is empty.", "error_type": "invalid_scenario"}
+    if _looks_like_literal_scenario_id(value):
+        return value
     try:
-        return ScenarioStore(get_clickhouse_client()).resolve_writable_id(value)
+        registry = get_scenario_registry(get_analytical_client)
+        return registry.resolve_writable(value).scenario_id
     except NonWritableScenarioError as exc:
         return {"error": str(exc), "error_type": "invalid_scenario"}
     except UnknownScenarioError:
@@ -261,12 +267,13 @@ def _record_inspection_audit(
 
 
 # Module-level handles to the registered report tools. Populated at the end
-# of ``register_read_tools``. Consumed by ``get_refresh_dispatch`` (below)
-# so that ``refresh_workbook`` can re-invoke the same pipelines the extract
+# of ``register_read_tools``. Consumed by ``get_workbook_dispatch`` (below)
+# so workbook tools can re-invoke the same pipelines the export
 # was generated from. Using closures over ``register_read_tools``'s inner
 # callables avoids duplicating the request-building / aggregate-query logic.
 _RUN_STATEMENT = None
 _RUN_METRIC = None
+_WORKBOOK_CATALOGUE_REF = None
 
 
 # The engine no longer rounds values (formatter preserves full precision so
@@ -310,32 +317,36 @@ def _round_values_for_consumer(result: dict) -> dict:
     return result
 
 
-def get_refresh_dispatch():
-    """Return a ``(tool_name, params) -> engine_result`` dispatch callable.
+def get_financial_read_dispatch():
+    """Reauthorize a stored financial query, returning engine precision.
 
-    Used by ``refresh_workbook`` to re-run the source of each Extract sheet.
-    ``params`` is the stored ``source.params`` block (no ``out`` key); we
-    force ``out='agent'`` so the pipeline returns the raw result dict
-    without registering a new file or emitting an artifact block.
+    No report-context injection: the workbook definition supplies its own query.
+    Scope/rounding ContextVars are reset on every exit, including gate failures.
     """
-    def dispatch(tool_name: str, params) -> dict:
-        fn = {"run_statement": _RUN_STATEMENT, "run_metric": _RUN_METRIC}.get(tool_name)
-        if fn is None:
-            return {
-                "error": f"refresh dispatch: unknown tool {tool_name!r}",
-                "error_type": "validation",
-            }
-        kwargs = {k: v for k, v in dict(params).items() if v is not None}
-        kwargs["out"] = "agent"
-        # Extract refresh must mirror the full-precision figures the initial
-        # Extract sheet was built from (the out='excel' path); suppress the
-        # display-decimal rounding applied to LLM-facing returns.
+    def dispatch(tool_name, params):
+        from precis_mcp.auth import clear_call_scope, get_call_scope
+        from precis_mcp.dispatch import ToolDescriptor, TOOL_CATALOGUE, process_tool_call
+        from precis_mcp.excel.formulas import validate_source
+        kwargs = validate_source({"tool":tool_name, "params":params})
+        fn = {"run_statement":_RUN_STATEMENT, "run_metric":_RUN_METRIC}.get(tool_name)
+        if fn is None or _WORKBOOK_CATALOGUE_REF is None:
+            return {"error":"Financial read tools are not initialized", "error_type":"execution"}
+        descriptor = ToolDescriptor(name=tool_name, func=fn, **TOOL_CATALOGUE[tool_name])
         token = _suppress_consumer_rounding.set(True)
         try:
-            return fn(**kwargs)
+            kwargs, error = process_tool_call(descriptor, kwargs, {}, _WORKBOOK_CATALOGUE_REF.current)
+            if error:
+                return {"error":error, "error_type":"permission"}
+            return fn(**kwargs, out="agent", _scope=get_call_scope())
         finally:
+            clear_call_scope()
             _suppress_consumer_rounding.reset(token)
     return dispatch
+
+
+def get_workbook_dispatch():
+    """Compatibility entrypoint for workbook financial-query replay."""
+    return get_financial_read_dispatch()
 
 
 def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
@@ -344,8 +355,7 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
     Accepts a CatalogueRef so that the reload_catalogue tool can swap the active
     catalogue without restarting the server.
     """
-
-    def _resolve_scenario(scenario_id: str) -> str:
+    def _resolve_scenario(scenario_id: str, registry) -> str:
         """Normalize a user-facing scenario reference for read execution.
 
         Handles modifier suffixes (e.g. "BUD-2026&uncommitted"):
@@ -357,9 +367,6 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         modifier_suffix = scenario_id[len(base):]  # e.g. "&uncommitted" or ""
 
         try:
-            from precis_mcp.engine.scenario_registry import load_scenario_registry
-
-            registry = load_scenario_registry(get_clickhouse_client())
             return registry.normalize_key(base) + modifier_suffix
         except Exception:
             logger.debug("Could not normalize scenario via semantic registry", exc_info=True)
@@ -391,8 +398,16 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         agent can reason about them and retry with corrected parameters.
         """
         try:
-            ch = get_clickhouse_client()
-            return execute_report(request, ref.current, ch_client=ch, scope=_scope)
+            with closing(get_analytical_client()) as client:
+                registry = get_scenario_registry(client=client)
+                for block in request["blocks"]:
+                    block["scenario"] = _resolve_scenario(block["scenario"], registry)
+                    block.setdefault("alias", block["scenario"])
+                alias_error = _duplicate_alias_error(request["blocks"])
+                if alias_error:
+                    return alias_error
+                return execute_report(request, ref.current, ch_client=client,
+                                      scope=_scope, scenario_registry=registry)
         except (ResolverError, FilterResolutionError) as e:
             # Engine-authored messages — actionable guidance, safe to return.
             return {"error": str(e), "error_type": "validation"}
@@ -532,7 +547,6 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         from precis_mcp.auth import get_auth_context
         from precis_mcp.engine.scenario_registry import (
             filter_reporting_vocabulary,
-            load_scenario_registry,
             readable_scenario_ids,
         )
 
@@ -542,8 +556,7 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         }
 
         try:
-            client = get_clickhouse_client()
-            scenario_registry = load_scenario_registry(client)
+            scenario_registry = get_scenario_registry(get_analytical_client)
             registry_payload = scenario_registry.to_reporting_vocabulary()
         except Exception:
             logger.warning("Could not query semantic.scenarios table", exc_info=True)
@@ -630,7 +643,7 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         views, output columns, and semantic dimensions that can be used as
         filters.
         """
-        return engine_list_inspection_sources(ref.current)
+        return engine_list_inspection_sources(ref.current, primary_backend=selected_backend())
 
     @mcp.tool()
     def get_inspection_schema(source_key: str) -> dict:
@@ -641,7 +654,7 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                 e.g. ``gl_federated`` or ``worklog_federated``.
         """
         try:
-            return engine_get_inspection_schema(ref.current, source_key)
+            return engine_get_inspection_schema(ref.current, source_key, primary_backend=selected_backend())
         except InspectionError as e:
             return {"error": str(e), "error_type": "validation"}
 
@@ -672,21 +685,21 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
 
         try:
             start = time.perf_counter()
-            ch = get_clickhouse_client()
-            resolved_scenario_id = _resolve_inspection_scenario(scenario_id)
-            result = engine_inspect_rows(
-                ref.current,
-                source_key,
-                filters=filters,
-                columns=columns,
-                limit=limit,
-                scenario_id=resolved_scenario_id,
-                period_start=period_start,
-                period_end=period_end,
-                ch_client=ch,
-                ibis_backends=_inspection_ibis_backends(source_key),
-                per_scenario_scope=_scope,
-            )
+            with closing(get_analytical_client()) as ch:
+                resolved_scenario_id = _resolve_inspection_scenario(scenario_id)
+                result = engine_inspect_rows(
+                    ref.current,
+                    source_key,
+                    filters=filters,
+                    columns=columns,
+                    limit=limit,
+                    scenario_id=resolved_scenario_id,
+                    period_start=period_start,
+                    period_end=period_end,
+                    ch_client=ch,
+                    ibis_backends=_inspection_ibis_backends(source_key),
+                    per_scenario_scope=_scope,
+                )
             duration_ms = int((time.perf_counter() - start) * 1000)
         except InspectionError as e:
             return {"error": str(e), "error_type": "validation"}
@@ -807,17 +820,11 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         # Build blocks from scenarios
         blocks = []
         for sc in scenarios:
-            scenario_key = _resolve_scenario(sc["scenario"])
-            alias = sc.get("alias", scenario_key)
             blocks.append({
                 "model": f"statement:{statement}",
-                "scenario": scenario_key,
-                "alias": alias,
+                "scenario": sc["scenario"],
+                **({"alias": sc["alias"]} if "alias" in sc else {}),
             })
-
-        alias_error = _duplicate_alias_error(blocks)
-        if alias_error:
-            return alias_error
 
         request: dict = {
             "context": ctx,
@@ -851,7 +858,7 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
 
         # Cache the engine-precision snapshot before consumer rounding.
         if isinstance(result, dict) and "error" not in result:
-            data_ref = cache_read_result(result, 'run_statement', {
+            source_args = {
                         "statement": statement,
                         "scenarios": [{"scenario": block["scenario"], "alias": block["alias"]} for block in blocks],
                         "period_start": period_start,
@@ -859,7 +866,10 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                         "filters": filters,
                         "dimensions": dimensions,
                         "scale": result.get("scale", scale), "decimals": result.get("decimals", decimals),
-                    })
+                    }
+            data_ref = cache_read_result(result, 'run_statement', source_args)
+            if _suppress_consumer_rounding.get():
+                result["_workbook_source"] = {"tool":"run_statement", "params":source_args}
             if data_ref:
                 result["data_ref"] = data_ref
             else:
@@ -919,17 +929,11 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         metric_ref = "metrics:" + ",".join(metrics)
         blocks = []
         for sc in scenarios:
-            scenario_key = _resolve_scenario(sc["scenario"])
-            alias = sc.get("alias", scenario_key)
             blocks.append({
                 "model": metric_ref,
-                "scenario": scenario_key,
-                "alias": alias,
+                "scenario": sc["scenario"],
+                **({"alias": sc["alias"]} if "alias" in sc else {}),
             })
-
-        alias_error = _duplicate_alias_error(blocks)
-        if alias_error:
-            return alias_error
 
         request: dict = {
             "context": ctx,
@@ -963,7 +967,7 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
 
         # Cache the engine-precision snapshot before consumer rounding.
         if isinstance(result, dict) and "error" not in result:
-            data_ref = cache_read_result(result, 'run_metric', {
+            source_args = {
                         "metrics": metrics,
                         "scenarios": [{"scenario": block["scenario"], "alias": block["alias"]} for block in blocks],
                         "period_start": period_start,
@@ -971,7 +975,10 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                         "filters": filters,
                         "dimensions": dimensions,
                         "scale": result.get("scale", scale), "decimals": result.get("decimals", decimals),
-                    })
+                    }
+            data_ref = cache_read_result(result, 'run_metric', source_args)
+            if _suppress_consumer_rounding.get():
+                result["_workbook_source"] = {"tool":"run_metric", "params":source_args}
             if data_ref:
                 result["data_ref"] = data_ref
             else:
@@ -1003,203 +1010,199 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
             limit = max(1, min(int(limit), _HIERARCHY_LIMIT_CEILING))
         record_limit = limit if limit is not None else (50 if query else 200)
         node_limit = limit if limit is not None else (20 if query else 100)
-        client = get_clickhouse_client()
-        records: list[dict] = []
-        hierarchy_nodes: list[dict] = []
+        with closing(get_analytical_client()) as client:
+            dialect = dialect_for(client)
+            records: list[dict] = []
+            hierarchy_nodes: list[dict] = []
 
-        # Least-restrictive read scope: a member is visible when at least one
-        # scenario the caller can read allows it. No readable scenario at all
-        # means nothing is visible.
-        from precis_mcp.auth import get_auth_context
-        from precis_mcp.engine.scope_enforcer import union_read_member_sets
+            # Least-restrictive read scope: a member is visible when at least one
+            # scenario the caller can read allows it. No readable scenario at all
+            # means nothing is visible.
+            from precis_mcp.auth import get_auth_context
+            from precis_mcp.engine.scope_enforcer import union_read_member_sets
 
-        permissions = get_auth_context().permissions
-        deny_all = (
-            permissions is not None
-            and not permissions.is_admin
-            and not any(
-                "read" in sp.tool_scopes
-                for sp in permissions.scenarios.values()
+            permissions = get_auth_context().permissions
+            deny_all = (
+                permissions is not None
+                and not permissions.is_admin
+                and not any(
+                    "read" in sp.tool_scopes
+                    for sp in permissions.scenarios.values()
+                )
             )
-        )
-        permitted_members = union_read_member_sets(
-            permissions, ref.current, client,
-        )
+            permitted_members = union_read_member_sets(
+                permissions, ref.current, client,
+            )
 
-        dims_to_search = {} if deny_all else ref.current.dimensions
-        if dimension and dimension in dims_to_search:
-            selected = {dimension: dims_to_search[dimension]}
-            # Also include ragged hierarchies built on this leaf dimension, so
-            # searching a leaf (e.g. "cost_centre") surfaces its rollup nodes
-            # (e.g. the "org_structure" department/division nodes) in one call.
-            for k, d in dims_to_search.items():
-                if d.is_ragged and d.leaf_dimension == dimension:
-                    selected[k] = d
-            dims_to_search = selected
+            dims_to_search = {} if deny_all else ref.current.dimensions
+            if dimension and dimension in dims_to_search:
+                selected = {dimension: dims_to_search[dimension]}
+                # Also include ragged hierarchies built on this leaf dimension, so
+                # searching a leaf (e.g. "cost_centre") surfaces its rollup nodes
+                # (e.g. the "org_structure" department/division nodes) in one call.
+                for k, d in dims_to_search.items():
+                    if d.is_ragged and d.leaf_dimension == dimension:
+                        selected[k] = d
+                dims_to_search = selected
 
-        for dim_key, dim in dims_to_search.items():
-            # --- Search leaf dimensions (have source tables) ---
-            if dim.is_leaf and dim.source:
-                searchable_cols: list[str] = [dim.source.key_column]
-                for attr_col in dim.source.attribute_mapping.values():
-                    if attr_col and attr_col not in searchable_cols:
-                        searchable_cols.append(attr_col)
-                # Also include parent FK columns for richer search
-                for parent_rel in dim.parents.values():
-                    if parent_rel.source_column not in searchable_cols:
-                        searchable_cols.append(parent_rel.source_column)
+            for dim_key, dim in dims_to_search.items():
+                # --- Search leaf dimensions (have source tables) ---
+                if dim.is_leaf and dim.source:
+                    searchable_cols: list[str] = [dim.source.key_column]
+                    for attr_col in dim.source.attribute_mapping.values():
+                        if attr_col and attr_col not in searchable_cols:
+                            searchable_cols.append(attr_col)
+                    # Also include parent FK columns for richer search
+                    for parent_rel in dim.parents.values():
+                        if parent_rel.source_column not in searchable_cols:
+                            searchable_cols.append(parent_rel.source_column)
 
-                select_cols = list(searchable_cols)
+                    select_cols = list(searchable_cols)
 
-                conditions: list[str] = []
-                params: dict = {}
-                if permitted_members is not None and dim_key in permitted_members:
-                    conditions.append(
-                        f"toString({dim.source.key_column}) IN ({{scope_ids:Array(String)}})"
-                    )
-                    params["scope_ids"] = sorted(permitted_members[dim_key])
-                if query:
-                    or_clauses = [f"ilike(toString({col}), {{q:String}})" for col in searchable_cols]
-                    conditions.append("(" + " OR ".join(or_clauses) + ")")
-                    params["q"] = f"%{query}%"
-                where = f"WHERE {' AND '.join(conditions)} " if conditions else ""
-                sql = (
-                    f"SELECT DISTINCT {', '.join(select_cols)} "
-                    f"FROM {dim.source.table} "
-                    f"{where}"
-                    f"ORDER BY {select_cols[0]} "
-                    f"LIMIT {record_limit}"
-                )
-
-                try:
-                    result = client.query(sql, parameters=params)
-                    for row in result.result_rows:
-                        row_dict = dict(zip(result.column_names, row))
-                        # Display attribute
-                        display_val = ""
-                        if dim.display_attribute and dim.display_attribute in dim.source.attribute_mapping:
-                            display_col = dim.source.attribute_mapping[dim.display_attribute]
-                            display_val = str(row_dict.get(display_col, ""))
-
-                        entry: dict = {
-                            "dimension": dim_key,
-                            "code": str(row_dict.get(dim.source.key_column, "")),
-                        }
-                        if display_val:
-                            entry["display_name"] = display_val
-                        # Include parent dimension values
-                        for parent_rel in dim.parents.values():
-                            val = row_dict.get(parent_rel.source_column)
-                            if val is not None:
-                                entry[parent_rel.source_column] = str(val)
-                        records.append(entry)
-                except Exception:
-                    continue
-
-            # --- Search derived dimensions (FK columns on a leaf source) ---
-            if dim.is_derived and dim._transitive:
-                resolution = next(iter(dim._transitive.values()))
-                conditions = [f"toString({resolution.filter_column}) != ''"]
-                params = {}
-                if (
-                    permitted_members is not None
-                    and resolution.leaf_dimension in permitted_members
-                ):
-                    conditions.append(
-                        f"toString({resolution.leaf_key_column}) "
-                        f"IN ({{scope_ids:Array(String)}})"
-                    )
-                    params["scope_ids"] = sorted(
-                        permitted_members[resolution.leaf_dimension]
-                    )
-                if query:
-                    conditions.append(
-                        f"ilike(toString({resolution.filter_column}), {{q:String}})"
-                    )
-                    params["q"] = f"%{query}%"
-                sql = (
-                    f"SELECT DISTINCT toString({resolution.filter_column}) AS member "
-                    f"FROM {resolution.source_table} "
-                    f"WHERE {' AND '.join(conditions)} "
-                    f"ORDER BY member "
-                    f"LIMIT {record_limit}"
-                )
-                try:
-                    result = client.query(sql, parameters=params)
-                    for row in result.result_rows:
-                        records.append({
-                            "dimension": dim_key,
-                            "code": str(row[0]),
-                        })
-                except Exception:
-                    continue
-
-            # --- Search ragged hierarchy nodes ---
-            if dim.is_ragged and dim.leaf_dimension:
-                hierarchy_view = f"semantic.dim_{dim.leaf_dimension}_{dim_key}"
-
-                node_conditions = ["node_type != 'all'"]
-                node_params: dict = {}
-                if (
-                    permitted_members is not None
-                    and dim.leaf_dimension in permitted_members
-                ):
-                    resolution = dim._transitive.get(dim.leaf_dimension)
-                    if resolution is None:
-                        # Cannot map nodes to permitted leaves — fail closed.
-                        node_conditions.append("1 = 0")
-                    else:
-                        rollup_view = f"semantic.dim_{dim.leaf_dimension}_{dim_key}_rollup"
-                        node_conditions.append(
-                            f"node_id IN (SELECT DISTINCT node_id FROM {rollup_view} "
-                            f"WHERE toString({resolution.leaf_key_column}) "
-                            f"IN ({{scope_leaf_ids:Array(String)}}))"
+                    conditions: list[str] = []
+                    params: dict = {}
+                    if permitted_members is not None and dim_key in permitted_members:
+                        conditions.append(
+                            dialect.in_values(dialect.string(dim.source.key_column), "scope_ids",
+                                              sorted(permitted_members[dim_key]), params)
                         )
-                        node_params["scope_leaf_ids"] = sorted(
-                            permitted_members[dim.leaf_dimension]
-                        )
-
-                try:
                     if query:
-                        node_conditions.append(
-                            "(ilike(node_name, {q:String}) OR ilike(node_id, {q:String}))"
-                        )
-                        node_params["q"] = f"%{query}%"
-                    node_sql = (
-                        f"SELECT node_id, node_name, display_name, node_type "
-                        f"FROM {hierarchy_view} "
-                        f"WHERE {' AND '.join(node_conditions)} "
-                        f"ORDER BY node_type, node_name "
-                        f"LIMIT {node_limit}"
+                        or_clauses = [dialect.ilike(dialect.string(col), "q") for col in searchable_cols]
+                        conditions.append("(" + " OR ".join(or_clauses) + ")")
+                        params["q"] = f"%{query}%"
+                    where = f"WHERE {' AND '.join(conditions)} " if conditions else ""
+                    sql = (
+                        f"SELECT DISTINCT {', '.join(select_cols)} "
+                        f"FROM {dialect.table(dim.source.table)} "
+                        f"{where}"
+                        f"ORDER BY {select_cols[0]} "
+                        f"LIMIT {record_limit}"
                     )
-                    node_result = client.query(node_sql, parameters=node_params)
-                    for row in node_result.result_rows:
-                        node_type = str(row[3])
-                        node_id = str(row[0])
-                        # For leaf-level nodes, also show direct dimension filter
-                        if node_type == dim.leaf_dimension:
-                            filter_usage = f'filters: {{"{dim.leaf_dimension}": "{node_id}"}}'
-                        else:
-                            filter_usage = f'filters: {{"{dim_key}": "{node_id}"}}'
-                        hierarchy_nodes.append({
-                            "dimension": dim.leaf_dimension,
-                            "hierarchy": dim_key,
-                            "node_id": node_id,
-                            "node_name": str(row[1]),
-                            "display_name": str(row[2]),
-                            "node_type": node_type,
-                            "filter_usage": filter_usage,
-                        })
-                except Exception:
-                    continue
 
-        result = {"records": records, "hierarchy_nodes": hierarchy_nodes}
-        data_ref = cache_read_result(result, "search_hierarchy", {"query": query, "dimension": dimension, "limit": limit})
-        if data_ref:
-            result["data_ref"] = data_ref
-        else:
-            result["dataset_available"] = False
-        return result
+                    try:
+                        result = client.query(sql, parameters=params)
+                        for row in result.result_rows:
+                            row_dict = dict(zip(result.column_names, row))
+                            # Display attribute
+                            display_val = ""
+                            if dim.display_attribute and dim.display_attribute in dim.source.attribute_mapping:
+                                display_col = dim.source.attribute_mapping[dim.display_attribute]
+                                display_val = str(row_dict.get(display_col, ""))
+
+                            entry: dict = {
+                                "dimension": dim_key,
+                                "code": str(row_dict.get(dim.source.key_column, "")),
+                            }
+                            if display_val:
+                                entry["display_name"] = display_val
+                            # Include parent dimension values
+                            for parent_rel in dim.parents.values():
+                                val = row_dict.get(parent_rel.source_column)
+                                if val is not None:
+                                    entry[parent_rel.source_column] = str(val)
+                            records.append(entry)
+                    except Exception:
+                        continue
+
+                # --- Search derived dimensions (FK columns on a leaf source) ---
+                if dim.is_derived and dim._transitive:
+                    resolution = next(iter(dim._transitive.values()))
+                    conditions = [f"{dialect.string(resolution.filter_column)} != ''"]
+                    params = {}
+                    if (
+                        permitted_members is not None
+                        and resolution.leaf_dimension in permitted_members
+                    ):
+                        conditions.append(
+                            dialect.in_values(dialect.string(resolution.leaf_key_column), "scope_ids",
+                                              sorted(permitted_members[resolution.leaf_dimension]), params)
+                        )
+                    if query:
+                        conditions.append(
+                            dialect.ilike(dialect.string(resolution.filter_column), "q")
+                        )
+                        params["q"] = f"%{query}%"
+                    sql = (
+                        f"SELECT DISTINCT {dialect.string(resolution.filter_column)} AS member "
+                        f"FROM {dialect.table(resolution.source_table)} "
+                        f"WHERE {' AND '.join(conditions)} "
+                        f"ORDER BY member "
+                        f"LIMIT {record_limit}"
+                    )
+                    try:
+                        result = client.query(sql, parameters=params)
+                        for row in result.result_rows:
+                            records.append({
+                                "dimension": dim_key,
+                                "code": str(row[0]),
+                            })
+                    except Exception:
+                        continue
+
+                # --- Search ragged hierarchy nodes ---
+                if dim.is_ragged and dim.leaf_dimension:
+                    hierarchy_view = f"semantic.dim_{dim.leaf_dimension}_{dim_key}"
+
+                    node_conditions = ["node_type != 'all'"]
+                    node_params: dict = {}
+                    if (
+                        permitted_members is not None
+                        and dim.leaf_dimension in permitted_members
+                    ):
+                        resolution = dim._transitive.get(dim.leaf_dimension)
+                        if resolution is None:
+                            # Cannot map nodes to permitted leaves — fail closed.
+                            node_conditions.append("1 = 0")
+                        else:
+                            rollup_view = f"semantic.dim_{dim.leaf_dimension}_{dim_key}_rollup"
+                            predicate = dialect.in_values(dialect.string(resolution.leaf_key_column),
+                                "scope_leaf_ids", sorted(permitted_members[dim.leaf_dimension]), node_params)
+                            node_conditions.append(
+                                f"node_id IN (SELECT DISTINCT node_id FROM {dialect.table(rollup_view)} "
+                                f"WHERE {predicate})"
+                            )
+
+                    try:
+                        if query:
+                            node_conditions.append(
+                                f"({dialect.ilike('node_name', 'q')} OR {dialect.ilike('node_id', 'q')})"
+                            )
+                            node_params["q"] = f"%{query}%"
+                        node_sql = (
+                            f"SELECT node_id, node_name, display_name, node_type "
+                            f"FROM {dialect.table(hierarchy_view)} "
+                            f"WHERE {' AND '.join(node_conditions)} "
+                            f"ORDER BY node_type, node_name "
+                            f"LIMIT {node_limit}"
+                        )
+                        node_result = client.query(node_sql, parameters=node_params)
+                        for row in node_result.result_rows:
+                            node_type = str(row[3])
+                            node_id = str(row[0])
+                            # For leaf-level nodes, also show direct dimension filter
+                            if node_type == dim.leaf_dimension:
+                                filter_usage = f'filters: {{"{dim.leaf_dimension}": "{node_id}"}}'
+                            else:
+                                filter_usage = f'filters: {{"{dim_key}": "{node_id}"}}'
+                            hierarchy_nodes.append({
+                                "dimension": dim.leaf_dimension,
+                                "hierarchy": dim_key,
+                                "node_id": node_id,
+                                "node_name": str(row[1]),
+                                "display_name": str(row[2]),
+                                "node_type": node_type,
+                                "filter_usage": filter_usage,
+                            })
+                    except Exception:
+                        continue
+
+            result = {"records": records, "hierarchy_nodes": hierarchy_nodes}
+            data_ref = cache_read_result(result, "search_hierarchy", {"query": query, "dimension": dimension, "limit": limit})
+            if data_ref:
+                result["data_ref"] = data_ref
+            else:
+                result["dataset_available"] = False
+            return result
 
     @mcp.tool()
     def list_dimensions() -> dict:
@@ -1255,8 +1258,8 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
                         or a level column name (e.g. 'division', 'department')
             filter_value: The value to resolve — use search_hierarchy to discover valid values
         """
-        client = get_clickhouse_client()
-        resolved = resolve_filters({filter_key: filter_value}, ref.current, client)
+        with closing(get_analytical_client()) as client:
+            resolved = resolve_filters({filter_key: filter_value}, ref.current, client)
         # Return all leaf IDs from all resolved dimensions
         result: list[str] = []
         for values in resolved.values():
@@ -1273,39 +1276,39 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         Args:
             scenario_id: The parent scenario to find variants of.
         """
-        ch = get_clickhouse_client()
-        from precis_mcp.auth import get_auth_context
-        from precis_mcp.engine.scenario_store import ScenarioStore
+        with closing(get_analytical_client()) as ch:
+            from precis_mcp.auth import get_auth_context
+            from precis_mcp.engine.scenario_store import ScenarioStore
 
-        permissions = get_auth_context().permissions
+            permissions = get_auth_context().permissions
 
-        def _visible(sid: str) -> bool:
-            if permissions is None or permissions.is_admin:
-                return True
-            sp = permissions.scenarios.get(sid)
-            return sp is not None and "read" in sp.tool_scopes
+            def _visible(sid: str) -> bool:
+                if permissions is None or permissions.is_admin:
+                    return True
+                sp = permissions.scenarios.get(sid)
+                return sp is not None and "read" in sp.tool_scopes
 
-        store = ScenarioStore(ch)
-        variants = [
-            {
-                "scenario_id": s.scenario_id,
-                "alias": s.alias,
-                "name": s.name,
-                "status": s.status,
-                "description": s.description,
-                "created_by": s.created_by,
-                "created_at": str(s.created_at),
-                "base_scenario": s.base_scenario,
+            store = ScenarioStore(ch)
+            variants = [
+                {
+                    "scenario_id": s.scenario_id,
+                    "alias": s.alias,
+                    "name": s.name,
+                    "status": s.status,
+                    "description": s.description,
+                    "created_by": s.created_by,
+                    "created_at": str(s.created_at),
+                    "base_scenario": s.base_scenario,
+                }
+                for s in store.list_variants(scenario_id)
+                if _visible(s.scenario_id)
+            ]
+
+            return {
+                "parent_scenario": scenario_id,
+                "variants": variants,
+                "count": len(variants),
             }
-            for s in store.list_variants(scenario_id)
-            if _visible(s.scenario_id)
-        ]
-
-        return {
-            "parent_scenario": scenario_id,
-            "variants": variants,
-            "count": len(variants),
-        }
 
     @mcp.tool()
     def reload_catalogue() -> str:
@@ -1316,8 +1319,9 @@ def register_read_tools(mcp: FastMCP, ref: "CatalogueRef"):
         """
         return ref.reload()
 
-    # Expose the two report-running closures to ``get_refresh_dispatch`` so
+    # Expose the two report-running closures to ``get_workbook_dispatch`` so
     # ``refresh_workbook`` can re-invoke them with stored source params.
-    global _RUN_STATEMENT, _RUN_METRIC
+    global _RUN_STATEMENT, _RUN_METRIC, _WORKBOOK_CATALOGUE_REF
     _RUN_STATEMENT = run_statement
     _RUN_METRIC = run_metric
+    _WORKBOOK_CATALOGUE_REF = ref

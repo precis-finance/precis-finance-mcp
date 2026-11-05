@@ -38,6 +38,16 @@ from precis_mcp.excel.meta import (
 from precis_mcp.excel import metric_to_excel, statement_to_excel
 
 
+def test_oversized_provenance_is_rejected_before_replacing_existing_metadata():
+    wb = Workbook()
+    original = build_minimal_meta()
+    write_meta(wb, original)
+    large = {**original, "note": "x" * 32768}
+    with pytest.raises(MetaError, match="cell limit"):
+        write_meta(wb, large)
+    assert read_meta(wb) == original
+
+
 def _save_and_reload(wb: Workbook) -> Workbook:
     buf = io.BytesIO()
     wb.save(buf)
@@ -231,21 +241,13 @@ def test_stamp_report_meta_from_source_dict():
 @pytest.fixture
 def minimal_statement_result():
     return {
-        "metadata": {
-            "period_start": "2026-01",
-            "period_end": "2026-03",
-            "dimensions": [],
-            "blocks": ["Actuals"],
-            "block_scenarios": ["actuals"],
-            "statement": "pnl",
-        },
+        "kind": "statement", "dimensions": [], "scenarios": [{"alias": "Actuals"}],
+        "scale": 0,
         "caption": {},
-        "aggregate": [
+        "rows": [
             {
-                "key": "revenue",
-                "label": "Revenue",
-                "style": "line",
-                "indent": 0,
+                "grain": "detail", "dimensions": {},
+                "item": {"key": "revenue", "label": "Revenue", "style": "line", "indent": 0},
                 "values": {"Actuals": 100.0},
             },
         ],
@@ -255,19 +257,14 @@ def minimal_statement_result():
 @pytest.fixture
 def minimal_metric_result():
     return {
-        "metadata": {
-            "period_start": "2026-01",
-            "period_end": "2026-03",
-            "dimensions": [],
-            "blocks": ["Actuals"],
-            "block_scenarios": ["actuals"],
-        },
+        "kind": "metric", "dimensions": [], "scenarios": [{"alias": "Actuals"}],
+        "scale": 0,
         "caption": {},
         "rows": [
             {
-                "dimension_values": {},
+                "grain": "detail", "dimensions": {},
+                "item": {"key": "revenue", "label": "Revenue", "format": "currency"},
                 "values": {"Actuals": 1.0},
-                "format": "currency",
             },
         ],
     }
@@ -288,7 +285,8 @@ def test_statement_to_excel_stamps_report_meta(tmp_path, minimal_statement_resul
     assert META_SHEET_NAME in wb.sheetnames
     meta = read_meta(wb)
     sheet_name = [n for n in wb.sheetnames if n != META_SHEET_NAME][0]
-    assert meta["sheets"][sheet_name]["source"]["tool"] == "run_statement"
+    assert "source" not in meta["sheets"][sheet_name]
+    assert meta["sheets"][sheet_name]["regions"][0]["source"]["tool"] == "run_statement"
     assert meta["generated_by"]["user_id"] == "u_1"
 
 
@@ -314,12 +312,12 @@ def test_metric_to_excel_stamps_report_meta(tmp_path, minimal_metric_result):
     wb = load_workbook(path)
     meta = read_meta(wb)
     sheet_name = [n for n in wb.sheetnames if n != META_SHEET_NAME][0]
-    assert meta["sheets"][sheet_name]["source"]["tool"] == "run_metric"
+    assert "source" not in meta["sheets"][sheet_name]
+    assert meta["sheets"][sheet_name]["regions"][0]["source"]["tool"] == "run_metric"
 
 
 def test_metric_to_excel_empty_result_still_stamps(tmp_path):
-    # Empty results take the early-return path in metric_to_excel; meta
-    # must still be written so refresh can find the tool/params.
+    # Empty reports carry no convertible region or dead sheet-level query.
     result = {
         "metadata": {"period_start": "2026-01", "period_end": "2026-03"},
         "caption": {},
@@ -334,7 +332,7 @@ def test_metric_to_excel_empty_result_still_stamps(tmp_path):
     wb = load_workbook(path)
     assert META_SHEET_NAME in wb.sheetnames
     meta = read_meta(wb)
-    assert meta["sheets"][list(meta["sheets"])[0]]["source"]["tool"] == "run_metric"
+    assert meta["sheets"][list(meta["sheets"])[0]] == {"kind": "report"}
 
 
 # ---------------------------------------------------------------------------

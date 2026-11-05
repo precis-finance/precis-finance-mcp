@@ -78,8 +78,15 @@ You describe your model in two layers, kept separate on purpose:
   surface clients see.
 
 The catalogue sits on top of the semantic layer and refers to it by column name.
-**The names must line up** — and the engine checks this at startup, so a mismatch
-is an error you see immediately, not a wrong number you discover later.
+The native Databricks engine foundation retains this catalogue and its financial
+rules; its SQL assumptions and current integration limits are described
+in [Analytical client](analytical-client.md). The examples below describe CH
+deployment and semantic provisioning; native startup instead validates
+the columns required by the existing catalogue, without an additional instance file.
+For the native warehouse's required columns and Précis-owned objects, see the
+[Databricks schema contract](databricks-schema-contract.md).
+**The names must line up** — catalogue references are validated at startup;
+physical-source checks depend on the backend, as described below.
 
 ```text
 instance/
@@ -217,7 +224,7 @@ aggregates and formats. Here is `revenue`:
   - key: revenue
     label: Revenue
     description: "Total recognised project revenue for the period."
-    calculation_note: "Sum of credit-side journal entries on revenue accounts (fs_line = 'Revenue') from gl.actuals. Stored as negative in the ledger; sign: abs converts to positive for display."
+    calculation_note: "Sum of signed ledger amounts on revenue accounts (fs_line = 'Revenue'). sign: negate displays credit revenue as positive and debit reversals as reductions."
     where:                         # restrict to revenue accounts…
       - column: fs_line
         op: eq
@@ -225,7 +232,7 @@ aggregates and formats. Here is `revenue`:
     source_column: amount          # …sum this column…
     aggregation: sum               # the SQL aggregate over source rows
     rollup_method: sum             # how aggregated values combine across periods
-    sign: abs                      # ledger stores revenue negative; flip to positive
+    sign: negate                   # multiply by -1; preserve revenue reductions
     format: currency
     fs_group: Revenue              # which statement section the metric belongs to
 ```
@@ -247,10 +254,25 @@ applies that average only at the closing native period. The special
 of distinct native periods” and therefore currently requires
 `aggregation: sum`.
 
-Read it as a query against the source view:
+`sign` transforms each matching source value before aggregation, in both the
+ClickHouse and Ibis retrieval paths:
+
+| Value | Operation | Use |
+|---|---|---|
+| `raw` | Leave the value unchanged | Measures already stored with the desired sign |
+| `negate` | Multiply by -1 | Credit-negative ledger revenue, preserving reversals |
+| `abs` | Take the literal absolute value | Magnitude measures where direction is deliberately discarded |
+
+For signed ledger revenue, use `negate`, not `abs`. A credit of -100 and a
+reversal of +20 must report revenue of 80. `SUM(ABS(amount))` would report 120
+and would turn a negative planning adjustment into an increase. `ABS(SUM(amount))`
+is also unsuitable: it would conceal a genuinely negative net revenue balance.
+Count aggregations ignore `sign` because they count rows or keys, not amounts.
+
+Read the revenue definition as a query against the source view:
 
 ```sql
-SELECT SUM(amount)
+SELECT SUM(-amount) AS revenue
 FROM   semantic.v_pnl
 WHERE  fs_line = 'Revenue'
   AND  scenario = :scenario       -- chosen at query time
@@ -266,7 +288,8 @@ optional polish. `list_kpis` surfaces both to the client, and an AI agent reads
 them to choose which metric answers a question and to interpret the number it
 gets back. `description` is the one-line *what this is*; `calculation_note` is
 the *how it's derived, and any sign or scale gotcha* — here, that revenue is
-stored negative and flipped by `sign: abs`. Write them for a reader who can't
+stored credit-negative and multiplied by -1 with `sign: negate`, preserving
+reversals. Write them for a reader who can't
 see the SQL, because that is exactly the agent's situation.
 
 #### The `where` predicate
@@ -316,6 +339,18 @@ keys. Each input is aggregated independently first, then combined:
 
 `revenue` and `direct_cost` here are the *exact keys* of other metrics in the
 catalogue. A typo is a load-time error, not a silent zero.
+
+`format: percent` uses percentage points: `75` means 75%, not `0.75`.
+Ratio formulas must multiply by `100`, and base percentage source columns must
+already expose percentage points. When source storage uses a fraction (such as
+project completion), the semantic projection multiplies by `100`; storage and
+the catalogue's average/closing aggregation remain unchanged.
+Division by zero and null operands return
+`null`. Formatting adds a percent suffix without changing the value, including
+in Excel. Percentages and metrics marked `scale_exempt: true` (such as FTEs,
+hours or rates) retain their units at every output scale; other values are
+divided by `10 ** scale` before being returned. Thus `scale: 3` can produce
+currency in thousands alongside unchanged FTEs in the same statement.
 
 ### A statement
 
@@ -548,8 +583,8 @@ Putting it together — *"revenue by cost centre for the P&L, actuals":*
 
 1. The client asks for metric `revenue`, grouped by `cost_centre`.
 2. The engine looks up `revenue` in `pnl.yml`, sees `source_view: semantic.v_pnl`.
-3. It runs `SELECT SUM(amount) … WHERE fs_line = 'Revenue' AND scenario = 'ACTUALS' GROUP BY cost_centre`.
-4. It applies `sign: abs` and `format: currency`.
+3. It applies `sign: negate` inside the aggregate: `SELECT SUM(-amount) AS revenue … WHERE fs_line = 'Revenue' AND scenario = 'ACTUALS' GROUP BY cost_centre`.
+4. It attaches `format: currency` for consumer formatting; the result retains its numeric sign.
 5. It returns rows keyed by `cost_centre`, with the metric under the field name
    `revenue`.
 
@@ -569,21 +604,21 @@ semantic view column   →   catalogue reference        →   client field
    revenue (metric key)      lines: [revenue, …]            revenue
 ```
 
-If a name doesn't line up — a metric points at a column the view doesn't have, a
-statement lists a metric key that doesn't exist, a dimension maps to a missing
-column — the engine reports it at startup and refuses to serve an inconsistent
-model. Fix the name; restart; it's caught before any client sees a number.
+Catalogue references, such as metric keys in statements, are checked at
+startup. Databricks also checks required physical columns. On ClickHouse,
+preflight checks object existence; a missing physical column can still fail
+at query time.
 
-You don't have to wait for a restart to find out, though. Run the model check
-ahead of time — it validates the catalogue *and* confirms the semantic views it
-names exist in ClickHouse, without starting the server or changing anything:
+For ClickHouse, run the model check ahead of time — it validates the catalogue
+and confirms the semantic views it names exist, without starting the server
+or changing anything:
 
 ```bash
 python -m precis_mcp.clickhouse_init --scope open --check
 ```
 
 See [What your ClickHouse must contain](clickhouse-schema-contract.md) for the
-full preflight.
+full preflight. For Databricks, see [provisioning and validation](databricks-schema-contract.md#provisioning-and-validation).
 
 ## Related
 

@@ -1,8 +1,6 @@
 /*
- * The add-in's half of the `financial_table` contract: pivot the block's
- * columns + rows into the 2-D matrix a custom function spills. Values only — the
- * format intent (`nf` / `alerts` / `row_type`) is read separately by the ribbon
- * formatter; it is not consumed here.
+ * Financial format types, source-text sanitization and discovery grids.
+ * Financial spill grids come from the server's shared worksheet projection.
  */
 
 export interface FinancialColumn {
@@ -21,9 +19,9 @@ export interface FinancialRow {
   indent?: number;
   values?: Record<string, number | null>;
   alerts?: Record<string, string>;
-  // Per-row Excel number format (statement rows = metrics with their own
-  // format). Takes precedence over the column nf when present.
+  // Legacy per-row fallback; cell_nf resolves row/scenario precedence on server.
   nf?: string;
+  cell_nf?: Record<string, string>;
 }
 
 export interface FinancialTableBlock {
@@ -52,69 +50,8 @@ function sanitizeCell(v: string | number): string | number {
 }
 
 /** Apply the formula-injection guard to every string cell in a spill matrix. */
-function sanitizeGrid(grid: (string | number)[][]): (string | number)[][] {
+export function sanitizeGrid(grid: (string | number)[][]): (string | number)[][] {
   return grid.map((row) => row.map(sanitizeCell));
-}
-
-/**
- * Pivot a `financial_table` block into the spill matrix: a header row of column
- * labels, then one row per data row (`label` in column 0, then each value
- * column keyed by `column.key`). Separator rows are dropped. Missing values
- * become "" so the cell is blank rather than `0`/error.
- */
-export function blockToGrid(block: FinancialTableBlock): (string | number)[][] {
-  const cols = block.columns ?? [];
-  const grouped = cols.some((c) => c.group);
-  const grid: (string | number)[][] = [];
-
-  // Grouped (multi-metric × multi-scenario) blocks get a two-row header: the
-  // metric group label above the first column of each group run (blank after —
-  // a spill can't merge cells), then the scenario labels beneath.
-  if (grouped) {
-    const groupRow: (string | number)[] = [""];
-    let prev: string | undefined;
-    for (let i = 1; i < cols.length; i++) {
-      const g = cols[i].group;
-      groupRow.push(g && g !== prev ? g : "");
-      prev = g;
-    }
-    grid.push(groupRow);
-  }
-
-  grid.push(cols.map((c) => c.label ?? c.key));
-
-  for (const row of block.rows ?? []) {
-    if (row.row_type === "separator") continue;
-    const line: (string | number)[] = [row.label ?? ""];
-    for (let i = 1; i < cols.length; i++) {
-      const v = row.values?.[cols[i].key];
-      line.push(v == null ? "" : v);
-    }
-    grid.push(line);
-  }
-  return sanitizeGrid(grid);
-}
-
-/*
- * The `_data` (agent) variant of run_metric returns the raw unified engine
- * result, not a block. `flattenToGrid` is the add-in's port of the server's
- * `_flatten_role_indexed` (extract layout, spec §6.2): leaf rows only,
- * dimensions as key columns, scenario aliases as value columns — a flat,
- * formula-friendly rectangle. Ribbon-free.
- */
-
-export interface MetricRow {
-  grain?: string;
-  dimensions?: Record<string, string>;
-  item?: { key?: string; label?: string };
-  values?: Record<string, number | null>;
-}
-
-export interface MetricDataResult {
-  kind?: string;
-  dimensions?: string[];
-  scenarios?: { alias?: string }[];
-  rows?: MetricRow[];
 }
 
 /*
@@ -155,42 +92,6 @@ export function objectsToGrid(rows: Record<string, unknown>[]): (string | number
   const grid: (string | number)[][] = [cols];
   for (const r of rows) {
     grid.push(cols.map((c) => cellValue((r ?? {})[c])));
-  }
-  return sanitizeGrid(grid);
-}
-
-export function flattenToGrid(result: MetricDataResult): (string | number)[][] {
-  const dims = result.dimensions ?? [];
-  const valueCols = (result.scenarios ?? []).map((s) => s.alias).filter(Boolean) as string[];
-  const detail = (result.rows ?? []).filter((r) => r.grain === "detail");
-
-  const itemKeys = new Set(detail.map((r) => r.item?.key).filter(Boolean));
-  const multiMetric = result.kind !== "statement" && itemKeys.size > 1;
-  const isStatement = result.kind === "statement";
-
-  const keyCols = [...dims];
-  if (isStatement) {
-    keyCols.push("line_item");
-  } else if (multiMetric) {
-    keyCols.push("metric");
-  }
-
-  const grid: (string | number)[][] = [[...keyCols, ...valueCols]];
-  for (const r of detail) {
-    const line: (string | number)[] = [];
-    for (const d of dims) {
-      line.push(r.dimensions?.[d] ?? "");
-    }
-    if (isStatement) {
-      line.push(r.item?.key ?? "");
-    } else if (multiMetric) {
-      line.push(r.item?.label ?? r.item?.key ?? "");
-    }
-    for (const alias of valueCols) {
-      const v = r.values?.[alias];
-      line.push(v == null ? "" : v);
-    }
-    grid.push(line);
   }
   return sanitizeGrid(grid);
 }

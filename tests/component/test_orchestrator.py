@@ -325,6 +325,63 @@ def test_swap_failure_marks_failed_swap_does_not_record_swap(tmp_path: Path):
     assert "swap_committed_at" not in row
 
 
+@pytest.mark.parametrize("fail_refresh", [False, True])
+def test_snapshot_load_refreshes_hierarchies_before_success(tmp_path, fail_refresh):
+    ctx, history, _locks, ch, _backend = _make_context(tmp_path)
+    ctx.registry.get_binding("test_pg__fact_gl").kind = "snapshot"
+    refresh_calls = []
+
+    def refresh():
+        assert any(sql.startswith("EXCHANGE TABLES") for sql in ch.commands)
+        refresh_calls.append("refresh")
+        if fail_refresh:
+            raise RuntimeError("hierarchy replacement failed")
+
+    ctx.refresh_hierarchies = refresh
+    result = run_binding(ctx, "test_pg__fact_gl", None, "admin:tester")
+    assert refresh_calls == ["refresh"]
+    assert result.status == ("failed_swap" if fail_refresh else "success")
+    assert history.rows[result.load_id]["status"] == result.status
+    if fail_refresh:
+        assert "hierarchy replacement failed" in result.error
+        assert "swap_committed_at" in history.rows[result.load_id]
+
+
+def test_period_load_does_not_refresh_snapshot_hierarchies(tmp_path):
+    ctx, _history, _locks, _ch, _backend = _make_context(tmp_path)
+
+    def unexpected_refresh():
+        raise AssertionError("period fact loads do not refresh snapshot hierarchies")
+
+    ctx.refresh_hierarchies = unexpected_refresh
+    assert run_binding(ctx, "test_pg__fact_gl", "2026-04", "admin:tester").status == "success"
+
+
+def test_production_ingestion_context_wires_shared_hierarchy_refresh(tmp_path, catalogue, monkeypatch):
+    from precis_mcp.ingestion import wiring
+
+    ctx, history, locks, ch, backend = _make_context(tmp_path)
+    monkeypatch.setenv("PRECIS_ANALYTICAL_BACKEND", "clickhouse")
+    monkeypatch.setenv("PRECIS_INGESTION_MODE", "managed")
+    monkeypatch.setattr(wiring, "PostgresLoadHistoryWriter", lambda: history)
+    catalogue_roots = []
+
+    def load(root):
+        catalogue_roots.append(root)
+        return catalogue
+
+    monkeypatch.setattr("precis_mcp.engine.load_and_validate", load)
+    monkeypatch.delenv("PRECIS_CATALOGUE_ROOT", raising=False)
+    wired = wiring.build_default_context(
+        ctx.registry, ch_client=ch, lock_factory=locks,
+        ibis_backend_for_source=lambda _: backend, source_path_resolver=lambda _: None,
+    )
+    wired.refresh_hierarchies()
+    assert catalogue_roots == [str(ctx.registry.root.parent / "catalogue")]
+    assert len(ch.commands) == 4
+    assert all(sql.startswith("CREATE OR REPLACE TABLE semantic.dim_") for sql in ch.commands)
+
+
 # ---------------------------------------------------------------------------
 # Lock lifecycle across every exit path
 # ---------------------------------------------------------------------------

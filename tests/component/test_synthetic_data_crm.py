@@ -36,6 +36,22 @@ def synth_module() -> ModuleType:
     return generate
 
 
+def test_bootstrap_provisions_hierarchies_before_snapshot_ingestion(synth_module, monkeypatch):
+    from types import SimpleNamespace
+
+    events = []
+    catalogue = object()
+    monkeypatch.setattr("precis_mcp.db.get_clickhouse_client", lambda: object())
+    monkeypatch.setattr("precis_mcp.engine.load_and_validate", lambda _: catalogue)
+    monkeypatch.setattr("precis_mcp.ingestion.registry.IntegrationRegistry.load", lambda _: SimpleNamespace())
+    monkeypatch.setattr("precis_mcp.ingestion.live_ddl_runner.apply_all", lambda *a: events.append("live"))
+    monkeypatch.setattr("precis_mcp.ingestion.semantic_runner.apply_all", lambda *a, **kw: events.append("semantic"))
+    monkeypatch.setattr("precis_mcp.ingestion.wiring.build_default_context", lambda _: object())
+    monkeypatch.setattr(synth_module, "drive_bindings", lambda *a, **kw: events.append("bindings"))
+    synth_module.trigger_ingestion()
+    assert events == ["live", "semantic", "bindings", "semantic"]
+
+
 def test_sample_horizon_reaches_current_utc_month(synth_module):
     month_end = synth_module.end_of_month(datetime.now(timezone.utc).date())
     assert synth_module.end_of_month(date(2026, 12, 1)) == date(2026, 12, 31)

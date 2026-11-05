@@ -61,8 +61,7 @@ def build_inspection_grid_block(data: dict) -> dict | None:
         "preview_truncated": preview_truncated,
         "caption": caption,
     }
-    # Optional commercial capability. Open precis_mcp deployments register no
-    # data-ref cache, so their widget contract remains the capped preview.
+    # Forward an available cached-dataset reference alongside the capped preview.
     if isinstance(data.get("data_ref"), str) and data["data_ref"]:
         block["data_ref"] = data["data_ref"]
     return block

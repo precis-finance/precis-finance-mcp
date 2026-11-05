@@ -1,30 +1,19 @@
 -- precis_platform — OPEN core schema (squashed init).
 --
--- The open half of the platform database: identity-as-credential, the
+-- Platform state for the open package: identity-as-credential, the
 -- profile/permission model, the security + inspection audit logs, the
 -- plan-validation rule store, and the ingestion load-history provenance record.
--- It is the schema the open `precis-mcp` package ships and the FIRST root the
--- migration runner applies (open before commercial — every foreign key points
--- commercial -> open, never the reverse).
---
--- ORIGIN. Squash of the open-owned schema at its FINAL shape: the original flat
--- history (platform/001..030) with the post-split open migrations (open/002..007)
--- folded in. Captured 2026-06-17, when every live deployment was at HEAD or being
--- rebuilt fresh — the precondition that makes a squash safe. Per-step history is
--- in git; do not reconstruct it.
+-- This is the initial schema applied by the open migration runner.
 --
 -- IDEMPOTENT. Every statement guards with IF NOT EXISTS, so applying this to a
--- database that already has the schema (any current deployment) is a no-op; a
+-- database that already has the schema is a no-op; a
 -- fresh database gets the full open schema. No demo/fixture seed lives here —
 -- seeding profiles/users is a deployment concern, not schema.
 --
--- INVARIANT. No statement in this file may reference a commercial table. An
--- open -> commercial foreign key is a boundary violation.
+-- INVARIANT. This schema is self-contained and requires no extension tables.
 
 -- ---------------------------------------------------------------------------
--- users — identity-as-credential grain. The five personalization columns
--- (identity, preferences, skill_preferences, report_context, onboarded_at) live
--- in the commercial user_profile_ext table, not here. external_id is the mode-C
+-- users — identity-as-credential grain. external_id is the mode-C
 -- external-IdP join key (the stable subject/oid an IdP emits); NULL for mode-B
 -- users who authenticate by precis_user_id == users.id.
 -- ---------------------------------------------------------------------------

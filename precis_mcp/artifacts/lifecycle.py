@@ -49,11 +49,16 @@ def readiness_response():
     """Probe the common dependencies without exposing connection details."""
     from fastapi.responses import JSONResponse
     from precis_mcp import db
+    from precis_mcp.analytical import selected_backend
+    from precis_mcp.analytical.config import DatabricksConfig
 
     checks = {}
+    backend = selected_backend()
+    analytical_probe = (("clickhouse", lambda: db.query_clickhouse("SELECT 1"))
+                        if backend == "clickhouse" else ("databricks_config", DatabricksConfig.from_env))
     for name, probe in (
         ("postgres", lambda: db.query_platform("SELECT 1")),
-        ("clickhouse", lambda: db.query_clickhouse("SELECT 1")),
+        analytical_probe,
         ("redis", lambda: db.get_redis_client().ping()),
         ("artifacts", check_artifacts),
     ):

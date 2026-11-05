@@ -1,8 +1,8 @@
 # Backups & restore
 
 Précis Finance MCP ships a backup subsystem driven by one declarative file,
-`instance/backup.yml`: one scheduled run produces a complete, self-contained
-bundle — a PostgreSQL dump, a ClickHouse backup, and a tarball of your
+`instance/backup.yml`: one scheduled run produces a bundle of configured managed
+stores — a PostgreSQL dump, a ClickHouse backup when selected/managed, and a tarball of your
 `instance/` config — at a local volume or an S3-compatible bucket, with
 retention pruning, a checksum manifest, and a restore/drill command. The
 shipped tier is **dump** (nightly full backups by default), so your recovery
@@ -14,7 +14,7 @@ reserved in the config and rejected until it ships.
 | Store | Artifact | Mechanism |
 |---|---|---|
 | Platform PostgreSQL (users, profiles, `load_history`, audit tables) | `pg/` | `pg_dump --format=custom` |
-| ClickHouse (`live`, `staging`, `semantic`) | `ch/` | server-side `BACKUP DATABASE … TO Disk('precis_backups')` |
+| ClickHouse (`live`, `staging`, `semantic`, plus `planning` when present) | `ch/` | server-side `BACKUP DATABASE … TO Disk('precis_backups')` |
 | Your model (`instance/` — catalogue, semantic SQL, integrations, scenarios) | `instance/` | tarball, git SHA recorded |
 | Manifest (checksums, sizes, package version, per-table row counts) | `manifest/` | written **last** — its presence means the bundle is complete |
 
@@ -28,7 +28,53 @@ live.
 A store failure degrades the run to `partial` rather than aborting the
 bundle, and any non-success outcome can POST to a webhook.
 
+CH backups detect optional `planning` once and record the exact database list
+in the existing manifest; row-count baselines and restore/drill operations use
+the same list. The backup identity must be able to see and back up that database.
+Inventory-query failure fails the CH store rather than silently omitting data.
+Open deployments without planning still back up only the original three
+databases. Legacy manifests without the list restore only those three and
+leave existing planning untouched, including with `--force`; they cannot recover
+planning data never captured. Take a new backup after upgrading for that
+coverage. There is no new operator-maintained configuration file.
+
 ## Configuring
+
+### Databricks and customer-managed warehouse recovery
+
+`PRECIS_ANALYTICAL_BACKEND=databricks` makes warehouse recovery external.
+The customer/operator owns recovery of all Databricks data, including Précis
+scenario metadata and any application-owned tables stored there. Warehouse
+durability alone does not establish a configured customer recovery process.
+No Databricks backup/export or warehouse restore is performed by these tools.
+
+Précis continues backing up PostgreSQL and instance configuration, plus files
+when `scope.files: managed`. The existing `backup.yml` format is unchanged;
+any legacy managed-CH scope is excluded automatically in Databricks mode.
+The manifest records `analytical_backend: databricks` and a skipped
+`databricks` store with external ownership. No CH client, disk XML or warehouse
+credential is needed. `backup init` probes the platform backup destination and
+reports the external warehouse boundary instead of rendering CH disk settings.
+`backup list --json` includes the recorded backend. Success means the configured
+platform stores succeeded; it does not mean warehouse data was backed up.
+
+Use the [Databricks overlay](../configuration/analytical-client.md#docker-deployment-with-databricks)
+for all Compose commands in this mode, including backup commands. Its optional
+backup sidecar runs as UID 10001, matching the owner of private managed files;
+the image initializes the shared `/backups` volume with write access. Existing
+volumes retain their existing permissions. The CH sidecar's separate file-reader
+limitation remains; this does not change ownership of CH backup directories.
+
+Restore/drill accepts only successful artifacts actually present. It rejects
+CH artifacts for a Databricks deployment or bundle **before** artifact fetch or
+database operations, including with `--force`. Legacy manifests without the
+backend field are treated as CH bundles. Explicit platform-only recovery from
+an older bundle is supported with `--stores postgres,instance,files` when all
+three have successful artifacts; select only the available stores. A database
+drill can use `--stores postgres --drill` and explicitly reports Databricks
+recovery as unexercised. Coordinate the recovered platform/config/files point
+with the customer-managed warehouse recovery point; these commands do not
+orchestrate consistency across them. Recover secrets through the secret manager.
 
 Run the CLI inside the server container
 (`docker compose -f deploy/docker-compose.yml exec precis-mcp
@@ -66,7 +112,7 @@ service's default user has it implicitly.
    scope:
      postgres: managed
      clickhouse: managed
-     files: external           # the files store belongs to the Précis platform; keep external here
+     files: external           # back up artifact blobs separately; see Shared artifacts below
    encryption:
      kms_key_id: null          # SSE-KMS key for process-side puts; null = bucket default
    expect_worm: true
@@ -76,6 +122,11 @@ service's default user has it implicitly.
 
    The file holds credential references, never values — safe to commit to
    your instance repository.
+
+   With `files: external`, this bundle excludes artifact blobs. Back up
+   `USER_DATA_DIR` separately and restore it together with the matching platform
+   database backup; see [Shared artifacts](#shared-artifacts) for the sidecar's
+   file-permission limitation.
 
 2. **Set the credentials** in `deploy/.env` (or as `_FILE` secrets):
    `BACKUP_WRITER_ACCESS_KEY_ID`, `BACKUP_WRITER_SECRET_ACCESS_KEY`,
@@ -129,6 +180,11 @@ the drill verifies tables and checksums; restored `semantic_drill` views
 still reference `live.*`, so metric-level verification means pointing an app
 instance at the restored stores.)
 
+The drill requires a successful PostgreSQL or ClickHouse artifact.
+Instance/files artifacts are fetched and checksum-checked where checksums
+exist, but reported as skipped because database drills do not exercise
+extraction. Selecting only instance/files for a drill is rejected.
+
 A **real restore**:
 
 ```bash
@@ -138,6 +194,11 @@ precis-finance-mcp-admin backup restore --id <run_id> [--stores postgres,clickho
 Checksums are verified before anything is touched; a non-empty target is
 refused without `--force`. The `instance` artifact is always extracted
 *beside* your live config, never over it — review and swap it in yourself.
+Every explicitly requested store must have a successful, keyed artifact in
+the bundle; absent, failed, or skipped stores reject the whole selection
+before restoring anything. Empty selections are rejected too. Without
+`--stores`, available successful stores are selected, even from a partial
+bundle: inspect `backup list` to establish which stores were backed up.
 After a full host loss, the order is: images + `docker compose up` →
 `backup init` (ClickHouse disk) → restore postgres → restore clickhouse →
 swap instance config in → restart → drill or a known-scenario metric
@@ -172,3 +233,12 @@ unused disk definition is inert). Existing bundles are untouched.
 ## Shared artifacts
 
 Artifact identities, upload reservations and retired-blob cleanup metadata live in the platform PostgreSQL database. Managed bytes live in `USER_DATA_DIR`, mounted read-only by the open backup sidecar. Back up and restore these together. Redis snapshots are disposable and excluded: rerun queries after losing or restoring the cache. Renew transfer capabilities for restored files under current grants; expired URLs are not durable recovery identifiers.
+
+**Current limitation:** the shipped sidecar runs as ClickHouse UID 101,
+while managed artifact blobs are private to application UID 10001
+(mode 0600). The read-only mount does not grant access to these blobs;
+`scope.files: managed` is not reliable in this sidecar configuration.
+Managed-file coverage requires a reader identity and backup-volume layout
+that also preserve ClickHouse checksum reads and retention deletion. Track
+and validate that deployment work before relying on the bundle for recovery
+of managed artifacts; do not make private blobs world-readable.

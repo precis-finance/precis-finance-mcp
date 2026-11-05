@@ -1,0 +1,15 @@
+{
+  "vulnerabilities": [
+    {
+      "id": "CVE-2026-102554",
+      "paths": [
+        "opt/keycloak/lib/lib/main/com.google.guava.guava-33.6.0-jre.jar"
+      ],
+      "purls": [
+        "pkg:maven/com.google.guava/guava@33.6.0-jre"
+      ],
+      "expired_at": "2026-12-05T00:00:00Z",
+      "statement": "Temporary availability-risk acceptance for the pinned upstream Keycloak 26.8.1 image only. Exploitation requires untrusted Java deserialization; deployment reachability has not been disproved. Expires December 5, 2026 UTC, independent of the next release."
+    }
+  ]
+}

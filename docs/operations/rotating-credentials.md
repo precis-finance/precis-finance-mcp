@@ -10,7 +10,8 @@
 
 | Secret | Used for | Owner |
 |---|---|---|
-| `KC_BOOTSTRAP_ADMIN_PASSWORD` | Bundled Keycloak admin — the credential the admin CLI and realm-apply use to provision users (mode B only) | Précis (bundled Keycloak) |
+| `KC_BOOTSTRAP_ADMIN_PASSWORD` | Operator-only Keycloak realm/client configuration (mode B only; deployment variable `KEYCLOAK_ADMIN_PASSWORD`) | Précis (bundled Keycloak) |
+| `KC_PROVISIONING_CLIENT_SECRET` | Scoped mode-B user lifecycle; realm-apply and one-off admin CLI | Précis operator |
 | `OIDC_CLIENT_SECRET` | Confidential-client secret for an external IdP (mode C) | Your IdP |
 | `PGPASSWORD` / `CHPASSWORD` | Platform DB and ClickHouse connections | Your databases |
 | `INGEST_BINDING_JWT_SECRET` | HS256 signing key for binding-scoped ingestion tokens (push API) | Précis |
@@ -30,9 +31,9 @@ the env var alone does **not** rotate it. Three steps, in order:
    (reach it over an SSH tunnel; it is not publicly exposed) and reset the
    bootstrap admin user's password. The exact path is per your Keycloak
    version — see Keycloak's own admin docs.
-2. **Sync the Précis side.** Update `KC_BOOTSTRAP_ADMIN_PASSWORD` in
-   `deploy/.env` (or its `*_FILE` secret) to the new value, so the admin CLI
-   and realm-apply authenticate with it.
+2. **Sync the Précis side.** Update `KEYCLOAK_ADMIN_PASSWORD` in
+   `deploy/.env` to the new value, so the operator realm-apply authenticates
+   with it. Ordinary admin CLI user commands use their separate scoped secret.
 3. **Redeploy so the new value is in the container env:**
    ```bash
    bash scripts/deploy-mcp.sh --server YOUR_HOST --no-build
@@ -40,6 +41,19 @@ the env var alone does **not** rotate it. Three steps, in order:
 
 The serving path (JWT verification via JWKS) does not use this secret, so
 signed-in users are unaffected during rotation.
+
+## Rotate the provisioning client (mode B)
+
+Generate an independent replacement for `KC_PROVISIONING_CLIENT_SECRET` in the
+protected deployment environment. Re-run operator realm reconciliation to apply
+it, then use the new value for one-off admin CLI user commands. Ordinary deployment
+reruns preserve the configured value; rotation is explicit. Serving MCP receives
+no provisioning secret and needs no restart for this rotation. Other long-running
+consumers must restart after their secret changes. Previously issued tokens may
+remain valid until expiry; changing a stored secret alone is not token revocation.
+If reconciliation rejects a competing FGAP policy or unsafe enrollment group,
+provisioning remains disabled pending operator correction. Do not recover by
+injecting the bootstrap secret into ordinary user operations.
 
 ## Mode C (external IdP)
 
@@ -65,7 +79,7 @@ Précis holds no admin credential for your IdP — rotate at the IdP:
 - `curl -fsS https://YOUR_DOMAIN/readyz` returns `200` (DB connections
   re-established with the new credentials).
 - A signed-in user can still run a tool; provisioning a test user via the
-  admin CLI succeeds (mode B), confirming the new Keycloak admin password.
+  admin CLI succeeds (mode B), confirming the scoped provisioning credential. Realm reconciliation separately validates operator authentication.
 
 ## Rollback or recovery
 

@@ -17,15 +17,13 @@ generation in step 2.
 For a multi-user server that real users sign in to, see
 [Remote access](../deployment/oauth-keycloak.md).
 
-**Development cutover:** the shared artifact changes await release and acceptance.
-Use a freshly built open source export for this implementation; the previously
-published `0.2.7` image does not provide the new contract.
-
 ## 1. Start the stack
 
-Download the single-user compose file and start the stack — it **pulls the
-published image**, which already contains the demo model, so there is nothing
-to build and no instance to supply:
+Download the single-user compose file and start the stack with **Docker Compose
+2.17 or later**. It pulls the published application image, which contains the
+demo model, and automatically builds a small PostgreSQL security patch layer.
+The build instructions are embedded in the Compose file; no checkout or
+instance is needed:
 
 ```bash
 curl -O https://raw.githubusercontent.com/precis-finance/precis-finance-mcp/main/deploy/docker-compose.local.yml
@@ -165,7 +163,12 @@ for how to describe your metrics and statements.
 
 ## Running without Docker
 
-The server is plain Python (3.12+). From a source checkout:
+The server is plain Python (3.12+). Before starting it, configure PostgreSQL
+(`PG*`) and Redis/Valkey, apply the open PostgreSQL migrations, and set
+`PRECIS_BASE_URL` plus a writable `USER_DATA_DIR`. See
+[direct Python setup](../operations/upgrades.md#direct-python-installations).
+
+From a source checkout:
 
 ```bash
 pip install -e ".[dev]"
@@ -183,9 +186,8 @@ override). In this mode the instance directory is the checkout's `instance/`
 — replace its contents (or the directory itself) with your model.
 
 To populate the demo model in this mode (`python -m precis_mcp.sample_data`),
-you also need a reachable Postgres: export `PGHOST` / `PGUSER` / `PGPASSWORD`
-(and `CUSTOMER_PG_HOST` / `CUSTOMER_PG_USER` / `CUSTOMER_PG_PASSWORD` /
-`CUSTOMER_PG_DATABASE=fpa_actuals` pointing at the same server) before
+also export `CUSTOMER_PG_HOST` / `CUSTOMER_PG_USER` / `CUSTOMER_PG_PASSWORD` /
+`CUSTOMER_PG_DATABASE=fpa_actuals` pointing at the same PostgreSQL server before
 running the generator. The compose stack wires all of this for you — going
 Docker-less is for serving a model you populate by other means.
 

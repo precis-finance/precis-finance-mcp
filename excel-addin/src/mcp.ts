@@ -58,17 +58,19 @@ function releaseSlot(): void {
  * message-bearing Error on transport / auth / tool error (a custom function
  * surfaces it as the cell's error text).
  */
-export async function callTool<T = unknown>(
+export async function callToolEnvelope(
   mcpUrl: string,
   token: string,
   name: string,
-  args: Record<string, unknown>
-): Promise<T> {
+  args: Record<string, unknown>,
+  worksheet = false
+): Promise<McpEnvelope> {
   const body = JSON.stringify({
     jsonrpc: "2.0",
     id: ++_rpcId,
     method: "tools/call",
-    params: { name, arguments: args },
+    params: { name, arguments: args,
+      ...(worksheet ? { _meta: { "precis/worksheet": { version: 1 } } } : {}) },
   });
   const post = (bearer: string): Promise<Response> =>
     fetch(mcpUrl, {
@@ -113,6 +115,19 @@ export async function callTool<T = unknown>(
       const text = result?.content?.[0]?.text ?? "tool error";
       throw new Error(`Précis: ${text}`);
     }
+    return result as McpEnvelope;
+  } finally {
+    releaseSlot();
+  }
+}
+
+export interface McpEnvelope {
+  structuredContent?: any;
+  _meta?: Record<string, any>;
+}
+
+export async function callTool<T = unknown>(mcpUrl: string, token: string, name: string, args: Record<string, unknown>): Promise<T> {
+    const result = await callToolEnvelope(mcpUrl, token, name, args);
     // Render variants carry the widget block on `_meta` (the model reads the raw
     // result on `structuredContent`); prefer it so a render call yields the
     // block and a `_data` call the raw result — each caller's expected `T`.
@@ -124,7 +139,4 @@ export async function callTool<T = unknown>(
       throw new Error("Précis: no structuredContent in the response.");
     }
     return result.structuredContent as T;
-  } finally {
-    releaseSlot();
-  }
 }

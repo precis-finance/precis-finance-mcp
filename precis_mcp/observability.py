@@ -17,7 +17,7 @@ Design constraints:
   off; collector-side scrubbing is defence-in-depth.
 
 Public entry points:
-    init_observability(app)     — call once from FastAPI lifespan
+    init_observability(app)     — call before the app handles its first ASGI scope
     get_tracer(name)            — module-level tracer accessor
     get_logger(name)            — structlog logger with trace context
 """
@@ -47,8 +47,10 @@ def telemetry_enabled() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def init_observability(app: Any) -> None:
-    """Bootstrap OTel + structlog.  Idempotent; safe to call twice.
+def init_observability(app: Any, *, include_llm_instrumentors: bool = True) -> None:
+    """Bootstrap OTel + structlog for one served app per process.
+
+    Idempotent; repeated calls do not reconfigure the process or another app.
 
     Reads:
         PRECIS_TELEMETRY_ENABLED      — "true" / "false" (default false)
@@ -76,7 +78,7 @@ def init_observability(app: Any) -> None:
 
     try:
         _init_tracer_provider()
-        _init_instrumentors(app)
+        _init_instrumentors(app, include_llm_instrumentors=include_llm_instrumentors)
         _setup_structlog_with_otel()
         _enabled = True
         logger.info(
@@ -115,7 +117,7 @@ def _init_tracer_provider() -> None:
     provider.add_span_processor(BatchSpanProcessor(exporter))
 
 
-def _init_instrumentors(app: Any) -> None:
+def _init_instrumentors(app: Any, *, include_llm_instrumentors: bool = True) -> None:
     """Attach auto-instrumentors.  Each one is best-effort; failures are logged."""
     capture_content = (
         os.getenv("PRECIS_TELEMETRY_CAPTURE_CONTENT", "false").lower() == "true"
@@ -126,7 +128,7 @@ def _init_instrumentors(app: Any) -> None:
     # which creates more exports — flooding the backend with empty `POST` spans.
     # MUST be set BEFORE instrumentors are constructed — they read the env var
     # at .instrument() time and cache the excluded URL list.
-    otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+    otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
     if otlp_endpoint:
         target = otlp_endpoint.split("://")[-1].rstrip("/")
         excl = os.getenv("OTEL_PYTHON_EXCLUDED_URLS", "")
@@ -135,23 +137,31 @@ def _init_instrumentors(app: Any) -> None:
                 f"{excl},{target}" if excl else target
             )
 
-    # FastAPI — request spans for every HTTP route.
+    # Instrument before the first ASGI scope builds the application's stack.
     try:
-        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from fastapi import FastAPI
         # Signed transfer URLs are credentials even when content capture is
         # disabled. Exclude them before the instrumentation sees the raw scope.
         excluded = os.getenv("OTEL_PYTHON_FASTAPI_EXCLUDED_URLS", os.getenv("OTEL_PYTHON_EXCLUDED_URLS", ""))
         excluded = ",".join(value for value in (excluded, r"/api/artifacts/(download|upload)") if value)
-        FastAPIInstrumentor().instrument_app(app, excluded_urls=excluded)
+        if isinstance(app, FastAPI):
+            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+            FastAPIInstrumentor().instrument_app(app, excluded_urls=excluded)
+            # Embedding applications may initialize from their lifespan, after
+            # Starlette has already constructed the original middleware stack.
+            if app.middleware_stack is not None:
+                app.middleware_stack = app.build_middleware_stack()
+        else:
+            from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
+            app.add_middleware(OpenTelemetryMiddleware, excluded_urls=excluded)
     except Exception:
-        logger.exception("FastAPI instrumentor failed")
+        logger.exception("HTTP instrumentor failed")
 
     # Outbound HTTP (Anthropic SDK uses httpx; ClickHouse via clickhouse-connect uses urllib3).
     # asyncpg deliberately omitted — Précis uses psycopg, not asyncpg, and importing the
     # asyncpg instrumentor crashes with ModuleNotFoundError when asyncpg isn't installed.
     # (mod_path, cls_name, instrumented_lib) — skipped quietly when the
-    # instrumented library itself isn't installed (e.g. redis is absent from
-    # the open package since the lock move to Postgres).
+    # instrumented library itself isn't installed.
     import importlib.util
     for mod_path, cls_name, lib in [
         ("opentelemetry.instrumentation.httpx", "HTTPXClientInstrumentor", "httpx"),
@@ -165,6 +175,9 @@ def _init_instrumentors(app: Any) -> None:
             getattr(mod, cls_name)().instrument()
         except Exception:
             logger.exception("Instrumentor %s failed", cls_name)
+
+    if not include_llm_instrumentors:
+        return
 
     # LLM and agent framework — OpenLLMetry / Traceloop.
     # capture_content controls whether prompts and tool I/O ride on spans.

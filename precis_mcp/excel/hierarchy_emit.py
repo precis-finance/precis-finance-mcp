@@ -15,6 +15,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment
 from openpyxl.worksheet.worksheet import Worksheet
 
+from precis_mcp.excel.cells import write_source_cell
 from precis_mcp.excel.engine import (
     _FILL_ALT_ROW,
     _FONT_DEFAULT,
@@ -84,7 +85,7 @@ def _write_flat_sheet(
 
     # Header row
     for col_idx, col_name in enumerate(columns, start=1):
-        ws.cell(row=1, column=col_idx, value=col_name)
+        write_source_cell(ws, row=1, column=col_idx, value=col_name)
     _apply_header_row(ws, 1, col_count)
 
     # Data rows
@@ -92,7 +93,7 @@ def _write_flat_sheet(
         for col_idx, col_name in enumerate(columns, start=1):
             val = row_data.get(col_name)
             if val is not None:
-                ws.cell(row=row_idx, column=col_idx, value=str(val))
+                write_source_cell(ws, row=row_idx, column=col_idx, value=str(val))
             cell = ws.cell(row=row_idx, column=col_idx)
             cell.font = _FONT_DEFAULT
             cell.alignment = Alignment(horizontal="left", vertical="center")

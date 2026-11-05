@@ -5,12 +5,12 @@
 Both ``metric_to_excel`` and ``statement_to_excel`` are thin wrappers over this
 module. They build the unified ``financial_table`` block with
 ``table_builder.build_financial_table_block`` (the same structure the renderers
-consume) and hand it here, so the Excel sheet, the chat-transcript table, and a
-saved report block are structurally identical by construction.
+consume) and hand it here. Excel shares semantic rows with the live worksheet
+projection, omitting decorative separators without changing the source block.
 
 This module owns:
   - :func:`write_block_to_sheet` — pure block → worksheet rendering (caption
-    rows, one- or two-level header, styled data rows, per-column number
+    footer, optional external title, one- or two-level header, styled data rows, per-column number
     formats, variance fonts, freeze panes);
   - :func:`report_to_excel` — workbook lifecycle (create/append), the write,
     and meta stamping, shared by both wrappers.
@@ -21,14 +21,18 @@ detail-only, refreshable data layer with named ranges, a different artefact.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 from openpyxl.styles import Alignment, Font
+from openpyxl.utils import get_column_letter
+from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.worksheet import Worksheet
 
+from precis_mcp.cell_format import report_cell_number_format
+from precis_mcp.excel.cells import write_source_cell, write_footer_row
 from precis_mcp.excel.engine import (
-    _BORDER_BOTTOM,
     _BORDER_TOP,
     _BORDER_TOP_BOTTOM,
     _FILL_HEADER,
@@ -40,18 +44,12 @@ from precis_mcp.excel.engine import (
     _FONT_ITALIC,
     _apply_header_row,
     _auto_fit_columns,
-    _number_format,
     _sheet_name,
     _variance_font,
-    _write_caption_rows,
 )
-
-
-def _apply_separator_row(ws: Worksheet, row_num: int, col_count: int) -> None:
-    """Style a separator row (empty, thin bottom border across all columns)."""
-    for col in range(1, col_count + 1):
-        ws.cell(row=row_num, column=col).border = _BORDER_BOTTOM
+from precis_mcp.excel.extract_emit import _slug, _unique_range_name
 from precis_mcp.excel.meta import stamp_report_meta
+from precis_mcp.excel.worksheet import report_body_rows, caption_text
 from precis_mcp.excel.workbook import (
     WorkbookLifecycleError,
     finalize_workbook,
@@ -77,13 +75,13 @@ def _write_header(ws: Worksheet, columns: list[dict], header_row: int) -> int:
     col_count = len(columns)
     if not any(c.get("group") for c in columns):
         for ci, col in enumerate(columns, start=1):
-            ws.cell(row=header_row, column=ci, value=col.get("label", ""))
+            write_source_cell(ws, row=header_row, column=ci, value=col.get("label", ""))
         _apply_header_row(ws, header_row, col_count)
         return header_row + 1
 
     top, bottom = header_row, header_row + 1
     # Label column spans both header rows.
-    ws.cell(row=top, column=1, value=columns[0].get("label", ""))
+    write_source_cell(ws, row=top, column=1, value=columns[0].get("label", ""))
     ws.merge_cells(start_row=top, start_column=1, end_row=bottom, end_column=1)
 
     value_cols = columns[1:]
@@ -96,14 +94,14 @@ def _write_header(ws: Worksheet, columns: list[dict], header_row: int) -> int:
         first_col = 2 + i
         last_col = 2 + j - 1
         if grp:
-            ws.cell(row=top, column=first_col, value=grp)
+            write_source_cell(ws, row=top, column=first_col, value=grp)
             if last_col > first_col:
                 ws.merge_cells(
                     start_row=top, start_column=first_col,
                     end_row=top, end_column=last_col,
                 )
         for k in range(i, j):
-            ws.cell(row=bottom, column=2 + k, value=value_cols[k].get("label", ""))
+            write_source_cell(ws, row=bottom, column=2 + k, value=value_cols[k].get("label", ""))
         i = j
 
     _apply_header_row(ws, top, col_count)
@@ -181,13 +179,20 @@ def _style_block_row(
 # ---------------------------------------------------------------------------
 
 
-def write_block_to_sheet(ws: Worksheet, block: dict) -> None:
-    """Render a ``financial_table`` block onto a worksheet."""
-    caption = block.get("caption", {})
-    header_row = _write_caption_rows(ws, caption)
+def write_block_to_sheet(ws: Worksheet, block: dict, *, include_title: bool = True) -> dict | None:
+    """Render the canonical headers/body/footer grid below an optional title.
+
+    Titles are standalone worksheet content outside the managed region.
+    """
+    title = (block.get("caption") or {}).get("description")
+    header_row = 1
+    if include_title and title:
+        cell = write_source_cell(ws, row=1, column=1, value=title)
+        cell.font = Font(name="Calibri", size=14, bold=True)
+        header_row = 3
 
     columns: list[dict] = block.get("columns", [])
-    rows: list[dict] = block.get("rows", [])
+    rows = report_body_rows(block)
     col_count = len(columns)
     if col_count == 0:
         ws.cell(row=header_row, column=1, value="No data")
@@ -199,29 +204,16 @@ def write_block_to_sheet(ws: Worksheet, block: dict) -> None:
     current = data_start
     for row in rows:
         row_type = row.get("row_type", "line_item")
-        if row_type == "separator":
-            _apply_separator_row(ws, current, col_count)
-            current += 1
-            continue
-
-        ws.cell(row=current, column=1, value=row.get("label", ""))
+        write_source_cell(ws, row=current, column=1, value=row.get("label", ""))
         row_values = row.get("values", {})
 
         for offset, col in enumerate(value_cols):
             col_idx = 2 + offset
-            fmt = col.get("format") or row.get("format") or "currency"
-            dec = col.get("decimals")
-            if dec is None:
-                dec = row.get("decimals")
             val = row_values.get(col["key"])
             if val is not None:
-                # Excel % format multiplies by 100; engine percents are already
-                # human-readable (e.g. 8.7 for 8.7%).
-                if fmt == "percent" and isinstance(val, (int, float)):
-                    val = val / 100
-                ws.cell(row=current, column=col_idx, value=val)
+                write_source_cell(ws, row=current, column=col_idx, value=val)
             cell = ws.cell(row=current, column=col_idx)
-            cell.number_format = _number_format(fmt, dec or 0)
+            cell.number_format = report_cell_number_format(row, col)
             cell.alignment = Alignment(horizontal="right", vertical="center")
 
         _style_block_row(
@@ -238,6 +230,9 @@ def write_block_to_sheet(ws: Worksheet, block: dict) -> None:
 
     ws.freeze_panes = f"B{data_start}"
     _auto_fit_columns(ws)
+    write_footer_row(ws, row=current, columns=col_count, text=caption_text(block.get("caption")))
+    return {"header_row": header_row, "data_start_row": data_start,
+            "row_count": len(rows), "footer_rows": 1, "column_keys": [c["key"] for c in columns]}
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +250,7 @@ def report_to_excel(
     target: str = "new",
     overwrite: bool = False,
     sheet_name: str | None = None,
+    include_title: bool = True,
 ) -> Path:
     """Build the unified block from ``result`` and write it to ``path``.
 
@@ -275,23 +271,38 @@ def report_to_excel(
     block = build_financial_table_block(result, caption=result.get("caption"))
     if block is None:
         # No scenarios / no rows — write a header-only marker so the sheet exists.
-        caption = result.get("caption", {})
-        header_row = _write_caption_rows(ws, caption)
-        ws.cell(row=header_row, column=1, value="No data")
+        write_block_to_sheet(ws, {"columns": [], "rows": [], "caption": result.get("caption", {})}, include_title=include_title)
     else:
-        write_block_to_sheet(ws, block)
+        shape = write_block_to_sheet(ws, block, include_title=include_title)
 
-    if target == "new" and existing_meta is None and not pre_existing_sheet_names:
-        stamp_report_meta(wb, ws.title, meta_source)
+    if meta_source is None and target == "new" and existing_meta is None and not pre_existing_sheet_names:
+        stamp_report_meta(wb, ws.title, None)
         wb.save(str(path))
         return path
 
     sheet_entry: dict[str, Any] = {"kind": "report"}
     if meta_source is not None:
-        sheet_entry["source"] = {
+        params = dict(meta_source.get("params", {}))
+        params["scale"] = result.get("scale", params.get("scale"))
+        params["decimals"] = result.get("decimals", params.get("decimals"))
+        source = {
             "tool": meta_source["tool"],
-            "params": dict(meta_source.get("params", {})),
+            "params": params,
         }
+        if block and block.get("columns") and block.get("rows"):
+            name = _unique_range_name(wb, f"precis_region_{_slug(ws.title)}")
+            last_column = get_column_letter(len(block["columns"]))
+            escaped = ws.title.replace("'", "''")
+            header_row = shape["header_row"]
+            shape = {**shape, "header_row": 1, "data_start_row": shape["data_start_row"] - header_row + 1}
+            wb.defined_names[name] = DefinedName(name, attr_text=f"'{escaped}'!$A${header_row}:${last_column}${ws.max_row}")
+            sheet_entry["regions"] = [{
+                "range_name": name, "state": "static", "layout": "report",
+                "origin": os.environ.get("PRECIS_BASE_URL", "").rstrip("/") or None,
+                "source": source,
+                "shape": shape,
+                "presentation": {"scale": params["scale"], "decimals": params["decimals"]},
+            }]
     meta = merge_meta(
         existing_meta=existing_meta,
         pre_existing_sheet_names=pre_existing_sheet_names,

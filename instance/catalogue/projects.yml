@@ -149,7 +149,7 @@ metrics:
   - key: project_percent_complete
     label: "% Complete"
     description: "Project progress as a percentage. Cost-to-cost POC for fixed-fee, billed-to-contract for milestone, not meaningful for T&M (always 0)."
-    calculation_note: "Average percent_complete from semantic.v_revenue_subledger across selected projects, closing rollup across periods."
+    calculation_note: "Average percent_complete in percentage points from semantic.v_revenue_subledger (stored fraction * 100) across selected projects, closing rollup across periods."
     source_column: percent_complete
     aggregation: avg
     rollup_method: closing

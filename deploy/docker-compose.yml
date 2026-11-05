@@ -18,7 +18,7 @@
 #   - External: drop `bundled-clickhouse` and set CHHOST=<your host>. The
 #     clickhouse service is not started; precis-mcp connects to yours (lazy
 #     connection, no other change). Populating it (ingestion) is a separate step
-#     — see open_docs/configuration/ingestion.md.
+#     — see docs/configuration/ingestion.md in the open repository.
 #
 #   AUTH AXIS — bundled Keycloak (mode B) vs. external OIDC IdP (mode C):
 #   - Bundled Keycloak (default): include `bundled-keycloak`, PRECIS_AUTH_MODE=keycloak.
@@ -69,6 +69,22 @@
 # applies scripts/migrations/open/ only and gets the open schema with no
 # Précis platform tables (the migration history is split open/ + commercial/).
 
+
+# APT-only patch over the immutable upstream PostgreSQL image. Inline so the
+# downloaded single-file trial needs no checkout (Docker Compose >=2.17).
+# BuildKit caches this layer; no database binaries or libc packages are upgraded.
+x-postgres-image: &postgres-image
+  image: precis-mcp-postgres:16-bookworm-apt-2.6.2
+  pull_policy: build
+  build:
+    context: .
+    dockerfile_inline: |
+      FROM postgres:16-bookworm@sha256:e8a07d2c7579b038938cdba6c539e580e5001caf9ea203d397b5cc83e76bd938
+      RUN apt-get -o Acquire::Retries=0 update \
+          && apt-get -o Acquire::Retries=0 install -y --no-install-recommends \
+             apt=2.6.2 libapt-pkg6.0=2.6.2 \
+          && rm -rf /var/lib/apt/lists/*
+
 name: precis-mcp
 
 # Service-level hardening for the precis-mcp image services — the app runs as
@@ -92,9 +108,14 @@ x-precis-env: &precis-env
   PGPASSWORD: ${PGPASSWORD:?set PGPASSWORD in deploy/.env}
   PLATFORM_DB_NAME: ${PLATFORM_DB_NAME:-precis_platform}
   CHHOST: ${CHHOST:-clickhouse}
-  CHPORT: ${CHPORT:-8123}
+  # Empty leaves HTTP/HTTPS port selection to the shared client helper.
+  CHPORT: ${CHPORT:-}
+  CHSECURE: ${CHSECURE:-false}
+  CHVERIFY: ${CHVERIFY:-true}
+  CHCACERT: ${CHCACERT:-}
   CHUSER: ${CHUSER:-precis}
-  CHPASSWORD: ${CHPASSWORD:?set CHPASSWORD in deploy/.env}
+  # Required by the bundled CH startup guard, not by a Databricks assembly.
+  CHPASSWORD: ${CHPASSWORD:-}
   # Local-FS drop store: the shared `ingest_dropbox` volume. The watcher polls
   # it and the operator script resolves ${source_path} from it; deliver files
   # with `docker compose cp <file> precis-mcp:/data/ingest/` or by bind-mounting
@@ -111,6 +132,8 @@ x-precis-env: &precis-env
   CUSTOMER_PG_USER: ${CUSTOMER_PG_USER:-${PGUSER:-precis}}
   CUSTOMER_PG_PASSWORD: ${CUSTOMER_PG_PASSWORD:-${PGPASSWORD}}
   CUSTOMER_PG_DATABASE: ${CUSTOMER_PG_DATABASE:-fpa_actuals}
+  CUSTOMER_PG_SSLMODE: ${CUSTOMER_PG_SSLMODE:-}
+  CUSTOMER_PG_SSLROOTCERT: ${CUSTOMER_PG_SSLROOTCERT:-}
 
 # The first-party precis-mcp application image — built from this repo's
 # Dockerfile and published to GHCR by the release workflow (deploy/ci/release.yml
@@ -125,7 +148,7 @@ x-precis-env: &precis-env
 # release — bump it with each release, or override to a digest for re-pull
 # immutability matching the upstream-image policy below.
 x-precis-image: &precis-image
-  image: ghcr.io/precis-finance/precis-finance-mcp:${PRECIS_MCP_TAG:-0.3.0}
+  image: ghcr.io/precis-finance/precis-finance-mcp:${PRECIS_MCP_TAG:-0.4.0}
   build:
     context: ..
     dockerfile: Dockerfile
@@ -141,7 +164,7 @@ x-precis-image: &precis-image
 # update the digest here and in docker-compose.local.yml, test, commit.
 services:
   redis:
-    image: valkey/valkey:7.2.14-alpine@sha256:c6c2f0020be34bbf684a53a0ef716ab16ff70295186d4d9f2518435beb7afbff
+    image: valkey/valkey:7.2.15-alpine@sha256:f8c1a646f4b31ae4dc3980ff06723a20b533ea1123b9796d450d78ed53ad6d3e
     restart: unless-stopped
     # Shared snapshot data is disposable. Keep capacity bounded; no eviction
     # of the accounting indexes independently of their snapshot entries.
@@ -153,7 +176,7 @@ services:
       retries: 5
 
   postgres:
-    image: postgres:16-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
+    <<: *postgres-image
     restart: unless-stopped
     environment:
       POSTGRES_DB: precis
@@ -172,6 +195,13 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:26.3-alpine@sha256:13801d987af5b890e6843d9d72df6ee0ca9c664d56a5d8ccbe6065460f0eb20f
     profiles: ["bundled-clickhouse"]
+    # Interpolation must allow an absent CH password when this service is
+    # inactive. Keep the password mandatory if the CH service actually starts.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - 'test -n "$$CLICKHOUSE_PASSWORD" || { echo "CHPASSWORD is required for bundled ClickHouse" >&2; exit 1; }; exec /entrypoint.sh "$$@"'
+      - --
     restart: unless-stopped
     # Runs under Docker's default seccomp profile (verified: startup, queries,
     # partition swaps, BACKUP/RESTORE all clean). If ClickHouse fails to start
@@ -187,7 +217,7 @@ services:
     environment:
       CLICKHOUSE_DB: ${CHDATABASE:-precis}
       CLICKHOUSE_USER: ${CHUSER:-precis}
-      CLICKHOUSE_PASSWORD: ${CHPASSWORD:?set CHPASSWORD in deploy/.env}
+      CLICKHOUSE_PASSWORD: ${CHPASSWORD:-}
     volumes:
       - clickhouse_data:/var/lib/clickhouse
       # Backup surface — inert until backups are configured. The single-file
@@ -206,7 +236,7 @@ services:
 
   # Create the Keycloak role + database inside the shared Postgres. Idempotent.
   keycloak-db-init:
-    image: postgres:16-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
+    <<: *postgres-image
     profiles: ["bundled-keycloak"]
     restart: "no"
     environment:
@@ -234,7 +264,7 @@ services:
         condition: service_healthy
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.5@sha256:37dbaf6f0722c9ec246335f36e1ef8b2e6cb960f7c27e0d8c615121a3d475a85
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
     profiles: ["bundled-keycloak"]
     restart: unless-stopped
     command: ["start", "--import-realm"]
@@ -291,6 +321,7 @@ services:
       KC_ADDIN_REDIRECT_URIS: ${KC_ADDIN_REDIRECT_URIS:-}
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD in deploy/.env}
+      KC_PROVISIONING_CLIENT_SECRET: ${KC_PROVISIONING_CLIENT_SECRET:?set KC_PROVISIONING_CLIENT_SECRET in deploy/.env}
     depends_on:
       keycloak:
         condition: service_started
@@ -332,6 +363,11 @@ services:
       PRECIS_BASE_URL: ${PRECIS_BASE_URL:?set the public HTTPS origin}
       ARTIFACT_SIGNING_KEY: ${ARTIFACT_SIGNING_KEY:?generate a distinct key with openssl rand -hex 32}
       PRECIS_MCP_UPLOADS_ENABLED: ${PRECIS_MCP_UPLOADS_ENABLED:-false}
+      # Requires an image built with PRECIS_EXTRAS=telemetry.
+      PRECIS_TELEMETRY_ENABLED: ${PRECIS_TELEMETRY_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-precis-mcp}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
       REDIS_HOST: redis
       USER_DATA_DIR: /data/users
       # Identity mode: keycloak (bundled, default) or oidc (external IdP). In

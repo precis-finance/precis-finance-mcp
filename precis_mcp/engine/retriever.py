@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import wait
+from contextlib import suppress
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from precis_mcp.analytical.sql import CLICKHOUSE_SQL, SqlDialect, dialect_for
 
 from precis_mcp.engine.catalogue import BaseMetric, Catalogue, DerivedMetric, MetricPredicate
 from precis_mcp.engine.query_extensions import scenario_sql_scope
@@ -73,19 +77,21 @@ class ExecutionPlan:
 # SQL expression builders
 # ---------------------------------------------------------------------------
 
-def _sql_literal(value: object) -> str:
+def _sql_literal(value: object, dialect: SqlDialect = CLICKHOUSE_SQL,
+                 source_view: str | None = None, source_column: str | None = None) -> str:
     """Render a trusted catalogue literal into a ClickHouse SQL fragment."""
     if value is None:
         return "NULL"
     if isinstance(value, bool):
-        return "1" if value else "0"
+        return dialect.boolean(value, relation=source_view, source_column=source_column)
     if isinstance(value, int | float):
         return str(value)
     escaped = str(value).replace("'", "''")
     return f"'{escaped}'"
 
 
-def compile_predicates_to_sql(where: list[MetricPredicate]) -> str:
+def compile_predicates_to_sql(where: list[MetricPredicate], dialect: SqlDialect = CLICKHOUSE_SQL,
+                              source_view: str | None = None) -> str:
     """Compile a metric's ``where`` predicates into a ClickHouse boolean SQL
     fragment for use inside ``CASE WHEN {filt} THEN ...``. Empty -> ``1=1``.
 
@@ -100,22 +106,22 @@ def compile_predicates_to_sql(where: list[MetricPredicate]) -> str:
             raise ValueError(f"Invalid predicate column name: {pred.column!r}")
         col = f"{_FACT}.{pred.column}"
         if pred.op == "eq":
-            parts.append(f"{col} = {_sql_literal(pred.value)}")
+            parts.append(f"{col} = {_sql_literal(pred.value, dialect, source_view, pred.column)}")
         elif pred.op == "neq":
-            parts.append(f"{col} != {_sql_literal(pred.value)}")
+            parts.append(f"{col} != {_sql_literal(pred.value, dialect, source_view, pred.column)}")
         elif pred.op == "gt":
-            parts.append(f"{col} > {_sql_literal(pred.value)}")
+            parts.append(f"{col} > {_sql_literal(pred.value, dialect, source_view, pred.column)}")
         elif pred.op == "gte":
-            parts.append(f"{col} >= {_sql_literal(pred.value)}")
+            parts.append(f"{col} >= {_sql_literal(pred.value, dialect, source_view, pred.column)}")
         elif pred.op == "lt":
-            parts.append(f"{col} < {_sql_literal(pred.value)}")
+            parts.append(f"{col} < {_sql_literal(pred.value, dialect, source_view, pred.column)}")
         elif pred.op == "lte":
-            parts.append(f"{col} <= {_sql_literal(pred.value)}")
+            parts.append(f"{col} <= {_sql_literal(pred.value, dialect, source_view, pred.column)}")
         elif pred.op == "in":
-            vals = ", ".join(_sql_literal(v) for v in pred.values)
+            vals = ", ".join(_sql_literal(v, dialect, source_view, pred.column) for v in pred.values)
             parts.append(f"{col} IN ({vals})")
         elif pred.op == "not_in":
-            vals = ", ".join(_sql_literal(v) for v in pred.values)
+            vals = ", ".join(_sql_literal(v, dialect, source_view, pred.column) for v in pred.values)
             parts.append(f"{col} NOT IN ({vals})")
         elif pred.op == "is_null":
             parts.append(f"{col} IS NULL")
@@ -125,7 +131,8 @@ def compile_predicates_to_sql(where: list[MetricPredicate]) -> str:
     return " AND ".join(parts)
 
 
-def build_metric_expression(metric: BaseMetric) -> str:
+def build_metric_expression(metric: BaseMetric, dialect: SqlDialect = CLICKHOUSE_SQL,
+                            source_view: str | None = None) -> str:
     """Build the filtered SQL aggregate for a single base metric.
 
     Returns the expression WITHOUT an alias — caller adds 'AS {key}'.
@@ -136,7 +143,7 @@ def build_metric_expression(metric: BaseMetric) -> str:
     ``count`` and ``count_distinct`` have their own source/sign contracts below.
     """
     col = _qualify(metric.source_column)
-    filt = compile_predicates_to_sql(metric.where)
+    filt = compile_predicates_to_sql(metric.where, dialect, source_view)
 
     if metric.aggregation == "count_distinct":
         # `source_column` is the distinct key (e.g. opportunity_id, employee_id).
@@ -157,7 +164,7 @@ def build_metric_expression(metric: BaseMetric) -> str:
         value_expr = col
 
     if metric.aggregation == "sum":
-        return f"SUM(CASE WHEN {filt} THEN {value_expr} ELSE 0 END)"
+        return dialect.sum(f"CASE WHEN {filt} THEN {value_expr} ELSE 0 END")
     if metric.aggregation in {"avg", "min", "max"}:
         aggregate = metric.aggregation.upper()
         return f"{aggregate}(CASE WHEN {filt} THEN {value_expr} END)"
@@ -166,7 +173,9 @@ def build_metric_expression(metric: BaseMetric) -> str:
     )
 
 
-def build_avg_metric_expression(metric: BaseMetric, native_column: str = "period") -> str:
+def build_avg_metric_expression(metric: BaseMetric, native_column: str = "period",
+                               dialect: SqlDialect = CLICKHOUSE_SQL,
+                               source_view: str | None = None) -> str:
     """Build avg-rollup expression: SUM(CASE WHEN ...) / COUNT(DISTINCT <native>).
 
     The denominator counts distinct periods at the fact's native grain, so the
@@ -179,7 +188,7 @@ def build_avg_metric_expression(metric: BaseMetric, native_column: str = "period
             f"{metric.key!r}; got {metric.aggregation!r}"
         )
     col = _qualify(metric.source_column)
-    filt = compile_predicates_to_sql(metric.where)
+    filt = compile_predicates_to_sql(metric.where, dialect, source_view)
     native = _qualify(native_column)
 
     if metric.sign == "abs":
@@ -190,8 +199,8 @@ def build_avg_metric_expression(metric: BaseMetric, native_column: str = "period
         value_expr = col
 
     return (
-        f"SUM(CASE WHEN {filt} THEN {value_expr} ELSE 0 END)"
-        f" / NULLIF(COUNT(DISTINCT {native}), 0)"
+        dialect.sum(f"CASE WHEN {filt} THEN {value_expr} ELSE 0 END")
+        + f" / NULLIF(COUNT(DISTINCT {native}), 0)"
     )
 
 
@@ -231,14 +240,16 @@ class _Join:
     dim_key_col: str    # the joined table's key column
     kind: str = "LEFT"       # LEFT | INNER
     cast_fact: bool = False  # wrap the fact column in toString() in the ON
+    is_subquery: bool = False
 
-    def sql(self) -> str:
+    def sql(self, dialect: SqlDialect = CLICKHOUSE_SQL) -> str:
         left = (
-            f"toString({_FACT}.{self.fact_col})" if self.cast_fact
+            dialect.string(f"{_FACT}.{self.fact_col}") if self.cast_fact
             else f"{_FACT}.{self.fact_col}"
         )
+        table = self.table if self.is_subquery else dialect.table(self.table)
         return (
-            f"{self.kind} JOIN {self.table} {self.alias} "
+            f"{self.kind} JOIN {table} {self.alias} "
             f"ON {left} = {self.alias}.{self.dim_key_col}"
         )
 
@@ -247,6 +258,7 @@ def _resolve_breakdowns(
     dimensions: list[str],
     catalogue: Catalogue,
     domain_cat,
+    dialect: SqlDialect = CLICKHOUSE_SQL,
 ) -> tuple[dict[str, str], list[_Join]]:
     """Resolve each breakdown axis to a qualified SQL expression plus any joins.
 
@@ -299,17 +311,21 @@ def _resolve_breakdowns(
             )
             joins.append(join)
             join_by_key[join_key] = join
-        name_to_expr[name] = f"{join.alias}.{resolution.filter_column}"
+        name_to_expr[name] = dialect.joined_attribute(
+            f"{join.alias}.{resolution.filter_column}", resolution.source_table, resolution.filter_column,
+            joined_key=f"{join.alias}.{resolution.leaf_key_column}",
+        )
 
     return name_to_expr, joins
 
 
 def _select_cols(
     metrics: list[BaseMetric],
-    rollup_group: str | None,
     dimensions: list[str],
     name_to_expr: dict[str, str],
     native_column: str = "period",
+    dialect: SqlDialect = CLICKHOUSE_SQL,
+    source_view: str | None = None,
 ) -> str:
     """Build SELECT column list.
 
@@ -317,17 +333,16 @@ def _select_cols(
     reader keys rows by the catalogue name regardless of how (or where) the
     underlying column lives.
 
-    rollup_group controls which expression builder to use:
-      'avg'     -> build_avg_metric_expression
-      otherwise -> build_metric_expression
+    Each metric selects its own expression builder, so additive and
+    period-average metrics can share a range query.
     """
     parts: list[str] = [f"{name_to_expr[dim]} AS {dim}" for dim in dimensions]
 
     for m in metrics:
-        if rollup_group == "avg":
-            expr = build_avg_metric_expression(m, native_column)
+        if m.rollup_method == "avg":
+            expr = build_avg_metric_expression(m, native_column, dialect, source_view)
         else:
-            expr = build_metric_expression(m)
+            expr = build_metric_expression(m, dialect, source_view)
         parts.append(f"{expr} AS {m.key}")
 
     return "\n    , ".join(parts)
@@ -335,13 +350,13 @@ def _select_cols(
 
 def _where_clause(
     data_query: DataQuery,
-    rollup_group: str | None,
     dimensions: list[str],
     dimension_filters: dict[str, list[str]] | None,
     closing_only: bool = False,
     closing_time_dims: list[str] | None = None,
     source_view: str | None = None,
     versioned: bool = True,
+    dialect: SqlDialect = CLICKHOUSE_SQL,
 ) -> tuple[str, dict]:
     """Build WHERE clause and params dict.
 
@@ -369,14 +384,17 @@ def _where_clause(
     delta_only = bool(
         {"uncommitted_delta", "commit_delta"}.intersection(modifiers)
     )
-    extension_scope = scenario_sql_scope(data_query, delta_only)
+    sid = dialect.parameter("scenario_id")
+    ps = dialect.parameter("period_start")
+    pe = dialect.parameter("period_end")
+    extension_scope = scenario_sql_scope(data_query, delta_only, dialect=dialect)
     if extension_scope is not None:
         params.update(extension_scope.params)
         conditions.append(extension_scope.outer_condition)
         inner_scenario_condition = extension_scope.inner_condition
     else:
-        conditions.append(f"{_FACT}.scenario = {{scenario_id:String}}")
-        inner_scenario_condition = "scenario = {scenario_id:String}"
+        conditions.append(f"{_FACT}.scenario = {sid}")
+        inner_scenario_condition = f"scenario = {sid}"
 
     # The additive range filter targets the grain's column (period for month,
     # quarter/fiscal_year for coarser grains). The closing paths below stay on
@@ -388,12 +406,12 @@ def _where_clause(
         # each period in the (unshifted) window, resolved via the calendar's
         # dense seq (predecessor = seq - 1). Single fact query, calendar joined
         # as a subquery — no extra round-trip, no in-memory calendar.
-        cal, key = data_query.calendar_table, data_query.calendar_key
+        cal, key = dialect.table(data_query.calendar_table), data_query.calendar_key
         conditions.append(
             f"{period_col} IN (SELECT prev.{key} FROM {cal} cur "
             f"INNER JOIN {cal} prev ON prev.seq = cur.seq - 1 "
-            f"WHERE cur.{key} >= {{period_start:String}} "
-            f"AND cur.{key} <= {{period_end:String}})"
+            f"WHERE cur.{key} >= {ps} "
+            f"AND cur.{key} <= {pe})"
         )
     elif closing_only:
         # Closing = the value(s) at the last *native*-grain period within the
@@ -406,46 +424,44 @@ def _where_clause(
             # Per time-breakdown-group: last native period in each group. The
             # outer reference is t-qualified; the self-contained subquery is not.
             conditions.append(
-                f"{period_col} >= {{period_start:String}} "
-                f"AND {period_col} <= {{period_end:String}}"
+                f"{period_col} >= {ps} "
+                f"AND {period_col} <= {pe}"
             )
             outer_cols = ", ".join(f"{_FACT}.{d}" for d in closing_time_dims)
             inner_cols = ", ".join(closing_time_dims)
             conditions.append(
                 f"({outer_cols}, {_FACT}.{native}) IN ("
                 f"SELECT {inner_cols}, max({native}) "
-                f"FROM {source_view} "
+                f"FROM {dialect.table(source_view)} "
                 f"WHERE {inner_scenario_condition} "
-                f"AND {data_query.period_column} >= {{period_start:String}} "
-                f"AND {data_query.period_column} <= {{period_end:String}} "
+                f"AND {data_query.period_column} >= {ps} "
+                f"AND {data_query.period_column} <= {pe} "
                 f"GROUP BY {inner_cols})"
             )
         elif native == "period":
             # Monthly axis, no time breakdown: the last month is the filter end.
-            conditions.append(f"{_FACT}.period = {{period_end:String}}")
+            conditions.append(f"{_FACT}.period = {pe}")
         elif source_view:
             # Finer native grain, no time breakdown: the single last native
             # period in the window (e.g. last week of a month-filtered query).
             conditions.append(
-                f"{period_col} >= {{period_start:String}} "
-                f"AND {period_col} <= {{period_end:String}}"
+                f"{period_col} >= {ps} "
+                f"AND {period_col} <= {pe}"
             )
             conditions.append(
                 f"{_FACT}.{native} = ("
-                f"SELECT max({native}) FROM {source_view} "
+                f"SELECT max({native}) FROM {dialect.table(source_view)} "
                 f"WHERE {inner_scenario_condition} "
-                f"AND {data_query.period_column} >= {{period_start:String}} "
-                f"AND {data_query.period_column} <= {{period_end:String}})"
+                f"AND {data_query.period_column} >= {ps} "
+                f"AND {data_query.period_column} <= {pe})"
             )
         else:
-            conditions.append(f"{_FACT}.{native} = {{period_end:String}}")
+            conditions.append(f"{_FACT}.{native} = {pe}")
     else:
         conditions.append(
-            f"{period_col} >= {{period_start:String}} "
-            f"AND {period_col} <= {{period_end:String}}"
+            f"{period_col} >= {ps} "
+            f"AND {period_col} <= {pe}"
         )
-
-    # rollup_group controls expression builder only — not a DB column, no WHERE filter
 
     if dimension_filters:
         # An empty value list is a resolved deny-all scope (e.g. a user filter
@@ -455,9 +471,8 @@ def _where_clause(
             if not _SAFE_COLUMN_RE.match(col):
                 raise ValueError(f"Invalid dimension column name: {col!r}")
             param_key = f"dimf_{col}"
-            params[param_key] = values
             conditions.append(
-                f"toString({_FACT}.{col}) IN ({{{param_key}:Array(String)}})"
+                dialect.in_values(dialect.string(f"{_FACT}.{col}"), param_key, values, params)
             )
 
     # ----- Commit-awareness modifiers -----
@@ -475,19 +490,20 @@ def _where_clause(
             # Changes from a single commit only
             commit_id = modifiers["commit_delta"]
             params["mod_commit_id"] = commit_id
-            commit_condition = f"{_FACT}.commit_id = {{mod_commit_id:String}}"
+            commit_condition = f"{_FACT}.commit_id = {dialect.parameter('mod_commit_id')}"
         elif "commit" in modifiers:
             # Time travel: state as of a specific commit (all commits up to and including)
             target_commit = modifiers["commit"]
             params["mod_target_commit"] = target_commit
             params["mod_scenario_id_commits"] = data_query.scenario_id
+            commits = dialect.table("planning.commits")
             commit_condition = (
                 f"{_FACT}.commit_id IN ("
-                "SELECT commit_id FROM planning.commits "
-                "WHERE scenario_id = {mod_scenario_id_commits:String} "
+                f"SELECT commit_id FROM {commits} "
+                f"WHERE scenario_id = {dialect.parameter('mod_scenario_id_commits')} "
                 "AND created_at <= ("
-                "SELECT created_at FROM planning.commits "
-                "WHERE commit_id = {mod_target_commit:String} LIMIT 1"
+                f"SELECT created_at FROM {commits} "
+                f"WHERE commit_id = {dialect.parameter('mod_target_commit')} LIMIT 1"
                 ")"
                 ")"
             )
@@ -566,6 +582,8 @@ def generate_sql(
     dimensions: list[str],
     dimension_filters: dict[str, list[str]] | None,
     grains: GrainSpec = GrainSpec(),
+    *,
+    dialect: SqlDialect = CLICKHOUSE_SQL,
 ) -> list[tuple[str, dict]]:
     """Generate SQL query(ies) for a DataQuery.
 
@@ -578,7 +596,8 @@ def generate_sql(
 
     Returns:
         List of (sql_string, params_dict) tuples.
-        Up to 3 tuples (one per rollup_method group that has metrics).
+        One range query for additive and period-average metrics, plus closing
+        queries when required (including separate time-rolled closing totals).
         When no dimensions, returns a single aggregate row.
     """
     domain = catalogue.domains.get(data_query.domain)
@@ -603,7 +622,7 @@ def generate_sql(
     else:
         closing_time_dims = [d for d in dimensions if d in _TIME_HIERARCHY_DIMS]
 
-    name_to_expr, joins = _resolve_breakdowns(dimensions, catalogue, domain)
+    name_to_expr, joins = _resolve_breakdowns(dimensions, catalogue, domain, dialect)
 
     return _generate_aggregate_sql(
         data_query, all_base, source_view, dimensions, dimension_filters,
@@ -612,6 +631,7 @@ def generate_sql(
         grains=grains,
         name_to_expr=name_to_expr,
         joins=joins,
+        dialect=dialect,
     )
 
 
@@ -620,6 +640,8 @@ def generate_ragged_sql(
     catalogue: Catalogue,
     ragged_breakdown: dict,
     dimension_filters: dict[str, list[str]] | None,
+    *,
+    dialect: SqlDialect = CLICKHOUSE_SQL,
 ) -> list[tuple[str, dict]]:
     """SQL for a breakdown *by* a ragged hierarchy (the divergent retrieve path).
 
@@ -652,16 +674,17 @@ def generate_ragged_sql(
     fact_leaf_col = bound[leaf]
 
     stem = f"dim_{leaf}_{key}"
-    rollup_view = f"semantic.{stem}_rollup"
-    edges_view = f"semantic.{stem}_edges"
+    rollup_view = dialect.table(f"semantic.{stem}_rollup")
+    edges_view = dialect.table(f"semantic.{stem}_edges")
+    anchor = dialect.parameter("ragged_anchor")
 
     # B: node_id → leaf, restricted to the anchor node plus its immediate children.
     subquery = (
         f"    SELECT node_id, {leaf_key} FROM {rollup_view}\n"
-        f"    WHERE node_id = {{ragged_anchor:String}}\n"
+        f"    WHERE node_id = {anchor}\n"
         f"       OR node_id IN (\n"
         f"           SELECT child_node_id FROM {edges_view}\n"
-        f"           WHERE parent_node_id = {{ragged_anchor:String}})"
+        f"           WHERE parent_node_id = {anchor})"
     )
     b_join = _Join(
         alias="b",
@@ -670,6 +693,7 @@ def generate_ragged_sql(
         dim_key_col=leaf_key,
         kind="INNER",
         cast_fact=True,
+        is_subquery=True,
     )
 
     return _generate_aggregate_sql(
@@ -684,14 +708,15 @@ def generate_ragged_sql(
         name_to_expr={key: "b.node_id"},
         joins=[b_join],
         extra_params={"ragged_anchor": ragged_breakdown["anchor_node_id"]},
+        dialect=dialect,
     )
 
 
-def _from_clause(source_view: str, joins: list[_Join]) -> str:
+def _from_clause(source_view: str, joins: list[_Join], dialect: SqlDialect = CLICKHOUSE_SQL) -> str:
     """The aliased FROM with any derived-axis leaf joins appended."""
-    sql = f"FROM {source_view} {_FACT}"
+    sql = f"FROM {dialect.table(source_view)} {_FACT}"
     for join in joins:
-        sql += f"\n{join.sql()}"
+        sql += f"\n{join.sql(dialect)}"
     return sql
 
 
@@ -730,6 +755,7 @@ def _closing_totals_query(
     time_rolled_sets: list[list[str]],
     name_to_expr: dict[str, str],
     joins: list[_Join],
+    dialect: SqlDialect = CLICKHOUSE_SQL,
 ) -> tuple[str, dict]:
     """Totals for closing metrics where a time dimension is rolled up.
 
@@ -755,24 +781,24 @@ def _closing_totals_query(
 
     select_parts: list[str] = [f"{name_to_expr[d]} AS {d}" for d in non_time]
     select_parts += [f"'' AS {t}" for t in time_dims]
-    select_parts += [f"{build_metric_expression(m)} AS {m.key}" for m in metrics]
+    select_parts += [f"{build_metric_expression(m, dialect, source_view)} AS {m.key}" for m in metrics]
     select_parts.append(
         f"{_full_grouping_expr(dimensions, time_dims, grouped_dims, name_to_expr)} AS {GROUPING_COL}"
     )
 
     where, params = _where_clause(
         data_query,
-        rollup_group="closing",
         dimensions=non_time,
         dimension_filters=dimension_filters,
         closing_only=True,
         versioned=versioned,
         source_view=source_view,
+        dialect=dialect,
     )
 
     sql = (
         "SELECT\n    " + "\n    , ".join(select_parts) + "\n"
-        + _from_clause(source_view, joins) + "\n"
+        + _from_clause(source_view, joins, dialect) + "\n"
         f"WHERE {where}"
     )
     # A lone grand-total set has no group keys — plain aggregate, no GROUPING SETS.
@@ -796,8 +822,9 @@ def _generate_aggregate_sql(
     name_to_expr: dict[str, str] | None = None,
     joins: list[_Join] | None = None,
     extra_params: dict | None = None,
+    dialect: SqlDialect = CLICKHOUSE_SQL,
 ) -> list[tuple[str, dict]]:
-    """One query per rollup_method group present in metrics.
+    """One combined range query, plus separate closing queries when needed.
 
     ``extra_params`` is merged into every query's parameter dict — used by the
     ragged breakdown path to bind the anchor node id referenced in its join
@@ -819,26 +846,28 @@ def _generate_aggregate_sql(
 
     results: list[tuple[str, dict]] = []
 
-    def _build(rollup_group: str, where_extra: dict, sets: list[list[str]]) -> None:
+    def _build(query_metrics: list[BaseMetric], where_extra: dict, sets: list[list[str]]) -> None:
         select_cols = _select_cols(
-            groups[rollup_group], rollup_group=rollup_group, dimensions=dimensions,
+            query_metrics, dimensions=dimensions,
             name_to_expr=name_to_expr, native_column=data_query.native_column,
+            dialect=dialect,
+            source_view=source_view,
         )
         where, params = _where_clause(
             data_query,
-            rollup_group=rollup_group,
             dimensions=dimensions,
             dimension_filters=dimension_filters,
             versioned=versioned,
+            dialect=dialect,
             **where_extra,
         )
         group_clause, tag = _group_clause_from_sets(dimensions, sets, name_to_expr)
         if tag:
-            grouping_cols = ", ".join(name_to_expr[d] for d in dimensions)
-            select_cols += f"\n    , GROUPING({grouping_cols}) AS {GROUPING_COL}"
+            grouping_cols = [name_to_expr[d] for d in dimensions]
+            select_cols += f"\n    , {dialect.grouping_mask(grouping_cols)} AS {GROUPING_COL}"
         sql = (
             f"SELECT\n    {select_cols}\n"
-            + _from_clause(source_view, joins) + "\n"
+            + _from_clause(source_view, joins, dialect) + "\n"
             f"WHERE {where}"
         )
         if group_clause:
@@ -847,11 +876,9 @@ def _generate_aggregate_sql(
 
     requested_sets = _grouping_sets(dimensions, grains)
 
-    if groups["sum"]:
-        _build("sum", {}, requested_sets)
-
-    if groups["avg"]:
-        _build("avg", {}, requested_sets)
+    range_metrics = groups["sum"] + groups["avg"]
+    if range_metrics:
+        _build(range_metrics, {}, requested_sets)
 
     if groups["closing"]:
         # When the *native* grain is itself a breakdown dimension, each row is
@@ -867,7 +894,7 @@ def _generate_aggregate_sql(
         }
         time_dims = list(closing_time_dims or []) + ([native_col] if native_in_dims else [])
         if not time_dims:
-            _build("closing", closing_where, requested_sets)
+            _build(groups["closing"], closing_where, requested_sets)
         else:
             # Grains that keep every time dimension live roll up additively and
             # use the normal closing query. Grains that roll up a time dimension
@@ -875,13 +902,14 @@ def _generate_aggregate_sql(
             time_live = [s for s in requested_sets if all(t in s for t in time_dims)]
             time_rolled = [s for s in requested_sets if not all(t in s for t in time_dims)]
             if time_live:
-                _build("closing", closing_where, time_live)
+                _build(groups["closing"], closing_where, time_live)
             if time_rolled:
                 results.append(
                     _closing_totals_query(
                         data_query, groups["closing"], source_view, dimensions,
                         dimension_filters, versioned, time_dims, time_rolled,
                         name_to_expr=name_to_expr, joins=joins,
+                        dialect=dialect,
                     )
                 )
 
@@ -898,21 +926,34 @@ def execute_queries(
     queries: list[tuple[str, dict]],
     ch_client,
 ) -> list[list[dict]]:
-    """Execute SQL queries against ClickHouse.
-
-    Uses ClickHouse native parameterised queries (``{name:Type}`` syntax)
-    to avoid SQL injection.
+    """Execute trusted SQL, retaining result order across concurrent native reads.
 
     Returns a list of result row lists, one per query.
     Each row is a dict of column_name -> value.
     """
-    result_sets: list[list[dict]] = []
-    for sql, params in queries:
+    def execute(query):
+        sql, params = query
         result = ch_client.query(sql, parameters=params)
-        rows = [dict(zip(result.column_names, row)) for row in result.result_rows]
-        result_sets.append(rows)
+        return [dict(zip(result.column_names, row)) for row in result.result_rows]
 
-    return result_sets
+    if getattr(ch_client, "supports_parallel_queries", False) is not True or len(queries) < 2:
+        return [execute(query) for query in queries]
+    from precis_mcp.analytical.resources import query_executor
+    executor = query_executor()
+    futures = []
+    try:
+        for query in queries:
+            # Each worker receives its own context, including the current OTel span.
+            futures.append(executor.submit(copy_context().run, execute, query))
+        return [future.result() for future in futures]
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        with suppress(Exception):
+            ch_client.cancel()
+        # Never return while workers may still own this report's connections.
+        wait([future for future in futures if not future.cancelled()])
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -1016,11 +1057,13 @@ def _successor_remap(ch_client, calendar_table: str, calendar_key: str,
     stays a single query)."""
     if ch_client is None or not _SAFE_COLUMN_RE.match(calendar_key):
         return {}
+    dialect = dialect_for(ch_client)
+    calendar_table = dialect.table(calendar_table)
     sql = (
         f"SELECT prev.{calendar_key} AS pred, cur.{calendar_key} AS orig "
         f"FROM {calendar_table} cur "
         f"INNER JOIN {calendar_table} prev ON prev.seq = cur.seq - 1 "
-        f"WHERE cur.{calendar_key} >= {{ps:String}} AND cur.{calendar_key} <= {{pe:String}}"
+        f"WHERE cur.{calendar_key} >= {dialect.parameter('ps')} AND cur.{calendar_key} <= {dialect.parameter('pe')}"
     )
     result = ch_client.query(sql, parameters={"ps": period_start, "pe": period_end})
     return {row[0]: row[1] for row in result.result_rows}
@@ -1064,6 +1107,8 @@ def retrieve(
     time_remap: dict[str, int] = {}  # scenario_key -> inverse offset (arithmetic)
     # scenario_key -> (breakdown dim, {predecessor -> current}) for calendar PP
     calendar_remap: dict[str, tuple[str, dict[str, str]]] = {}
+    native_queries = []
+    native_targets = []
 
     for dq in plan.data_queries:
         scenario_key = dq.scenario_key
@@ -1116,13 +1161,15 @@ def retrieve(
         else:
             if ragged_breakdown is not None:
                 queries = generate_ragged_sql(
-                    dq, catalogue, ragged_breakdown, dimension_filters
+                    dq, catalogue, ragged_breakdown, dimension_filters, dialect=dialect_for(ch_client)
                 )
             else:
                 queries = generate_sql(
-                    dq, catalogue, plan.dimensions, dimension_filters, plan.grains
+                    dq, catalogue, plan.dimensions, dimension_filters, plan.grains, dialect=dialect_for(ch_client)
                 )
-            result_sets = execute_queries(queries, ch_client)
+            native_queries.extend(queries)
+            native_targets.extend((scenario_results, dq.metric_keys) for _ in queries)
+            continue
 
         for result_set in result_sets:
             for row in result_set:
@@ -1132,6 +1179,12 @@ def retrieve(
                     dq.metric_keys,
                     plan.dimensions,
                 )
+
+    for result_set, (scenario_results, metric_keys) in zip(
+        execute_queries(native_queries, ch_client), native_targets,
+    ):
+        for row in result_set:
+            _merge_row_into_results(scenario_results, row, metric_keys, plan.dimensions)
 
     # Remap time dimension keys for shifted scenarios so they align
     # with the original requested period range (e.g. 2024-01 → 2025-01,

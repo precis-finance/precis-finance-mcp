@@ -35,9 +35,8 @@ from precis_mcp.mcp_external.instructions import build_mcp_instructions  # noqa:
 
 mcp = FastMCP(
     "Précis Finance MCP",
-    # No host/port here: the dev SSE server binds via uvicorn.run(host=_bind_host,
-    # port=_bind_port) below, which defaults to 127.0.0.1. A constructor host here
-    # is dead but reads as a 0.0.0.0 exposure to an auditor — keep it absent.
+    # Uvicorn binds the Streamable HTTP server below, using MCP_BIND_HOST
+    # (default 127.0.0.1) and MCP_BIND_PORT (default 8768).
     instructions=build_mcp_instructions(catalogue_ref.current),
 )
 
@@ -114,6 +113,8 @@ if __name__ == "__main__":
     # Single-user server: the dev key is the authentication; the fixed admin
     # context is the authorisation the tool layer reads (get_auth_context()).
     # Set before the event loop starts so every task inherits the contextvar.
+    from precis_mcp.analytical.runtime import validate_runtime_inputs
+    validate_runtime_inputs(catalogue_ref.current)
     from precis_mcp.auth import AuthContext, UserPermissions, set_auth_context
 
     set_auth_context(AuthContext(
@@ -166,11 +167,18 @@ if __name__ == "__main__":
             try:
                 yield
             finally:
-                await stop_artifacts(cleanup)
-                from precis_mcp.db import close_redis_client, close_platform_pool
-                close_redis_client()
-                close_platform_pool()
+                try:
+                    await stop_artifacts(cleanup)
+                finally:
+                    import asyncio
+                    from precis_mcp.analytical import close_analytical_resources
+                    await asyncio.to_thread(close_analytical_resources)
+                    from precis_mcp.db import close_redis_client, close_platform_pool
+                    close_redis_client()
+                    close_platform_pool()
     _app.router.lifespan_context = dev_lifespan
     _app.add_middleware(RedactTransferTokens)
     _app.add_middleware(_DevKeyAuth)
+    from precis_mcp.observability import init_observability
+    init_observability(_app, include_llm_instrumentors=False)
     uvicorn.run(_app, host=_bind_host, port=_bind_port)

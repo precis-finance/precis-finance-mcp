@@ -60,7 +60,10 @@ class _CatalogueRef:
         self.current = _catalogue
 
     def reload(self):
-        self.current = load_and_validate(CATALOGUE_DIR)
+        candidate = load_and_validate(CATALOGUE_DIR)
+        from precis_mcp.analytical.runtime import validate_runtime_inputs
+        validate_runtime_inputs(candidate)
+        self.current = candidate
         from precis_mcp.engine.scenario_registry import (
             invalidate_scenario_registry_cache,
         )

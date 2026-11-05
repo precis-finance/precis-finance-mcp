@@ -6,10 +6,8 @@ Used by the admin routes (`/api/admin/users/*`) and the one-time
 user-migration script so user creation, password reset, and
 enable/disable go through one place.
 
-Reads ``KC_BASE_URL_INTERNAL``, ``KC_BOOTSTRAP_ADMIN_USERNAME`` (defaults
-to ``admin``), and ``KC_BOOTSTRAP_ADMIN_PASSWORD`` from the environment
-when the first call is made.  Sessions cache an admin access token
-and refresh on 401.
+Uses a realm-local service account through ``client_credentials``. Operator
+credentials are deliberately not accepted here. Tokens refresh once on 401.
 """
 from __future__ import annotations
 
@@ -17,15 +15,16 @@ import logging
 import os
 import secrets as pysecrets
 import string
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
 
-KC_REALM = "precis"
-KC_ADMIN_REALM = "master"
+APPLICATION_GROUP = "/precis-application-users"
 
 _TEMP_PW_ALPHABET = string.ascii_letters + string.digits
 
@@ -47,15 +46,12 @@ def _split_name(name: str | None) -> tuple[str, str]:
 
 
 class KeycloakAdmin:
-    """Per-process Keycloak Admin API client.
-
-    Constructs lazily and caches an admin access token across calls.
-    Single-tenant: only the ``precis`` realm is targeted.
-    """
+    """Lazily authenticated user-provisioning client; token cached per instance."""
 
     def __init__(self) -> None:
         self._client = httpx.Client(timeout=10.0)
         self._token: str | None = None
+        self._realm = quote(os.environ.get("KC_REALM", "precis"), safe="")
 
     # ------------------------------------------------------------------ auth
     def _base(self) -> str:
@@ -64,25 +60,28 @@ class KeycloakAdmin:
         ).rstrip("/")
 
     def _login(self) -> str:
-        username = os.environ.get("KC_BOOTSTRAP_ADMIN_USERNAME", "admin")
-        password = (os.environ.get("KC_BOOTSTRAP_ADMIN_PASSWORD") or "").strip()
-        if not password:
+        secret = os.environ.get("KC_PROVISIONING_CLIENT_SECRET", "")
+        if not secret and os.environ.get("KC_PROVISIONING_CLIENT_SECRET_FILE"):
+            try:
+                secret = Path(os.environ["KC_PROVISIONING_CLIENT_SECRET_FILE"]).read_text().rstrip("\r\n")
+            except OSError:
+                raise KeycloakAdminError("KC_PROVISIONING_CLIENT_SECRET_FILE is not readable") from None
+        if not secret:
             raise KeycloakAdminError(
-                "KC_BOOTSTRAP_ADMIN_PASSWORD is not set — cannot authenticate "
-                "against Keycloak Admin API."
+                "KC_PROVISIONING_CLIENT_SECRET is not set — reconcile the "
+                "Keycloak provisioning client and supply its secret (or _FILE)."
             )
         resp = self._client.post(
-            f"{self._base()}/realms/{KC_ADMIN_REALM}/protocol/openid-connect/token",
+            f"{self._base()}/realms/{self._realm}/protocol/openid-connect/token",
             data={
-                "grant_type": "password",
-                "client_id": "admin-cli",
-                "username": username,
-                "password": password,
+                "grant_type": "client_credentials",
+                "client_id": os.environ.get("KC_PROVISIONING_CLIENT_ID", "precis-user-provisioner"),
+                "client_secret": secret,
             },
         )
         if resp.status_code != 200:
             raise KeycloakAdminError(
-                f"Keycloak admin login failed ({resp.status_code}): {resp.text[:200]}"
+                f"Keycloak provisioning authentication failed ({resp.status_code})"
             )
         return resp.json()["access_token"]
 
@@ -92,12 +91,16 @@ class KeycloakAdmin:
         return {"Authorization": f"Bearer {self._token}"}
 
     def _request(self, method: str, path: str, **kw: Any) -> httpx.Response:
-        url = f"{self._base()}/admin/realms/{KC_REALM}{path}"
-        resp = self._client.request(method, url, headers=self._headers(), **kw)
-        if resp.status_code == 401:
-            # Token expired — refresh once and retry.
-            self._token = None
+        url = f"{self._base()}/admin/realms/{self._realm}{path}"
+        try:
             resp = self._client.request(method, url, headers=self._headers(), **kw)
+            if resp.status_code == 401:
+                # Authentication rejection is safe to retry; never replay an
+                # ambiguous POST timeout or an authorization failure.
+                self._token = None
+                resp = self._client.request(method, url, headers=self._headers(), **kw)
+        except httpx.HTTPError:
+            raise KeycloakAdminError("Keycloak provisioning request failed; check connectivity") from None
         return resp
 
     # ----------------------------------------------------------------- lookup
@@ -108,8 +111,7 @@ class KeycloakAdmin:
         )
         if resp.status_code != 200:
             raise KeycloakAdminError(
-                f"find_user_id({username!r}) failed ({resp.status_code}): "
-                f"{resp.text[:200]}"
+                f"Keycloak user lookup failed ({resp.status_code})"
             )
         rows = resp.json()
         if not rows:
@@ -136,6 +138,7 @@ class KeycloakAdmin:
         first, last = _split_name(name)
         body = {
             "username": username,
+            "groups": [APPLICATION_GROUP],
             "enabled": True,
             "emailVerified": bool(email),
             "email": email or "",
@@ -156,47 +159,11 @@ class KeycloakAdmin:
             )
         if resp.status_code != 201:
             raise KeycloakAdminError(
-                f"create_user({username!r}) failed ({resp.status_code}): "
-                f"{resp.text[:200]}"
+                f"Keycloak user creation failed ({resp.status_code})"
             )
         # Keycloak returns the new resource's ID via the Location header.
         loc = resp.headers.get("Location", "")
         return loc.rsplit("/", 1)[-1] if loc else (self.find_user_id(username) or "")
-
-    def ensure_client(
-        self,
-        *,
-        client_id: str,
-        public: bool = True,
-        direct_access_grants: bool = False,
-        standard_flow: bool = True,
-        name: str | None = None,
-    ) -> None:
-        """Create an OIDC client if it doesn't already exist (idempotent)."""
-        resp = self._request("GET", "/clients", params={"clientId": client_id})
-        if resp.status_code != 200:
-            raise KeycloakAdminError(
-                f"client lookup {client_id!r} failed ({resp.status_code}): "
-                f"{resp.text[:200]}"
-            )
-        if resp.json():
-            return
-        body = {
-            "clientId": client_id,
-            "name": name or client_id,
-            "enabled": True,
-            "protocol": "openid-connect",
-            "publicClient": public,
-            "standardFlowEnabled": standard_flow,
-            "directAccessGrantsEnabled": direct_access_grants,
-            "serviceAccountsEnabled": False,
-        }
-        resp = self._request("POST", "/clients", json=body)
-        if resp.status_code not in (201, 409):
-            raise KeycloakAdminError(
-                f"ensure_client({client_id!r}) failed ({resp.status_code}): "
-                f"{resp.text[:200]}"
-            )
 
     # ----------------------------------------------------------------- update
     def reset_password(
@@ -217,8 +184,7 @@ class KeycloakAdmin:
         )
         if resp.status_code not in (200, 204):
             raise KeycloakAdminError(
-                f"reset_password({username!r}) failed ({resp.status_code}): "
-                f"{resp.text[:200]}"
+                f"Keycloak password reset failed ({resp.status_code})"
             )
 
     def clear_required_actions(self, username: str) -> None:
@@ -233,8 +199,7 @@ class KeycloakAdmin:
         resp = self._request("PUT", f"/users/{uuid}", json={"requiredActions": []})
         if resp.status_code not in (200, 204):
             raise KeycloakAdminError(
-                f"clear_required_actions({username!r}) failed "
-                f"({resp.status_code}): {resp.text[:200]}"
+                f"Keycloak required-action update failed ({resp.status_code})"
             )
 
     def set_enabled(self, *, username: str, enabled: bool) -> None:
@@ -244,8 +209,7 @@ class KeycloakAdmin:
         resp = self._request("PUT", f"/users/{uuid}", json={"enabled": enabled})
         if resp.status_code not in (200, 204):
             raise KeycloakAdminError(
-                f"set_enabled({username!r}, {enabled}) failed "
-                f"({resp.status_code}): {resp.text[:200]}"
+                f"Keycloak user status update failed ({resp.status_code})"
             )
 
     def delete_user(self, username: str) -> None:
@@ -255,6 +219,5 @@ class KeycloakAdmin:
         resp = self._request("DELETE", f"/users/{uuid}")
         if resp.status_code not in (200, 204):
             raise KeycloakAdminError(
-                f"delete_user({username!r}) failed ({resp.status_code}): "
-                f"{resp.text[:200]}"
+                f"Keycloak user deletion failed ({resp.status_code})"
             )

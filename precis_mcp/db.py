@@ -23,10 +23,8 @@ def _env_truthy(name: str) -> bool:
     return os.getenv(name, '').strip().lower() in ('1', 'true', 'yes')
 
 
-_ch_pool_mgr = None
-
-
-def _clickhouse_pool_manager():
+@lru_cache(maxsize=8)
+def _clickhouse_pool_manager(*, verify: bool = True, ca_cert: str | None = None):
     """Process-wide urllib3 pool manager with an explicit per-host maxsize.
 
     clickhouse-connect otherwise shares a default manager whose per-host pool
@@ -36,13 +34,33 @@ def _clickhouse_pool_manager():
     makes the read-path semaphore the binding limit on a burst, and lets every
     admitted query reuse a pooled connection instead of churning.
     """
-    global _ch_pool_mgr
-    if _ch_pool_mgr is None:
-        from clickhouse_connect.driver import httputil
+    from clickhouse_connect.driver import httputil
 
-        maxsize = int(os.getenv('PRECIS_CLICKHOUSE_POOL_MAXSIZE', '32'))
-        _ch_pool_mgr = httputil.get_pool_manager(maxsize=maxsize)
-    return _ch_pool_mgr
+    maxsize = int(os.getenv('PRECIS_CLICKHOUSE_POOL_MAXSIZE', '32'))
+    return httputil.get_pool_manager(maxsize=maxsize, verify=verify, ca_cert=ca_cert)
+
+
+def clickhouse_connection_options():
+    """Snapshot the existing CH identity/trust settings for a native client pool."""
+    secure = _env_truthy('CHSECURE')
+    kwargs: dict[str, Any] = dict(
+        host=os.getenv('CHHOST', 'localhost'),
+        port=int(os.getenv('CHPORT') or (8443 if secure else 8123)),
+        username=os.getenv('CHUSER', 'default'),
+        password=os.getenv('CHPASSWORD', ''),
+        secure=secure,
+        verify=True,
+        ca_cert=None,
+    )
+    if secure:
+        kwargs['secure'] = True
+        ca_cert = os.getenv('CHCACERT')
+        if ca_cert:
+            kwargs['ca_cert'] = ca_cert
+        verify = os.getenv('CHVERIFY')
+        if verify is not None:
+            kwargs['verify'] = _env_truthy('CHVERIFY')
+    return kwargs
 
 
 def get_clickhouse_client(**overrides):
@@ -58,25 +76,29 @@ def get_clickhouse_client(**overrides):
     top of the env-derived settings (e.g. ``send_receive_timeout`` for the
     long-running BACKUP/RESTORE commands).
     """
-    secure = _env_truthy('CHSECURE')
-    kwargs: dict[str, Any] = dict(
-        host=os.getenv('CHHOST', 'localhost'),
-        port=int(os.getenv('CHPORT', 8443 if secure else 8123)),
-        username=os.getenv('CHUSER', 'default'),
-        password=os.getenv('CHPASSWORD', ''),
-    )
-    if secure:
-        kwargs['secure'] = True
-        ca_cert = os.getenv('CHCACERT')
-        if ca_cert:
-            kwargs['ca_cert'] = ca_cert
-        verify = os.getenv('CHVERIFY')
-        if verify is not None:
-            kwargs['verify'] = _env_truthy('CHVERIFY')
+    # Legacy callers must never access a different financial store in a
+    # Databricks deployment. Only an explicitly selected CH adapter may bypass
+    # this during operator commissioning; application leftovers fail closed.
+    from precis_mcp.analytical import selected_backend
+    from precis_mcp.analytical.contracts import ConfigurationError
+    explicit_provider = overrides.pop("_explicit_provider", False)
+    if selected_backend() != "clickhouse" and not explicit_provider:
+        raise ConfigurationError("Direct ClickHouse access is disabled for the selected analytical backend.")
+    kwargs = clickhouse_connection_options()
     kwargs.update(overrides)
     # Share the process-wide pool manager unless a caller pins its own (e.g. a
     # long-running BACKUP/RESTORE client with a different timeout profile).
-    kwargs.setdefault('pool_mgr', _clickhouse_pool_manager())
+    # A supplied pool takes precedence over the driver's TLS arguments. Bind
+    # shared pools to their trust settings; leave specialized proxy/mTLS/SNI
+    # connections to the driver rather than masking its configuration.
+    specialized = {'http_proxy', 'https_proxy', 'server_host_name',
+                   'client_cert', 'client_cert_key', 'tls_mode'}
+    verify = kwargs.get('verify', True)
+    if ('pool_mgr' not in kwargs and not specialized.intersection(kwargs)
+            and isinstance(verify, bool)):
+        kwargs['pool_mgr'] = _clickhouse_pool_manager(
+            verify=verify, ca_cert=kwargs.get('ca_cert'),
+        )
     return clickhouse_connect.get_client(**kwargs)
 
 
@@ -238,7 +260,7 @@ def execute_platform(sql: str, params: tuple | list | None = None) -> dict[str, 
 
 
 @contextmanager
-def transaction_platform():
+def transaction_platform(*, timeout_seconds: float | None = None):
     """Yield a cursor inside an explicit transaction against precis_platform.
 
     Use when you need multiple statements with rollback-on-error semantics —
@@ -247,13 +269,16 @@ def transaction_platform():
     connection context commits on clean exit, rolls back on any exception, and
     returns the connection to the pool either way.
 
+    ``timeout_seconds`` bounds pool acquisition only; callers requiring a SQL
+    execution bound must also establish transaction-local statement/lock limits.
+
     Usage:
         with transaction_platform() as cur:
             cur.execute("SELECT ... FOR UPDATE", (...))
             row = cur.fetchone()
             cur.execute("UPDATE ...", (...))
     """
-    with _get_pool().connection() as conn:
+    with _get_pool().connection(timeout=timeout_seconds) as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             yield cur
 

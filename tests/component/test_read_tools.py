@@ -58,7 +58,7 @@ def tools(catalogue, fake_ch):
     from precis_mcp.tools.read_tools import register_read_tools
     register_read_tools(mock_mcp, MockCatalogueRef(catalogue))
     with patch(
-        "precis_mcp.tools.read_tools.get_clickhouse_client",
+        "precis_mcp.tools.read_tools.get_analytical_client",
         return_value=fake_ch,
     ), patch(
         "precis_mcp.tools.read_tools.cache_read_result",
@@ -70,6 +70,14 @@ def tools(catalogue, fake_ch):
 # ---------------------------------------------------------------------------
 # Test: All expected tools are registered
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("scenario_id", ["ACTUALS", "BUD-2026", "TEST-SANDBOX-01"])
+def test_read_canonical_scenario_ids_do_not_require_registry_lookup(scenario_id):
+    from precis_mcp.tools.read_tools import _resolve_writable_id
+
+    with patch("precis_mcp.tools.read_tools.get_analytical_client",
+               side_effect=AssertionError("canonical IDs do not need a metadata lookup")):
+        assert _resolve_writable_id(scenario_id) == scenario_id
 
 def test_all_expected_tools_registered(tools):
     expected_tools = {
@@ -500,6 +508,28 @@ def test_run_statement_default_scenarios(tools):
     assert request["_strict_dimensions"] is False
 
 
+@pytest.mark.parametrize("tool_name", ["run_statement", "run_metric"])
+def test_report_columns_and_engine_share_one_registry_snapshot(tools, fake_ch, monkeypatch, tool_name):
+    from precis_mcp.engine import scenario_registry
+
+    # Even expiry during a report must not trigger per-column or engine reloads.
+    monkeypatch.setattr(scenario_registry, "_REGISTRY_TTL_SECONDS", 0)
+    scenarios = [{"scenario": key, "alias": alias} for key, alias in [
+        ("ACTUALS", "Actuals"), ("budget", "Budget"),
+        ("actuals_vs_budget", "vs Budget"), ("prior_year", "Prior Year"),
+        ("actuals_vs_actuals_py_pct", "YoY %"),
+    ]]
+    arguments = {"scenarios": scenarios, "period_start": "2026-01", "period_end": "2026-03"}
+    if tool_name == "run_metric":
+        arguments["metrics"] = ["revenue"]
+    result = tools[tool_name](**arguments)
+
+    assert "error" not in result, result
+    assert [column["alias"] for column in result["scenarios"]] == [sc["alias"] for sc in scenarios]
+    assert len([sql for sql, _ in fake_ch.queries if "FROM semantic.scenarios" in sql]) == 1
+    assert fake_ch.close_calls == 1
+
+
 def test_run_statement_custom_scenarios(tools):
     scenarios = [
         {"scenario": "actuals", "alias": "Actuals"},
@@ -883,6 +913,48 @@ class TestConsumerRounding:
         assert out["rows"][0]["values"]["A"] is None
 
 
+def test_workbook_dispatch_reauthorizes_each_query_and_cleans_scope(tools, monkeypatch):
+    from precis_mcp.auth import get_auth_context, get_call_scope, ScopeSpec, DimensionScope
+    from precis_mcp.tools import read_tools
+    _set_auth("scoped-user", ["ACTUALS"])
+    try:
+        scope = ScopeSpec(dimensions=DimensionScope(allow={"cost_centre":["CC1"]}))
+        get_auth_context().permissions.scenarios["ACTUALS"].tool_scopes["read"] = scope
+        calls = []
+        def metric(**kwargs):
+            calls.append(kwargs)
+            assert read_tools._suppress_consumer_rounding.get()
+            assert kwargs["_scope"] == {"ACTUALS":scope}
+            return {"rows":[{"item":{"decimals":0},"values":{"Actuals":123.456789}}]}
+        monkeypatch.setattr(read_tools,"_RUN_METRIC",metric)
+        dispatch = read_tools.get_workbook_dispatch()
+        params = {"metrics":["revenue"],"scenarios":[{"scenario":"ACTUALS"}]}
+        result = dispatch("run_metric",params)
+        assert result["rows"][0]["values"]["Actuals"] == 123.456789
+        assert get_call_scope() is None and not read_tools._suppress_consumer_rounding.get()
+        get_auth_context().permissions.scenarios.clear()
+        denied = dispatch("run_metric",params)
+        assert denied["error_type"] == "permission" and len(calls) == 1
+        assert get_call_scope() is None and not read_tools._suppress_consumer_rounding.get()
+    finally:
+        _clear_auth()
+
+
+def test_workbook_dispatch_cleans_context_after_execution_failure(tools, monkeypatch):
+    from precis_mcp.auth import get_call_scope
+    from precis_mcp.tools import read_tools
+    _set_auth("allowed-user", ["ACTUALS"])
+    try:
+        def fail(**kwargs):
+            raise RuntimeError("synthetic execution failure")
+        monkeypatch.setattr(read_tools,"_RUN_METRIC",fail)
+        with pytest.raises(RuntimeError, match="synthetic"):
+            read_tools.get_workbook_dispatch()("run_metric", {"metrics":["revenue"],"scenarios":[{"scenario":"ACTUALS"}]})
+        assert get_call_scope() is None and not read_tools._suppress_consumer_rounding.get()
+    finally:
+        _clear_auth()
+
+
 # ---------------------------------------------------------------------------
 # search_hierarchy — least-restrictive cross-scenario member scoping
 # ---------------------------------------------------------------------------
@@ -1029,6 +1101,28 @@ def test_search_hierarchy_default_caps_preserved(tools, fake_ch):
         qs = [q for q, _ in fake_ch.queries if "dim_cost_centre" in q]
         assert any("LIMIT 200" in q for q in qs)
         assert any("LIMIT 100" in q for q in qs)
+    finally:
+        _clear_auth()
+
+
+@pytest.mark.parametrize("allowed", [["CC-01'; --"], []])
+def test_native_hierarchy_discovery_uses_same_scopes_and_safe_binds(tools, fake_ch, monkeypatch, allowed):
+    from precis_mcp.analytical.sql import SqlDialect
+    fake_ch.dialect = SqlDialect("databricks", "customer")
+    monkeypatch.setattr("precis_mcp.engine.scope_enforcer.union_read_member_sets",
+                        lambda *args: {"cost_centre":set(allowed)})
+    _set_auth("u1", allowed=["ACTUALS"])
+    try:
+        tools["search_hierarchy"](dimension="cost_centre", query="term'; --", limit=7)
+        sql, params = next((sql, params) for sql, params in fake_ch.queries
+                           if "`customer`.`semantic`.`dim_cost_centre`" in sql)
+        assert "CAST(cost_centre AS STRING) ILIKE :q" in sql
+        assert params["q"] == "%term'; --%" and "term'; --" not in sql
+        assert "LIMIT 7" in sql and fake_ch.close_calls == 1
+        if allowed:
+            assert params["scope_ids_0"] == allowed[0] and allowed[0] not in sql
+        else:
+            assert "0 = 1" in sql
     finally:
         _clear_auth()
 

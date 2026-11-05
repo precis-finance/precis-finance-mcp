@@ -25,7 +25,7 @@ Catalogue YAML
   -> run_metric / run_statement request
   -> resolver
   -> filter + scope resolution
-  -> ClickHouse or Ibis retriever
+  -> native SQL (ClickHouse/Databricks) or Ibis retriever
   -> transformer
   -> formatter
 ```
@@ -52,10 +52,22 @@ catalogue dimension keys, not physical source-view column names. The resolver
 maps those keys to concrete leaf IDs and then to the domain's source-view
 columns.
 
-**Retrieval** has two backends. `precis_mcp/engine/retriever.py` builds
-ClickHouse SQL against `semantic.*` views. `precis_mcp/engine/ibis_retriever.py`
+Security resolution preserves explicit empty allowances as match-nothing filters
+for leaf, derived and ragged dimensions. Allowed clauses targeting the same leaf
+axis intersect; excluded clauses union and subtract. Do not collapse an empty
+resolved allowance into an omitted filter.
+
+**Retrieval** has two paths. `precis_mcp/engine/retriever.py` builds native
+ClickHouse or Databricks SQL against `semantic.*` views. `precis_mcp/engine/ibis_retriever.py`
 builds Ibis expressions for federated domains. Both return the same row shape
 to the transformer.
+
+Both apply a base metric's `sign` to matching source values before aggregation:
+`raw` keeps the value, `negate` multiplies it by -1, and `abs` discards its sign.
+Use `negate` for credit-negative ledger revenue so reversals remain reductions;
+use `abs` only for intentional magnitude measures. Include a reversal or
+negative adjustment in the metric's checks, not just ordinary positive revenue.
+See [the sign examples](catalogue-and-semantic.md#a-base-metric).
 
 **Transformation and formatting** live in `precis_mcp/engine/transformer.py`
 and `precis_mcp/engine/formatter.py`. Derived metrics and generated
@@ -94,6 +106,15 @@ nothing else to register.
   inputs (`aggregation: sum`): it divides their sum by the number of distinct
   native periods. Other pairings with `rollup_method: avg` are rejected at
   catalogue load instead of being approximated.
+
+  Native ClickHouse and Databricks reads select ordinary and period-average
+  metrics together in one range query per scenario/domain. Each metric retains
+  its own aggregate expression; the period-average denominator counts distinct
+  native periods in the scoped source group, including periods with no rows
+  matching that metric's predicate. Closing metrics retain separate endpoint
+  queries, including additional queries where time totals require them. This
+  changes query count, not catalogue syntax or financial definitions; Ibis
+  federation is unchanged.
 
 - **`variance_effect` sets variance colour polarity.** A comparison column
   (`actuals_vs_budget`, `actuals_vs_actuals_py`, …) is colour-coded
@@ -210,7 +231,7 @@ metrics:
     source_column: amount
     aggregation: sum
     rollup_method: sum
-    sign: raw
+    sign: raw                      # source already uses business signs, including reductions
     format: currency
     fs_group: Sales
     where:
@@ -417,11 +438,11 @@ metrics:
   - key: sales_amount
     label: Sales amount
     description: Total recognised sales for the selected period.
-    calculation_note: SUM(amount) where line_type = SALE.
+    calculation_note: SUM(amount) where line_type = SALE; source sales are positive and reductions negative.
     source_column: amount
     aggregation: sum
     rollup_method: sum
-    sign: raw
+    sign: raw                      # source already uses business signs, including reductions
     format: currency
     fs_group: Sales
     style: default
@@ -435,7 +456,7 @@ metrics:
     source_column: amount
     aggregation: sum
     rollup_method: sum
-    sign: raw
+    sign: raw                      # source costs are positive and reversals negative
     format: currency
     fs_group: Sales
     variance_effect: inverse
@@ -495,6 +516,9 @@ At minimum, run the loader against the catalogue root you changed:
 ```bash
 python -c "from precis_mcp.engine.catalogue import load_catalogue; load_catalogue('instance/catalogue'); print('ok')"
 ```
+
+For Databricks, follow [provisioning and validation](databricks-schema-contract.md#provisioning-and-validation).
+The SQL-file check and provisioning commands below apply to ClickHouse deployments.
 
 For a stricter check that catches `source_view` typos, pass the semantic-views
 root and the loader will additionally assert that every ClickHouse-backed
@@ -674,6 +698,7 @@ composes queries from it. Check:
 
 - [ ] The domain `source_view` exists and exposes the required `scenario`, `period`, value, filter, and dimension columns.
 - [ ] Every base metric has `key`, `label`, `source_column`, `aggregation`, `rollup_method`, `sign`, `format`, and `fs_group`.
+- [ ] Source polarity is documented and normalized once. Signed measures preserve mixed-sign cancellation and negative net balances; additive month moves reconcile detail and period totals.
 - [ ] Every row filter is a structured `where:` predicate list — no raw SQL filter strings.
 - [ ] Every derived metric formula references existing metric keys and uses only supported arithmetic.
 - [ ] Every statement line references an existing metric key or `separator`.
@@ -681,9 +706,10 @@ composes queries from it. Check:
 - [ ] Every inline dimension is on an Ibis domain and declares `source_inline: true` plus `filterable: false`.
 - [ ] Any dimension clients need to filter/scope/search is first-class, not inline.
 - [ ] Any new leaf dimension has a source table, key column, and optional display/sort attributes backed by real columns.
-- [ ] `load_catalogue()` succeeds for the catalogue root (with `semantic_views_root` for the on-disk view check).
-- [ ] `python -m precis_mcp.clickhouse_init --scope open --check` passes against the target ClickHouse.
-- [ ] Any changed semantic views have been re-applied (`python -m precis_mcp.clickhouse_init --scope open`) and the server restarted.
+- [ ] `load_catalogue()` succeeds for the catalogue root (for ClickHouse, use `semantic_views_root` for the on-disk view check).
+- [ ] For ClickHouse, `python -m precis_mcp.clickhouse_init --scope open --check` passes against the target, and changed semantic views have been re-applied with the provisioner.
+- [ ] For Databricks, [provisioning and validation](databricks-schema-contract.md#provisioning-and-validation) covers the changed model.
+- [ ] The server has been restarted to load the updated catalogue.
 
 ---
 

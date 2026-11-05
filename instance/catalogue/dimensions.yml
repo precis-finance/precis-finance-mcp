@@ -281,7 +281,7 @@ dimensions:
   # A "provided" ragged hierarchy over the cost-centre leaf set: an operator
   # node master + child→parent edges rather than derived from columns. Cross-cuts
   # the org tree; supports ragged depth and a child rolling up into several
-  # parents. See docs/ragged_hierarchies_spec.md.
+  # parents. See docs/configuration/catalogue-and-semantic.md for the contract.
   solution_portfolio:
     label: Solution Portfolio
     ragged: true

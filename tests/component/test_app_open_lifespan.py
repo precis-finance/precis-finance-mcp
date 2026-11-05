@@ -16,10 +16,12 @@ from precis_mcp.auth_mode import AuthModeError
 @pytest.fixture(autouse=True)
 def fake_dependencies(monkeypatch):
     from tests.fakes.fake_redis import FakeRedis
+    redis = FakeRedis()
     monkeypatch.setattr("precis_mcp.db.open_platform_pool", lambda: None)
     monkeypatch.setattr("precis_mcp.db.close_platform_pool", lambda: None)
     monkeypatch.setattr("precis_mcp.db.close_redis_client", lambda: None)
-    monkeypatch.setattr("precis_mcp.db.get_redis_client", lambda: FakeRedis())
+    monkeypatch.setattr("precis_mcp.db.get_redis_client", lambda: redis)
+    monkeypatch.setattr("precis_mcp.artifacts.lifecycle.get_redis_client", lambda: redis)
     monkeypatch.setattr("precis_mcp.artifacts.lifecycle.check_artifacts", lambda: None)
 
 
@@ -85,3 +87,24 @@ def test_readyz_503_when_a_dependency_is_down(monkeypatch):
     assert body["status"] == "not_ready"
     assert body["checks"]["postgres"] == "ok"
     assert body["checks"]["clickhouse"].startswith("error")
+
+
+def test_native_readiness_checks_config_without_waking_warehouse(monkeypatch):
+    from precis_mcp.analytical import runtime
+    _default_mode(monkeypatch)
+    monkeypatch.setenv("PRECIS_ANALYTICAL_BACKEND", "databricks")
+    calls = []
+    def validate(catalogue):
+        calls.append("startup validation")
+    monkeypatch.setattr(runtime, "validate_runtime_inputs", validate)
+    monkeypatch.setattr("precis_mcp.analytical.config.DatabricksConfig.from_env", lambda: object())
+    monkeypatch.setattr("precis_mcp.db.query_platform", lambda *args: [])
+    monkeypatch.setattr("precis_mcp.db.query_clickhouse", lambda *args: pytest.fail("probed CH"))
+    monkeypatch.setattr("precis_mcp.analytical.get_analytical_client", lambda *args: pytest.fail("woke warehouse"))
+    from precis_mcp.app_open import app
+    with TestClient(app) as client:
+        for _ in range(2):
+            response = client.get("/readyz")
+            assert response.status_code == 200
+            assert response.json()["checks"]["databricks_config"] == "ok"
+    assert calls == ["startup validation"]

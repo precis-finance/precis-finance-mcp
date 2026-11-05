@@ -100,7 +100,7 @@ Charts are produced server-side from a transform you author — never with
 
    The chart renders for the user. Do not print the returned JSON in your reply.
 
-- `chart_type`: `line | bar | waterfall | scatter | horizontal_bar |
+- `chart_type`: `line | bar | area | waterfall | scatter | horizontal_bar |
   forecast_line | cohort_heatmap | sparkline_row`. `x_key` and `y_keys` (a
   non-empty list) are required. `y_format`: `currency | percent | number`
   (optional). Do not set `y_scale`/`y_decimals` — they are applied automatically.
@@ -115,8 +115,16 @@ Charts are produced server-side from a transform you author — never with
   `y_keys=["<row dim>"]`, `value_key`=cell); `sparkline_row` (multi-trend;
   `y_keys=["<category>"]`, `x_key`=ordering, `value_key`=value).
 - The transform input is the cached engine result (the same shape you inspected
-  in step 2, minus the `data_ref` handle). Values are **raw numbers** — do not
-  pre-scale them; formatting is applied at render time.
+  in step 2, minus the `data_ref` handle). Values are **already scaled** by the
+  engine, with full numeric precision: `scale: 0` means units; `scale: 3` means
+  non-exempt values are divided by 1000 (e.g. revenue `2579.28974` represents
+  €2,579,289.74, displayed in € thousands). Do not scale them again.
+- Percentages are percentage points (`75` means 75%). Percentages, FTEs, hours
+  and other `scale_exempt` metrics retain their own units even alongside scaled
+  currency in one statement. Inspect `row.item` format and metric definitions;
+  the top-level `scale` is not a multiplier for every row. Rendering applies
+  display rounding and symbols, with `y_scale` forced to `0`; left-axis decimals
+  come from the first input. Set right-axis format/decimals explicitly as needed.
 - On `status: "error"`, read the message, fix the transform, and retry.
 
 **Per-type point contracts** (these decide how a point is drawn — get them right):
@@ -144,6 +152,17 @@ utilisation): pass `data_refs` as an **array** of refs. The transform then takes
 one argument per ref, in order. Each input is already aggregated within its own
 domain — align them on a shared dimension and emit `null` for a point with no
 match (never repeat a coarse value down to a finer grain):
+
+Inspect every input's `scale`, `caption` and item formats. For same-unit series
+on one axis, re-query at a common scale before combining them. For different
+units (including currency and unscaled FTEs within one statement), use separate
+charts or separate left/right axes on line/bar/area charts, with explicit
+`y_label` / `y_label_right` units, e.g. `Revenue (€ thousands)` and `FTE`.
+The tool does not convert units or reconcile different scales automatically.
+Source captions are merged; conflicting nonempty scale labels are omitted.
+A source without a scale label does not remove another source's label; the
+caption does not describe every series' units. Axis labels must carry those
+units. Preserve each source's values when using separate axes.
 
 ```
 eval_chart_transform(

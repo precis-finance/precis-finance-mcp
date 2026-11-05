@@ -28,7 +28,7 @@
 #   PRECIS_INSTANCE_DIR=/path/to/your/instance docker compose \
 #     -f docker-compose.local.yml -f docker-compose.instance.yml up -d
 # (point CH* at a ClickHouse you already populate, or load into this one — see
-# open_docs/configuration/ingestion.md).
+# docs/configuration/ingestion.md in the open repository).
 #
 # Note: this single-user trial always STARTS the bundled ClickHouse (there is no
 # profile to suppress it — its value is zero-config). You can point CH* at your
@@ -36,11 +36,27 @@
 # deployment that does not start a bundled ClickHouse, use the multi-user bundle
 # (docker-compose.yml) with `scripts/deploy-mcp.sh --data-mode byo`.
 
+
+# APT-only patch over the immutable upstream PostgreSQL image. Inline so the
+# downloaded single-file trial needs no checkout (Docker Compose >=2.17).
+# BuildKit caches this layer; no database binaries or libc packages are upgraded.
+x-postgres-image: &postgres-image
+  image: precis-mcp-postgres:16-bookworm-apt-2.6.2
+  pull_policy: build
+  build:
+    context: .
+    dockerfile_inline: |
+      FROM postgres:16-bookworm@sha256:e8a07d2c7579b038938cdba6c539e580e5001caf9ea203d397b5cc83e76bd938
+      RUN apt-get -o Acquire::Retries=0 update \
+          && apt-get -o Acquire::Retries=0 install -y --no-install-recommends \
+             apt=2.6.2 libapt-pkg6.0=2.6.2 \
+          && rm -rf /var/lib/apt/lists/*
+
 name: precis-mcp-local
 
 services:
   redis:
-    image: valkey/valkey:7.2.14-alpine@sha256:c6c2f0020be34bbf684a53a0ef716ab16ff70295186d4d9f2518435beb7afbff
+    image: valkey/valkey:7.2.15-alpine@sha256:f8c1a646f4b31ae4dc3980ff06723a20b533ea1123b9796d450d78ed53ad6d3e
     restart: unless-stopped
     # Shared snapshot data is disposable. Keep capacity bounded; no eviction
     # of the accounting indexes independently of their snapshot entries.
@@ -52,7 +68,7 @@ services:
       retries: 5
 
   postgres:
-    image: postgres:16-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
+    <<: *postgres-image
     restart: unless-stopped
     environment:
       POSTGRES_DB: precis
@@ -85,10 +101,12 @@ services:
       retries: 5
 
   migrate:
-    image: ghcr.io/precis-finance/precis-finance-mcp:${PRECIS_MCP_TAG:-0.3.0}
+    image: ghcr.io/precis-finance/precis-finance-mcp:${PRECIS_MCP_TAG:-0.4.0}
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        PRECIS_EXTRAS: ${PRECIS_EXTRAS:-}
     restart: "no"
     command: ["python", "scripts/migrate.py", "--scope", "open"]
     environment:
@@ -104,10 +122,12 @@ services:
     # Pull the published image by default (it bundles the demo instance, so no
     # source checkout is needed); `up --build` builds from a checkout instead.
     # Same image as the multi-user bundle.
-    image: ghcr.io/precis-finance/precis-finance-mcp:${PRECIS_MCP_TAG:-0.3.0}
+    image: ghcr.io/precis-finance/precis-finance-mcp:${PRECIS_MCP_TAG:-0.4.0}
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        PRECIS_EXTRAS: ${PRECIS_EXTRAS:-}
     restart: unless-stopped
     # The image runs as a non-root user; it needs no Linux capabilities and
     # must not gain privileges through setuid binaries.
@@ -129,6 +149,11 @@ services:
       MCP_BIND_PORT: "8768"
       PRECIS_AUTH_MODE: devkey
       PRECIS_BASE_URL: ${PRECIS_BASE_URL:-http://127.0.0.1:8768}
+      # Requires a source build with PRECIS_EXTRAS=telemetry.
+      PRECIS_TELEMETRY_ENABLED: ${PRECIS_TELEMETRY_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4318}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-precis-mcp}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-}
       ARTIFACT_SIGNING_KEY: ${ARTIFACT_SIGNING_KEY:?generate a distinct key with openssl rand -hex 32}
       REDIS_HOST: redis
       USER_DATA_DIR: /data/users

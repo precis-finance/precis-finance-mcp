@@ -110,6 +110,13 @@ what a P&L line is, how a period rolls up — over the `live.*` tables. See
 The contract the engine relies on: every `source_view` your catalogue names must
 exist here as a real view. The provisioner creates them; `--check` confirms it.
 
+Document the polarity of each source measure and normalize it once across the
+view/catalogue boundary. If the view exposes credit-negative ledger amounts,
+revenue uses catalogue `sign: negate`; if it already exposes business-positive
+revenue with signed reductions, use `sign: raw`. Do not apply both conversions
+or use absolute value to hide reversals or negative net balances. See the
+[base-metric sign contract](catalogue-and-semantic.md#a-base-metric).
+
 ---
 
 ## `semantic.scenarios` — the scenario registry

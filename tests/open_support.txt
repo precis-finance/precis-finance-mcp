@@ -1,0 +1,20 @@
+# Support shipped with the public test suite. Paths are relative to tests/.
+# A second column renames a source file in the published tree.
+conftest_open.py conftest.py
+__init__.py
+unit/__init__.py
+component/__init__.py
+support/__init__.py
+support/open_pytest.py
+support/artifact_migrations.py
+fakes/__init__.py
+fakes/fake_clickhouse.py
+fakes/fake_analytical.py
+fakes/fake_platform_db.py
+fakes/fake_keycloak.py
+fakes/fake_redis.py
+fakes/ingestion.py
+fakes/mock_mcp.py
+factories/__init__.py
+factories/auth.py
+factories/ingestion.py

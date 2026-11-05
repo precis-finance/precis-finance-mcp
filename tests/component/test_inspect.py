@@ -175,6 +175,33 @@ def test_inspect_rows_empty_filter_list_matches_nothing(monkeypatch):
     assert ch.parameters["dimf_cost_centre"] == []
 
 
+@pytest.mark.parametrize("allowed", [["CC-01'; --"], []])
+def test_native_inspection_preserves_caps_projection_and_deny_all(monkeypatch, allowed):
+    from precis_mcp.analytical.sql import SqlDialect
+    from tests.fakes.fake_clickhouse import FakeClickHouseClient
+    client = FakeClickHouseClient()
+    client.dialect = SqlDialect("databricks", "customer")
+    client.push(("2026-01", "4000", 100), ("2026-01", "4010", 200),
+                column_names=["period", "account", "amount"])
+    monkeypatch.setattr("precis_mcp.engine.inspect.resolve_filters",
+                        lambda *args, **kwargs: {"cost_centre": allowed})
+    result = inspect_rows(_catalogue(), "gl", limit=1, scenario_id="ACTUALS",
+                          period_start="2026-01", filters={"cost_centre":"requested"}, ch_client=client)
+    sql, parameters = client.queries[-1]
+    assert result["row_count"] == 1 and result["truncated"] is True
+    assert result["columns"] == ["period", "account", "amount"]
+    assert result["query"]["backend_kind"] == "databricks"
+    assert "`customer`.`semantic`.`v_gl`" in sql and "LIMIT :inspect_limit" in sql
+    assert parameters["inspect_limit"] == 2 and parameters["scenario_id"] == "ACTUALS"
+    assert "commit_id != '__uncommitted__'" in sql
+    if allowed:
+        assert allowed[0] not in sql and parameters["dimf_cost_centre_0"] == allowed[0]
+    else:
+        assert "0 = 1" in sql
+    with pytest.raises(InspectionError, match="not enabled"):
+        inspect_rows(_catalogue(), "gl", columns=["private_column"], ch_client=client)
+
+
 # ---------------------------------------------------------------------------
 # Grain-aware inspection: a week/day range must filter the week/day column,
 # not the month `period` column (mirrors the read path's grain resolution).

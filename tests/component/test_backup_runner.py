@@ -100,6 +100,73 @@ def test_successful_run_produces_complete_bundle(tmp_path, ch_client):
     ch = manifest.artifact("clickhouse")
     assert ch.outcome == "success" and ch.sha256  # local destination → checksummed
     assert manifest.artifact("files").outcome == "skipped"
+    assert manifest.clickhouse_databases == ["live", "staging", "semantic"]
+
+
+def test_existing_planning_database_is_backed_up_and_included_in_drill_baseline(tmp_path, ch_client):
+    cfg = _cfg(tmp_path)
+    ch_client.set_response("system.databases", [("planning",)])
+    ch_client.set_response("system.tables", [
+        ("planning", "entries", 13), ("planning", "commits", 2),
+        ("planning", "commit_summaries", 3), ("planning", "map_project_to_gl", 4),
+    ])
+    result = _run(cfg, ch_client, FakePlatformDB(), instance_dir=_instance_dir(tmp_path))
+    manifest = BackupManifest.from_json(LocalDestination(cfg.destination.path).get_bytes(manifest_key(RUN_ID)))
+    assert result.outcome == "success"
+    assert manifest.clickhouse_databases == ["live", "staging", "semantic", "planning"]
+    assert ch_client.commands[0][0] == (
+        "BACKUP DATABASE live, DATABASE staging, DATABASE semantic, DATABASE planning "
+        f"TO Disk('precis_backups', '{RUN_ID}.zip')"
+    )
+    assert manifest.row_counts["ch.planning.entries"] == 13
+    assert manifest.row_counts["ch.planning.commits"] == 2
+    assert manifest.row_counts["ch.planning.commit_summaries"] == 3
+    assert manifest.row_counts["ch.planning.map_project_to_gl"] == 4
+    assert sum("system.databases" in sql for sql, _ in ch_client.queries) == 1
+    assert any("'planning'" in sql for sql, _ in ch_client.queries if "system.tables" in sql)
+
+
+def test_inventory_failure_does_not_silently_omit_planning(tmp_path, ch_client, monkeypatch):
+    cfg = _cfg(tmp_path)
+    def failed_inventory(*args, **kwargs):
+        raise RuntimeError("database inventory unavailable")
+    monkeypatch.setattr(ch_client, "query", failed_inventory)
+    result = _run(cfg, ch_client, FakePlatformDB(), instance_dir=_instance_dir(tmp_path))
+    manifest = BackupManifest.from_json(LocalDestination(cfg.destination.path).get_bytes(manifest_key(RUN_ID)))
+    assert result.outcome == "partial"
+    assert result.failed_stores == ["clickhouse"]
+    assert ch_client.commands == []
+    assert manifest.artifact("clickhouse").outcome == "failed"
+    assert manifest.artifact("postgres").outcome == "success"
+
+
+def test_databricks_bundle_backs_up_platform_without_opening_warehouse(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRECIS_ANALYTICAL_BACKEND", "databricks")
+    files = tmp_path / "users"
+    files.mkdir()
+    (files / "report.txt").write_text("saved report")
+    monkeypatch.setenv("USER_DATA_DIR", str(files))
+    cfg = _cfg(tmp_path, scope={"postgres": "managed", "clickhouse": "managed", "files": "managed"})
+    db = FakePlatformDB()
+    opened = []
+    def no_ch():
+        opened.append("clickhouse")
+        raise AssertionError("Databricks backup must not construct a CH client")
+    with patch("precis_mcp.db.query_platform", side_effect=db.query), \
+         patch("precis_mcp.db.execute_platform", side_effect=db.execute):
+        result = run_backup(cfg, trigger="cli", instance_dir=_instance_dir(tmp_path),
+                            ch_client_factory=no_ch, pg_dump_runner=_ok_pg_dump, now=NOW)
+    manifest = BackupManifest.from_json(LocalDestination(cfg.destination.path).get_bytes(manifest_key(RUN_ID)))
+    assert result.outcome == "success"
+    assert opened == []
+    assert manifest.analytical_backend == "databricks"
+    assert manifest.scopes["databricks"] == "external"
+    assert manifest.artifact("clickhouse") is None
+    assert manifest.artifact("databricks").outcome == "skipped"
+    assert "planning tables" in manifest.artifact("databricks").detail
+    assert all(manifest.artifact(s).outcome == "success" for s in ("postgres", "instance", "files"))
+    assert not any(k.startswith("ch.") for k in manifest.row_counts)
+    assert cfg.scope["clickhouse"] == "managed"  # runtime exclusion does not mutate operator configuration
 
 
 def test_history_row_recorded_best_effort(tmp_path, ch_client):

@@ -4,19 +4,15 @@
 # pyright: reportArgumentType=false, reportCallIssue=false, reportOptionalSubscript=false
 """Platform database migration runner.
 
-Applies numbered SQL migrations from two roots — scripts/migrations/open/ then
-scripts/migrations/commercial/ — in that order. Open runs first because every
-foreign key points commercial -> open, so the open tables exist
-before any commercial FK resolves. Within each root, files apply in numeric
-order (NNN_*.sql). Applied migrations are tracked in a schema_migrations table,
-versioned by "<root>/<NNN>" (e.g. "open/001", "commercial/001"). Idempotent —
-safe to run repeatedly; only unapplied migrations are executed, and each
-migration is itself written to be a no-op on re-apply.
+Applies numbered SQL migrations from available roots under scripts/migrations/,
+starting with open/. Within each root, files apply in numeric order (NNN_*.sql).
+Applied migrations are tracked in schema_migrations, versioned by
+"<root>/<NNN>" (e.g. "open/001"). Only unapplied migrations are executed.
 
 Creates the precis_platform database if it doesn't exist.
 
 Usage:
-    python scripts/migrate.py                  # Apply pending (open then commercial)
+    python scripts/migrate.py                  # Apply pending migrations
     python scripts/migrate.py --scope open     # Open root only (open deployment)
     python scripts/migrate.py --status         # Show migration status
     python scripts/migrate.py --dry-run        # Show what would be applied
@@ -38,7 +34,7 @@ import psycopg
 # Allow running from project root or scripts/
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MIGRATIONS_BASE = PROJECT_ROOT / "scripts" / "migrations"
-# Applied in this order; open before commercial (FK direction invariant).
+# Apply the core schema before any extension schemas that depend on it.
 MIGRATION_ROOTS = (
     ("open", MIGRATIONS_BASE / "open"),
     ("commercial", MIGRATIONS_BASE / "commercial"),

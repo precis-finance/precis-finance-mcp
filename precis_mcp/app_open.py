@@ -28,6 +28,7 @@ import precis_mcp.secrets  # noqa: F401 — resolve *_FILE before any getenv on 
 import contextlib
 import logging
 import os
+import asyncio
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -62,6 +63,9 @@ async def lifespan(_app: FastAPI):
     from precis_mcp.db import close_redis_client
     cleanup = None
     try:
+        from precis_mcp.analytical.runtime import validate_runtime_inputs
+        from precis_mcp.catalogue_ref import _catalogue_ref
+        await asyncio.to_thread(validate_runtime_inputs, _catalogue_ref.current)
         # Opt-in conformance preflight (gap 5): when PRECIS_AUTH_PREFLIGHT is on,
         # verify the issuer/JWKS/audience are reachable + consistent at boot rather
         # than letting a misconfig surface as an opaque 401. Off by default (it does
@@ -82,6 +86,8 @@ async def lifespan(_app: FastAPI):
             if cleanup is not None:
                 await stop_artifacts(cleanup)
         finally:
+            from precis_mcp.analytical import close_analytical_resources
+            await asyncio.to_thread(close_analytical_resources)
             close_redis_client()
             close_platform_pool()
 
@@ -122,3 +128,8 @@ app.include_router(oauth_proxy_router)
 # Excel add-in bundle + host-templated manifest at /excel — self-gates on the
 # add-in being enabled and the bundle being present (404 otherwise).
 app.include_router(excel_static_router)
+
+# HTTP instrumentation must be attached before the first request or lifespan
+# scope builds the middleware stack. Dependencies and export remain opt-in.
+from precis_mcp.observability import init_observability
+init_observability(app, include_llm_instrumentors=False)

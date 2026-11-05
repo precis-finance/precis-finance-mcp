@@ -45,9 +45,9 @@ shape; deployments mount their own over it. If you remember one thing: **code
 is the engine, `instance/` is the model** — adapting Précis Finance MCP to your
 business means editing `instance/`, not Python.
 
-## ClickHouse — the read layer
+## Analytical backend — the read layer
 
-All querying happens against ClickHouse, in three databases the provisioner
+ClickHouse is the default backend, with three databases the provisioner
 creates from your `instance/`: `live` (your data), `staging` (ingestion's
 landing zone, swapped atomically into `live`), and `semantic` (the views the
 engine reads — its *only* query surface). You can run the bundled ClickHouse
@@ -55,6 +55,13 @@ or bring your own cluster, empty or with demo data —
 [data modes](../deployment/clickhouse-data-modes.md) — and the
 [schema contract](../configuration/clickhouse-schema-contract.md) defines
 exactly what a ready cluster contains.
+
+A deployment can instead select native Databricks SQL against customer-managed
+warehouse inputs. The catalogue, financial engine and application permissions
+stay the same; Précis does not ingest or recover that warehouse. See
+[backend setup and indicative timings](../configuration/analytical-client.md)
+for Docker configuration, permissions, recovery ownership and the interactive
+latency tradeoff. Native Databricks and Ibis source federation are separate options.
 
 ## Semantic layer and catalogue — meaning, then metrics
 
@@ -76,7 +83,7 @@ change contract is
 
 Every reporting call runs one pipeline: resolve the request against the
 catalogue (expand statements into metrics, derived metrics into their
-inputs), apply the caller's permission scope, retrieve (ClickHouse SQL
+inputs), apply the caller's permission scope, retrieve (native ClickHouse or Databricks SQL
 against `semantic.*` — or Ibis expressions for a federated domain that reads
 a warehouse table in place), then transform and format. Because every client
 goes through the same catalogue definitions, two people asking the same
@@ -84,7 +91,7 @@ question get the same number.
 
 ## Federated reads — the long tail stays in your warehouse
 
-The intended split: the datasets that answer most questions — the GL, the
+For ClickHouse deployments, the intended split is: the datasets that answer most questions — the GL, the
 aggregated facts your statements read — are **landed in ClickHouse**, where
 the engine has its full vocabulary: every aggregation, `avg` and `closing`
 rollups, multi-grain totals, hierarchy filters. For the long tail — very

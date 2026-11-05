@@ -22,6 +22,7 @@ Consumers:
 from __future__ import annotations
 
 import logging
+from precis_mcp.analytical.sql import dialect_for
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -52,12 +53,14 @@ def _expand_period_range(
         # Fallback: generate YYYY-MM sequence (works for monthly granularity)
         return _generate_monthly_range(period_from, period_to)
 
+    dialect = dialect_for(ch_client)
+    key = dialect.string(period_dim.source.key_column)
     result = ch_client.query(
-        f"SELECT DISTINCT toString({period_dim.source.key_column}) "
-        f"FROM {period_dim.source.table} "
-        f"WHERE toString({period_dim.source.key_column}) >= {{pf:String}} "
-        f"AND toString({period_dim.source.key_column}) <= {{pt:String}} "
-        f"ORDER BY toString({period_dim.source.key_column})",
+        f"SELECT DISTINCT {key} "
+        f"FROM {dialect.table(period_dim.source.table)} "
+        f"WHERE {key} >= {dialect.parameter('pf')} "
+        f"AND {key} <= {dialect.parameter('pt')} "
+        f"ORDER BY {key}",
         parameters={"pf": period_from, "pt": period_to},
     )
     return [row[0] for row in result.result_rows]

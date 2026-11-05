@@ -153,3 +153,30 @@ def test_status_and_exit_mappings_cover_all_subtypes():
         assert exc in ops.ADMIN_HTTP_STATUS
         assert exc in ops.ADMIN_EXIT_CODE
         assert issubclass(exc, ops.AdminError)
+
+
+@pytest.mark.parametrize("source", ["data", "yaml"])
+@pytest.mark.parametrize("domains, expected", [
+    ({}, {}),
+    ({"deny": ["payroll"]}, {"deny": ["payroll"]}),
+    ({"allow": None}, {}),
+    ({"allow": []}, {"allow": []}),
+    ({"allow": ["pnl"], "deny": ["payroll"]}, {"allow": ["pnl"], "deny": ["payroll"]}),
+])
+def test_profile_domain_allow_semantics_round_trip(source, domains, expected):
+    """Admin saves must not manufacture a deny-all allowance from omitted fields."""
+    import yaml
+
+    data = {**_VALID_PROFILE, "scenarios": {"ACTUALS": {"analyst": {
+        "domains": domains,
+        "dimensions": {"allow": {"department": ["Team A"]}},
+    }}}}
+    body = ops.ProfileYamlBody(**({"data": data} if source == "data" else {"yaml": yaml.safe_dump(data)}))
+    _, _, _, definition = ops.parse_profile_body(body)
+    scope = definition["scenarios"]["ACTUALS"]["analyst"]
+    # Empty deny is harmless; allow must retain omitted vs explicit-empty semantics.
+    actual = {k: v for k, v in scope["domains"].items() if k != "deny" or v}
+    assert actual == expected
+    assert scope["dimensions"]["allow"] == {"department": ["Team A"]}
+    row = {"profile_id": "p1", "name": "Profile", "description": "", "definition": definition}
+    assert ops.parse_profile_yaml(ops.profile_yaml_repr(row))[3] == definition

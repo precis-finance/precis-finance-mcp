@@ -20,11 +20,14 @@ them in order.
   upload reservations; they do not write financial data.
 - **The `/mcp` transport denies finance-write authority.** Reads require the
   catalogue's `mcp_read` flag and a `read`/`general` access class. Artifact
-  mutations require `mcp_artifact`, the `artifact` access class and membership
+  mutations require `mcp_artifact`, the `general` access class and membership
   in the explicit artifact-tool allow-list. External uploads and attachment
   imports additionally require `PRECIS_MCP_UPLOADS_ENABLED=true`; they are
   hidden and denied by default, including the signed PUT endpoint. Exports and
   downloads remain enabled.
+- **File tools use general access.** They need no separate file role or scenario
+  scope. Owner, quota and grant-stamp checks still apply. `general` alone does
+  not publish a tool; `mcp_artifact` remains a transport flag.
 - **Tool publication fails closed.** Every loaded tool must have a catalogue
   entry (startup fails otherwise), and appearing on `/mcp` is a per-tool
   opt-in flag — a new tool is never published by default
@@ -145,6 +148,10 @@ The honest list — each deliberate, each with a posture:
   rate-limit it per IP (5/min); close it entirely if you don't use the
   public connectors —
   [hardening detail](keycloak-brokering.md#the-dcr-and-admin-surfaces).
+  **Unresolved consent risk:** the shipped policy removes Consent Required;
+  an existing SSO session may authorize a newly registered, untrusted client
+  without explicit approval. Provisioning and profile restrictions limit the
+  token's access but do not establish consent to that client.
 - **The Keycloak admin console.** Both the bundled Caddy proxy and the
   reference nginx config block `/auth/admin/` at the edge; reach it over an
   SSH tunnel, or relax the block to an IP allowlist. A custom ingress that
@@ -191,6 +198,24 @@ in a public issue. The policy is the repository's `SECURITY.md`.
 
 ## Owned artifact transfer
 
+Core artifact storage retains the creating service's filesystem ownership;
+new per-user storage directories are private (`0700`). The open package does
+not transfer ownership to an execution worker or assume a worker UID. Optional
+deployment integrations must provision their own narrowly scoped filesystem
+handoff without weakening registry owner/grant checks.
+
 Finance access remains read-only. Explicit artifact tools create owned files and reservations; they do not acquire plan-write or ingestion authority. Signed GET/PUT capabilities have purpose-specific derived keys/audiences, bounded lifetime, live account checks, and owner checks. Generated artifacts, tool-rewritten file versions and datasets also bind current read grants; any change requires a fresh query. Download capabilities bind file version/hash and cannot authorize replacement bytes. Registry reads enforce expiry before GC.
 
 The optional host attachment importer requires exact trusted HTTPS hostnames and public DNS addresses, pins the connection while preserving TLS hostname verification, rejects redirects and credential forwarding, and caps size/time. Uploaded workbook metadata is untrusted input and never grants access. Configure ingress to omit capability query strings from access/error logs; transfer routes are excluded from HTTP telemetry. See [Files and external agent hosts](../reference/files-and-hosts.md).
+
+### Domain allowances in security profiles
+
+Dimension allowances use the same absent-versus-empty distinction: an omitted
+axis is unrestricted; an explicit empty member list denies all members on that
+axis. Leaf, derived and ragged-hierarchy resolution preserves empty constraints
+through query and write-scope enforcement. Allowed dimension clauses intersect,
+including different levels resolving to the same leaf; exclusions union and
+subtract. Discovery unions permitted sets across readable scenarios only after
+each scope has been resolved.
+
+Profile JSON and YAML distinguish an omitted/null `domains.allow` (all domains, subject to `deny`) from `domains.allow: []` (no domains). A non-empty allowance permits only its listed domains, and exclusions take precedence. The shared admin parser preserves this distinction; providing only a deny list does not create an empty allowance. Existing explicit empty allowances remain deny-all and require an intentional administrator edit to change access. Dimension restrictions remain independent.

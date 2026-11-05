@@ -1,8 +1,8 @@
 /**
  * Self-contained number formatting + label wrapping for the MCP chart widget.
  * A trimmed port of the SPA's `lib/format.ts` + `charts/wrapLabel.ts` — the
- * chart `data` array carries raw numbers; `y_scale`/`y_decimals`/`y_format`
- * drive display only (the data is never pre-scaled).
+ * Engine chart data is already scaled; chart tools force `y_scale=0` to
+ * preserve those units. `y_decimals`/`y_format` control display rounding/symbols.
  */
 const EN_DASH = "–";
 const EURO = "€";

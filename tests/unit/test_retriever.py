@@ -21,6 +21,7 @@ from precis_mcp.engine.retriever import (
     build_avg_metric_expression,
     build_metric_expression,
     compile_predicates_to_sql,
+    generate_ragged_sql,
     generate_sql,
     retrieve,
 )
@@ -30,6 +31,55 @@ from precis_mcp.engine.ibis_retriever import rollup_detail_rows
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+from precis_mcp.analytical.sql import SqlDialect
+
+
+def _native_dialect():
+    return SqlDialect("databricks", "customer", column_type=lambda relation, column: ("STRING", False))
+
+
+def test_native_sql_qualifies_views_and_binds_scope_values(catalogue):
+    dialect = _native_dialect()
+    query = DataQuery("actuals", "ACTUALS", "2026-01", "2026-12", ["revenue"])
+    sql, params = generate_sql(query, catalogue, ["division", "period"],
+                               {"cost_centre": ["a'; --", "b"]},
+                               GrainSpec(True, True, True), dialect=dialect)[0]
+    assert "FROM `customer`.`semantic`.`v_pnl` t" in sql
+    assert "JOIN `customer`.`semantic`.`dim_cost_centre`" in sql
+    assert "GROUPING_ID(CASE WHEN d0.cost_centre IS NULL THEN ''" in sql
+    assert ", t.period) AS _grouping" in sql
+    assert "CAST(t.cost_centre AS STRING) IN (:dimf_cost_centre_0, :dimf_cost_centre_1)" in sql
+    assert "a'; --" not in sql and "{scenario_id:String}" not in sql
+    assert params["dimf_cost_centre_0"] == "a'; --"
+
+
+def test_native_empty_scope_never_drops_the_predicate(catalogue):
+    query = DataQuery("actuals", "ACTUALS", "2026-01", "2026-12", ["revenue"])
+    sql, params = generate_sql(query, catalogue, [], {"cost_centre": []},
+                               dialect=_native_dialect())[0]
+    assert "AND 0 = 1" in sql
+    assert not any(key.startswith("dimf_") for key in params)
+
+
+def test_native_commit_lookup_uses_configured_planning_role(catalogue):
+    query = DataQuery("actuals", "ACTUALS", "2026-01", "2026-12", ["revenue"],
+                      modifiers={"commit": "opaque-commit"})
+    sql, params = generate_sql(query, catalogue, [], None,
+                               dialect=_native_dialect())[0]
+    assert sql.count("`customer`.`precis_planning`.`commits`") == 2
+    assert "commit_id = :mod_target_commit" in sql
+    assert params["mod_target_commit"] == "opaque-commit"
+
+
+@pytest.mark.parametrize("column,expected", [("BOOLEAN", "TRUE"), ("SMALLINT", "1")])
+def test_boolean_metric_predicate_uses_native_column_type(column, expected):
+    metric = BaseMetric(key="flagged", label="Flagged", source_column="amount",
+                         aggregation="count", rollup_method="sum", sign="raw", format="number", fs_group="test",
+                         where=[MetricPredicate(column="flag", op="eq", value=True)])
+    dialect = SqlDialect("databricks", "customer", column_type=lambda relation, name: (column, False))
+    assert f"t.flag = {expected}" in build_metric_expression(metric, dialect, "semantic.fact")
+    assert "t.flag = 1" in build_metric_expression(metric)
+
 FEDERATED_CATALOGUE_DIR = os.path.join(
     os.path.dirname(__file__), "..", "..", "instance", "catalogue",
 )
@@ -186,11 +236,12 @@ class TestPeriodDimension:
         assert "revenue" in sql
         assert "direct_cost" in sql
 
-    def test_revenue_uses_abs(self, catalogue):
+    def test_revenue_preserves_reversals(self, catalogue):
         dq = _make_query(["revenue"])
         results = generate_sql(dq, catalogue, ["period"], None)
         sql, _ = results[0]
-        assert "ABS(t.amount)" in sql
+        assert "THEN -t.amount" in sql
+        assert "ABS(t.amount)" not in sql
 
     def test_period_in_params(self, catalogue):
         dq = _make_query(["revenue"])
@@ -223,11 +274,12 @@ class TestAggregateSumGroup:
         sql, _ = results[0]
         assert "GROUP BY t.period" not in sql
 
-    def test_revenue_uses_abs_in_aggregate(self, catalogue):
+    def test_revenue_preserves_reversals_in_aggregate(self, catalogue):
         dq = _make_query(["revenue"])
         results = generate_sql(dq, catalogue, [], None)
         sql, _ = results[0]
-        assert "ABS(t.amount)" in sql
+        assert "THEN -t.amount" in sql
+        assert "ABS(t.amount)" not in sql
 
     def test_period_range_in_where(self, catalogue):
         dq = _make_query(["revenue"])
@@ -457,12 +509,28 @@ class TestFederatedBreakdownGuard:
 # ---------------------------------------------------------------------------
 
 class TestBuildMetricExpression:
-    def test_abs_sign(self, catalogue):
+    def test_revenue_negates_ledger_sign(self, catalogue):
         m = catalogue.metrics["revenue"]
         assert isinstance(m, BaseMetric)
         expr = build_metric_expression(m)
+        assert "THEN -t.amount" in expr
+        assert "ABS" not in expr
+
+    def test_abs_sign(self, catalogue):
+        # Magnitude metrics still support literal absolute value.
+        m = catalogue.metrics["direct_cost"].model_copy(update={"sign": "abs"})
+        expr = build_metric_expression(m)
         assert "ABS(t.amount)" in expr
         assert "CASE WHEN" in expr
+
+    def test_revenue_ibis_preserves_reversals(self, catalogue):
+        import ibis
+        from precis_mcp.engine.ibis_retriever import _metric_aggregation
+
+        table = ibis.table({"amount": "float64", "fs_line": "string"}, name="ledger")
+        sql = ibis.to_sql(_metric_aggregation(table, catalogue.metrics["revenue"]), dialect="postgres")
+        assert "THEN -" in sql
+        assert "ABS(" not in sql.upper()
 
     def test_raw_sign(self, catalogue):
         m = catalogue.metrics["direct_cost"]
@@ -614,20 +682,85 @@ class TestCompilePredicatesToSql:
 # ---------------------------------------------------------------------------
 
 class TestMultipleRollupGroups:
-    def test_three_queries_for_all_groups(self, catalogue):
+    def test_two_queries_for_all_groups(self, catalogue):
         # revenue=sum, avg_fte_billable=avg, closing_fte_billable=closing
         dq = _make_query(["revenue", "avg_fte_billable", "closing_fte_billable"])
         results = generate_sql(dq, catalogue, [], None)
-        assert len(results) == 3
+        assert len(results) == 2
 
-    def test_three_queries_have_different_expressions(self, catalogue):
+    def test_range_and_closing_queries_have_separate_metrics(self, catalogue):
         dq = _make_query(["revenue", "avg_fte_billable", "closing_fte_billable"])
         results = generate_sql(dq, catalogue, [], None)
-        # Each query should have different metric expressions
-        sqls = [sql for sql, _ in results]
-        assert any("revenue" in s for s in sqls)
-        assert any("avg_fte_billable" in s for s in sqls)
-        assert any("closing_fte_billable" in s for s in sqls)
+        range_sql, closing_sql = [sql for sql, _ in results]
+        assert " AS revenue" in range_sql and " AS avg_fte_billable" in range_sql
+        assert "/ NULLIF(COUNT(DISTINCT t.period), 0)" in range_sql
+        assert "closing_fte_billable" not in range_sql
+        assert " AS closing_fte_billable" in closing_sql
+        assert " AS revenue" not in closing_sql and "avg_fte_billable" not in closing_sql
+
+    @pytest.mark.parametrize("backend", ["clickhouse", "databricks"])
+    @pytest.mark.parametrize("dimensions", [[], ["cost_centre"], ["division", "period"]])
+    @pytest.mark.parametrize("scope", [{"cost_centre": ["CC-1"]}, {"cost_centre": []}])
+    def test_combined_range_preserves_expressions_scope_and_grains(
+        self, catalogue, backend, dimensions, scope,
+    ):
+        dialect = _native_dialect() if backend == "databricks" else SqlDialect()
+        grains = GrainSpec(detail=True, subtotals=True, grand_total=True)
+        dq = _make_query(["avg_fte_billable", "revenue"])
+        dq.modifiers = {"commit": "approved-commit"}
+        combined = generate_sql(dq, catalogue, dimensions, scope, grains, dialect=dialect)
+        assert len(combined) == 1
+        combined_sql, combined_params = combined[0]
+
+        # Each existing expression and the complete FROM/WHERE/GROUP BY survive
+        # unchanged, including deny-all scopes, as-of commits and grouping masks.
+        for metric_key in dq.metric_keys:
+            single = _make_query([metric_key])
+            single.modifiers = dq.modifiers
+            (single_sql, single_params), = generate_sql(
+                single, catalogue, dimensions, scope, grains, dialect=dialect,
+            )
+            expression = single_sql.removeprefix("SELECT\n    ").split("\nFROM ", 1)[0].split("\n    , ")
+            metric_expression = next(part for part in expression if f" AS {metric_key}" in part)
+            assert metric_expression.strip() in combined_sql
+            assert combined_sql.split("\nFROM ", 1)[1] == single_sql.split("\nFROM ", 1)[1]
+            assert combined_params == single_params
+
+    @pytest.mark.parametrize("backend", ["clickhouse", "databricks"])
+    @pytest.mark.parametrize("dimensions", [[], ["cost_centre", "quarter"], ["period"]])
+    def test_mixed_range_leaves_closing_queries_unchanged(self, catalogue, backend, dimensions):
+        dialect = _native_dialect() if backend == "databricks" else SqlDialect()
+        grains = GrainSpec(detail=True, subtotals=True, grand_total=True)
+        mixed = generate_sql(
+            _make_query(["revenue", "avg_fte_billable", "closing_fte_billable"]),
+            catalogue, dimensions, None, grains, dialect=dialect,
+        )
+        closing_only = generate_sql(
+            _make_query(["closing_fte_billable"]),
+            catalogue, dimensions, None, grains, dialect=dialect,
+        )
+        assert mixed[1:] == closing_only
+
+    @pytest.mark.parametrize("backend", ["clickhouse", "databricks"])
+    def test_ragged_breakdown_combines_range_metrics(self, catalogue, backend):
+        dialect = _native_dialect() if backend == "databricks" else SqlDialect()
+        breakdown = {
+            "dimension": "org_structure", "leaf_dimension": "cost_centre",
+            "anchor_node_id": "ROOT",
+        }
+        queries = generate_ragged_sql(
+            _make_query(["revenue", "avg_fte_billable", "closing_fte_billable"]),
+            catalogue, breakdown, {"cost_centre": []}, dialect=dialect,
+        )
+        assert len(queries) == 2
+        sql, params = queries[0]
+        assert " AS revenue" in sql and " AS avg_fte_billable" in sql
+        assert "INNER JOIN" in sql and "b.node_id AS org_structure" in sql
+        assert params["ragged_anchor"] == "ROOT"
+        assert queries[1:] == generate_ragged_sql(
+            _make_query(["closing_fte_billable"]),
+            catalogue, breakdown, {"cost_centre": []}, dialect=dialect,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -806,10 +939,13 @@ class TestPayrollDomain:
         assert "total_payroll_cost" in sql
 
     def test_payroll_mixed_rollup(self, catalogue):
-        """FTE via the legacy key (avg) + salary (sum) needs two queries."""
+        """FTE via the legacy key (avg) and salary (sum) share one query."""
         dq = _make_query(["headcount", "gross_salary"], domain="payroll")
         results = generate_sql(dq, catalogue, [], None)
-        assert len(results) == 2
+        assert len(results) == 1
+        sql, _ = results[0]
+        assert " AS headcount" in sql and " AS gross_salary" in sql
+        assert "NULLIF(COUNT(DISTINCT t.period), 0)" in sql
 
     def test_payroll_with_cost_centre_dimension(self, catalogue):
         dq = _make_query(["total_payroll_cost"], domain="payroll")

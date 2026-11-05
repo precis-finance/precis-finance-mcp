@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+from precis_mcp.analytical.sql import dialect_for
 
 from precis_mcp.engine.catalogue import Catalogue
 from precis_mcp.engine.filter_resolver import (
@@ -82,9 +83,10 @@ def _all_leaf_ids(dim_key: str, catalogue: Catalogue, ch_client) -> set[str]:
     dim = catalogue.dimensions.get(dim_key)
     if dim is None or dim.source is None:
         return set()
+    sql = dialect_for(ch_client)
     result = ch_client.query(
-        f"SELECT DISTINCT toString({dim.source.key_column}) "
-        f"FROM {dim.source.table}"
+        f"SELECT DISTINCT {sql.string(dim.source.key_column)} "
+        f"FROM {sql.table(dim.source.table)}"
     )
     return {row[0] for row in result.result_rows}
 
@@ -93,6 +95,8 @@ def _resolve_scope_members(
     members: dict[str, list[str]],
     catalogue: Catalogue,
     ch_client,
+    *,
+    intersect_axes: bool = False,
 ) -> dict[str, set[str]]:
     """Resolve scope dimension members to leaf-level ID sets.
 
@@ -106,6 +110,15 @@ def _resolve_scope_members(
     for dim_key, values in members.items():
         target = _find_filter_target(dim_key, catalogue)
         dim = target.dimension
+        if target.resolution_type == "leaf":
+            leaf_dim_key = dim.key
+        elif target.resolution_type == "derived":
+            if not dim._transitive:
+                raise ScopeViolationError(f"Cannot resolve scope dimension '{dim_key}'")
+            leaf_dim_key = next(iter(dim._transitive.values())).leaf_dimension
+        else:
+            leaf_dim_key = dim.leaf_dimension
+        axis_members: set[str] = set()
 
         for value in values:
             if target.resolution_type == "leaf":
@@ -120,9 +133,15 @@ def _resolve_scope_members(
             else:
                 continue
 
-            if leaf_dim_key not in leaf_sets:
-                leaf_sets[leaf_dim_key] = set()
-            leaf_sets[leaf_dim_key].update(leaves)
+            axis_members.update(leaves)
+
+        # Preserve explicit empty axes. Allow axes combine AND even when two
+        # hierarchy levels reach one leaf; exclusions combine OR. Members
+        # within one axis always combine OR.
+        if intersect_axes and leaf_dim_key in leaf_sets:
+            leaf_sets[leaf_dim_key].intersection_update(axis_members)
+        else:
+            leaf_sets.setdefault(leaf_dim_key, set()).update(axis_members)
 
     return leaf_sets
 
@@ -200,7 +219,7 @@ def union_read_member_sets(
     per_scope: list[dict[str, set[str]]] = []
     for dims in read_dim_scopes:
         allow_resolved = (
-            _resolve_scope_members(dims.allow, catalogue, ch_client)
+            _resolve_scope_members(dims.allow, catalogue, ch_client, intersect_axes=True)
             if dims.allow else {}
         )
         deny_resolved = (
@@ -260,7 +279,7 @@ def resolve_scope_filters(
     if dims.allow:
         allow_resolved = {
             k: set(v)
-            for k, v in _resolve_scope_members(dims.allow, catalogue, ch_client).items()
+            for k, v in _resolve_scope_members(dims.allow, catalogue, ch_client, intersect_axes=True).items()
         }
 
     deny_resolved: dict[str, set[str]] = {}
@@ -470,7 +489,7 @@ def resolve_scope_leaf_sets(
 
     allow_resolved: dict[str, set[str]] = {}
     if dims.allow:
-        allow_resolved = _resolve_scope_members(dims.allow, catalogue, ch_client)
+        allow_resolved = _resolve_scope_members(dims.allow, catalogue, ch_client, intersect_axes=True)
     deny_resolved: dict[str, set[str]] = {}
     if dims.deny:
         deny_resolved = _resolve_scope_members(dims.deny, catalogue, ch_client)

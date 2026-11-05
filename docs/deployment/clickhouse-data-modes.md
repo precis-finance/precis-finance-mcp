@@ -104,6 +104,22 @@ Two things you provide:
 Loading your actual figures into those tables is a separate step —
 [ingestion](../configuration/ingestion.md).
 
+The multi-user Compose bundle forwards `CHSECURE`, `CHVERIFY` and `CHCACERT`
+to the server, ingestion and backup services. Leave `CHPORT` unset/empty to
+select 8443 with TLS; an explicit port takes precedence. Keep verification
+enabled for remote deployments.
+
+`CHCACERT` names a path **inside the container**. For a private CA, add a
+Compose override with a read-only bind mount, for example
+`/srv/precis/certs:/etc/precis/certs:ro`, to each connecting service:
+`precis-mcp`, `ingestion-scheduler`, `ingestion-watcher`, `backup-scheduler`
+as applicable.
+Set `CHCACERT=/etc/precis/certs/clickhouse-ca.pem`. Forwarding a host path in
+the environment does not mount its file. Use the same approach for
+`CUSTOMER_PG_SSLROOTCERT` with `CUSTOMER_PG_SSLMODE=verify-full`. Validate a
+successful connection and rejection of an untrusted server certificate on the
+actual deployment before treating remote TLS as accepted.
+
 ---
 
 ## The schema provisioner (`clickhouse_init`)

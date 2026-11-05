@@ -28,7 +28,9 @@ Each stage has its own status bucket on `load_history`:
   swap     failure →  `failed_swap`
   lock     conflict → `failed_other`
 
-`success` is set only after a clean swap.
+`success` is set only after a clean swap and, for snapshot loads, the configured
+hierarchy refresh. A refresh failure is reported as `failed_swap`; the source
+swap may already have completed and requires operator reconciliation.
 """
 
 from __future__ import annotations
@@ -207,6 +209,9 @@ class OrchestratorContext:
     ch_client: Any
     ibis_backend_for_source: Callable[[str], Any]
     source_path_resolver: Callable[[str], Optional[str]] = lambda _: None
+    # Production snapshot loads refresh all catalogue hierarchies before success.
+    # The source swap and these replacements are not a multi-table transaction.
+    refresh_hierarchies: Optional[Callable[[], None]] = None
 
     lock_timeout_seconds: int = 600
     lock_blocking_timeout_seconds: int = 1
@@ -584,6 +589,12 @@ def run_binding(
                         load_id=load_id,
                         ch_client=ctx.ch_client,
                     )
+                    # Record the actual source publication even if a subsequent
+                    # derived mapping refresh fails; the load is not yet success.
+                    ctx.load_history.record_swap(load_id)
+                    _logger.info("ingest.swap.done", load_id=load_id, period=period)
+                    if binding.kind == "snapshot" and ctx.refresh_hierarchies is not None:
+                        ctx.refresh_hierarchies()
             except Exception as exc:
                 msg = f"Swap failed: {exc}"
                 _logger.exception("ingest.swap.failed", load_id=load_id)
@@ -596,9 +607,6 @@ def run_binding(
                     error=msg,
                     duration_ms=int((time.monotonic() - started) * 1000),
                 )
-            ctx.load_history.record_swap(load_id)
-            _logger.info("ingest.swap.done", load_id=load_id, period=period)
-
             # ----- Finalise -----
             ctx.load_history.finalise(load_id, "success")
             ingest_metrics.record_attempt(binding_id, "success")

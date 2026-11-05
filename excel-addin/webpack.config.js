@@ -71,6 +71,14 @@ module.exports = async (env, options) => {
       new CopyWebpackPlugin({
         patterns: [
           {
+            from: "../LICENSE",
+            to: "LICENSE.txt",
+          },
+          {
+            from: "THIRD_PARTY_NOTICES.txt",
+            to: "THIRD_PARTY_NOTICES.txt",
+          },
+          {
             from: "assets/*",
             to: "assets/[name][ext][query]",
           },

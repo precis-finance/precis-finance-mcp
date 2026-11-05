@@ -24,6 +24,35 @@ Deploy a published release or build from your chosen source revision.
 
 ## Multi-user bundle
 
+### Upgrade to 0.4.0: Databricks and live Excel formulas
+
+Update to the matching release files and application image. Apply pending open
+PostgreSQL migrations before starting the server, pull updated bundled service
+images and rebuild PostgreSQL and bundled Caddy. Compose 2.17+ builds the small
+PostgreSQL APT patch layer embedded in the release Compose file; this preserves
+PostgreSQL 16 and its data volume. Preserve your `instance/`, secrets and volumes.
+See `CHANGELOG.md` for the full release requirements.
+
+- **Hierarchies:** to adopt materialized mappings, run
+  `precis-finance-mcp-admin hierarchy refresh --provision` with operator
+  credentials. Customer-managed pipelines must refresh after hierarchy changes.
+  Follow the [hierarchy provisioning and refresh contract](../configuration/analytical-client.md#explicit-hierarchy-provisioning-and-refresh)
+  for permissions and coordinated publication.
+- **Excel:** update the bundle and hosted manifest (`1.0.0.9`) together.
+  Regenerate older exports/live markers lacking region and context-footer
+  metadata. Remove the former tenth decimal-mode argument from financial
+  formulas; use `decimals` for display precision. Selected conversion requires
+  ExcelApi 1.13+. See [Excel setup and conversion](../excel/index.md) and the
+  [function reference](../excel/functions.md).
+- **Databricks:** build with `PRECIS_EXTRAS=databricks-primary` and follow
+  [backend setup](../configuration/analytical-client.md#docker-deployment-with-databricks).
+  Include `-f deploy/docker-compose.databricks.yml` alongside the multi-user
+  base file in Compose upgrade commands; the deployment helper requires
+  `--data-mode databricks` on subsequent deployments too. Provision warehouse
+  inputs before startup; keep the serving identity read-only.
+- **Bundled Keycloak:** reconcile the scoped user-provisioning client as
+  described in [sign-in and identity modes](../deployment/oauth-keycloak.md).
+
 ### Upgrade to 0.3.0: charts and file exports
 
 Version 0.3.0 adds chart creation and downloadable JSON/Excel extracts to the
@@ -32,13 +61,13 @@ persistent file volume. The supplied Compose files configure these dependencies;
 the application image includes the new Python packages (`redis` and `quickjs-ng`)
 and built widgets. An application tag change or restart alone is insufficient.
 
-The pinned-image commands below apply **after 0.3.0 is published**. For an
-unpushed candidate or a source build, use the alternative below instead.
+The commands below use the published 0.3.0 image. For source builds, use the
+alternative below instead.
 
 1. Back up using [Backups & restore](backups.md). Keep your existing Compose
    project name and data volumes.
-2. Update your **open-repository** checkout to the selected 0.3.0 release or
-   candidate, including `deploy/`, Dockerfile, locks and migration scripts.
+2. Update your **open-repository** checkout to the selected release or source
+   revision, including `deploy/`, Dockerfile, locks and migration scripts.
    Preserve your existing `instance/` and environment files. For a published tag:
 
    ```sh
@@ -68,9 +97,16 @@ unpushed candidate or a source build, use the alternative below instead.
 
 Standard 0.2.x open installations have no previous artifact registry. Migration
 `008_artifacts.sql` adds it without resetting users, profiles or analytical
-data. An existing `files` table from a custom or prerelease build needs schema
-review: this migration does not convert incompatible legacy tables. Do not drop
-a table merely because it exists; an already migrated 0.3.0 registry is valid.
+data. Current source also includes `009_upgrade_legacy_artifacts.sql` to add
+missing version, provenance and access metadata to the known legacy registry.
+It preserves file IDs and blob paths. Legacy generated files without recorded
+read grants remain stored but unavailable; regenerate them under current
+permissions. Untouched user uploads retain owner-only access. Existing expiry
+and deletion rules continue to apply. Already-current artifact metadata is
+preserved. Review unrelated custom schemas separately; do not drop a table
+merely because it exists. A previously published image containing only `008`
+does not include this forward fix; select a source revision or release that
+contains `009` when upgrading a legacy registry.
 
 From the open checkout on the deployment host, install the new dependency and
 explicitly apply and verify migrations:
@@ -78,7 +114,8 @@ explicitly apply and verify migrations:
 ```sh
 mcp_compose() { docker compose -f deploy/docker-compose.yml --env-file deploy/.env "$@"; }
 mcp_compose stop precis-mcp
-mcp_compose pull precis-mcp migrate postgres redis
+mcp_compose pull precis-mcp migrate redis
+mcp_compose build postgres
 mcp_compose up -d --wait postgres redis
 mcp_compose run --rm --no-deps migrate
 mcp_compose run --rm --no-deps migrate python scripts/migrate.py --scope open --status
@@ -87,10 +124,11 @@ mcp_compose run --rm --no-deps migrate python scripts/migrate.py --scope open --
 The `redis` service runs the pinned Valkey image. `migrate` runs
 `python scripts/migrate.py --scope open` against the platform database; only
 pending migrations apply. The status command must show `008_artifacts.sql` as
-`applied`. Stop if migration execution fails.
+`applied`, along with `009_upgrade_legacy_artifacts.sql` when deploying the
+forward-fix revision. Stop if migration execution fails.
 
 The release also refreshes PostgreSQL 16's Debian packages and the application
-base image. Pull PostgreSQL explicitly as above; an application-only update
+base image. Build PostgreSQL explicitly as above; an application-only update
 leaves the database image's packages unchanged. This remains a same-major
 PostgreSQL upgrade using your existing data volume. For the bundled proxy,
 rebuild Caddy from the updated Dockerfile before starting the stack:
@@ -99,7 +137,7 @@ rebuild Caddy from the updated Dockerfile before starting the stack:
 mcp_compose build caddy
 ```
 
-Skip this build for external ingress. The Caddy build pins Go 1.26.9 because
+Skip this build for external ingress. Current source pins Go 1.26.10 because
 the builder image's bundled toolchain alone does not include the required
 security patches. Native Python installations need their host OS packages
 and external ingress patched separately; installing a Python wheel does not
@@ -134,12 +172,13 @@ procedure instead.
 with the following, then run the same migration/startup sequence:
 
 ```sh
-mcp_compose pull postgres redis
+mcp_compose pull redis
+mcp_compose build postgres
 mcp_compose build precis-mcp migrate
 ```
 
 The image build installs `requirements.lock`, including Redis/QuickJS, installs
-the open package and builds widgets. This works for an unpushed 0.3.0 candidate.
+the open package and builds widgets from the checked-out source revision.
 For warehouse drivers, retain `PRECIS_EXTRAS` in `deploy/.env` (for example,
 `snowflake` or `bigquery,snowflake`) and build from source: the standard image
 excludes optional drivers. Keep this release's `constraints-extras.txt`, which
@@ -172,7 +211,7 @@ uploads are disabled; exports/downloads remain enabled. See
    - *Pinned release (the default):* set `PRECIS_MCP_TAG` to the new version and
      re-pull (see [Pinned-release mode](#pinned-release-mode-pull-instead-of-build)
      below), or `scripts/deploy-mcp.sh --tag <version>` from your workstation —
-     it pulls the published image, no rebuild.
+     it pulls the published application image and builds the PostgreSQL patch.
    - *Rolling `main` / fork:* `git pull` on the deployment checkout, or
      `scripts/deploy-mcp.sh --build` from your workstation (it rsyncs the tree
      to the box and builds there).
@@ -210,7 +249,8 @@ and use `PRECIS_BASE_URL=http://127.0.0.1:8768` for a client on the same machine
 ```sh
 local_mcp_compose() { docker compose -f deploy/docker-compose.local.yml --env-file deploy/.env "$@"; }
 local_mcp_compose stop precis-mcp
-local_mcp_compose pull precis-mcp migrate postgres redis
+local_mcp_compose pull precis-mcp migrate redis
+local_mcp_compose build postgres
 local_mcp_compose up -d --wait postgres redis
 local_mcp_compose run --rm --no-deps migrate
 local_mcp_compose run --rm --no-deps migrate python scripts/migrate.py --scope open --status
@@ -218,7 +258,7 @@ local_mcp_compose up -d
 ```
 
 For a source candidate, replace the application pull with
-`local_mcp_compose pull postgres redis` followed by
+`local_mcp_compose pull redis`, `local_mcp_compose build postgres`, followed by
 `local_mcp_compose build precis-mcp migrate`. If you use your own instance,
 include `-f deploy/docker-compose.instance.yml` in the function and preserve
 `PRECIS_INSTANCE_DIR`. The local stack remains host-local; a remote agent host
@@ -244,7 +284,7 @@ start the same pinned Valkey used by Compose, bound to loopback:
 ```sh
 docker run -d --name precis-mcp-valkey --restart unless-stopped \
   -p 127.0.0.1:6379:6379 \
-  valkey/valkey:7.2.14-alpine@sha256:c6c2f0020be34bbf684a53a0ef716ab16ff70295186d4d9f2518435beb7afbff \
+  valkey/valkey:7.2.15-alpine@sha256:f8c1a646f4b31ae4dc3980ff06723a20b533ea1123b9796d450d78ed53ad6d3e \
   valkey-server --maxmemory 256mb --maxmemory-policy noeviction --save "" --appendonly no
 ```
 
@@ -260,11 +300,19 @@ python scripts/migrate.py --scope open
 python scripts/migrate.py --scope open --status
 ```
 
-Check that `008_artifacts.sql` is applied, then restart through your normal
+Check that `008_artifacts.sql` and, for a revision including the forward fix,
+`009_upgrade_legacy_artifacts.sql` are applied, then restart through your normal
 process manager and perform the readiness/export/chart checks above. Update
 and reload your ingress as well if its artifact routes were absent.
 
 ## Pinned-release mode (pull instead of build)
+
+PostgreSQL is an APT-only layer over a digest-pinned upstream PostgreSQL 16
+Bookworm image. Compose 2.17+ builds it from the embedded Dockerfile, preserving
+the single-file quickstart and existing database volume. The layer changes only
+APT packages; PostgreSQL binaries and libc remain unchanged. Build it even when
+pulling the published application. The first APT commands disable retries to
+prevent the package-verification vulnerability while upgrading APT itself.
 
 The steps above build the app image from the synced source — the right choice
 when you track rolling `main`. To run a **pinned, pre-built release** instead,
@@ -272,14 +320,16 @@ set `PRECIS_MCP_TAG` to a published image version and bring the stack up
 *without* `--build`:
 
 ```bash
-PRECIS_MCP_TAG=0.3.0 docker compose -f deploy/docker-compose.yml --env-file deploy/.env pull precis-mcp migrate
-PRECIS_MCP_TAG=0.3.0 docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
+PRECIS_MCP_TAG=0.4.0 docker compose -f deploy/docker-compose.yml --env-file deploy/.env pull precis-mcp migrate
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env build postgres
+PRECIS_MCP_TAG=0.4.0 docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d
 ```
 
 This explicitly pulls `ghcr.io/precis-finance/precis-finance-mcp:<tag>`.
 Upgrading is then bumping
-`PRECIS_MCP_TAG` to a newer release and re-running `up -d` — no rebuild. The
-bundled Postgres / ClickHouse / Keycloak images are unaffected either way; they
+`PRECIS_MCP_TAG` to a newer release and re-running `up -d`; the application
+does not need a source build. The
+bundled ClickHouse / Keycloak images are unaffected either way; they
 stay digest-pinned in the compose file. Still read `CHANGELOG.md` first, and
 back up (step 1) — a tag bump is an upgrade like any other.
 
@@ -295,11 +345,21 @@ There are no reverse migrations. Rolling back is a **restore**: check out
 the previous tag, rebuild, then restore the pre-upgrade bundle —
 [Backups & restore](backups.md). This is the reason step 1 isn't optional.
 
+## Temporary Keycloak risk acceptance
+
+The reviewed upstream Keycloak 26.8.1 image retains Guava CVE-2026-102554.
+Maintainers accepted this availability risk until **December 5, 2026, 00:00 UTC**,
+independent of the next release date. The narrowly scoped CI exception applies
+only to the reviewed image digest and Guava JAR/PURL. CI rejects a changed image,
+a broader rule or an expired exception. Reachability of attacker-controlled Java
+serialization in this deployment has not been disproved. External OIDC does not
+run this container. Apply a fixed upstream image once available.
+
 ## Dependency and image pinning
 
 What a sync ships is exactly what runs: Python dependencies install from a
-hashed lockfile (`requirements.lock`), and the bundled Postgres / ClickHouse
-/ Valkey / Keycloak images are digest-pinned (`tag@sha256:…`) in the compose files,
+hashed lockfile (`requirements.lock`), and the upstream ClickHouse / Valkey /
+Keycloak images are digest-pinned (`tag@sha256:…`) in the compose files,
 so an upstream re-tag can't change your stack silently. The precis-mcp
 application image follows the same principle — published to
 `ghcr.io/precis-finance/precis-finance-mcp` and selected by `PRECIS_MCP_TAG` (a release
@@ -307,11 +367,18 @@ version by default, pinnable to a `@sha256:` digest), or built from the synced
 source when you run `up --build`. The flip side is
 that base-image and dependency security fixes do **not** arrive by
 re-pulling — they arrive as pin bumps in sync commits. CI gates both Python
-lock sets with `pip-audit`, scans the application image, scans the exact
-Postgres / ClickHouse / Valkey / Keycloak pins, and builds and scans the custom Caddy
+lock sets with `pip-audit`, audits both frontend release-builder dependency sets
+including build tools (High/Critical gate), scans the application image, scans the exact
+ClickHouse / Valkey / Keycloak pins, and builds and scans patched PostgreSQL and Caddy
 proxy. If you maintain a fork, regenerate the lockfile with `make lock`, refresh
 image digests with `docker buildx imagetools inspect <tag>`, and rerun the same
 image scans on your own cadence.
+
+The Excel release builder and its npm gate both use `--omit=peer`, excluding the
+Office developer login/sideload CLI that webpack does not use. Ordinary local
+`npm ci` installs retain that tooling and its known Microsoft CLI MSAL/ZIP
+advisories; CI reports the full developer-install audit separately. No Node
+toolchain or Office CLI is copied into the application runtime image.
 
 ## Not an upgrade
 

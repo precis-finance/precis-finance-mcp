@@ -5,6 +5,10 @@ and the git-binary-free instance SHA parser."""
 from __future__ import annotations
 
 import hashlib
+import json
+from dataclasses import replace
+
+import pytest
 
 from precis_mcp.backup.manifest import (
     ArtifactEntry,
@@ -40,6 +44,44 @@ def test_json_round_trip():
     assert again == m
     assert again.artifacts[0].store == "postgres"
     assert again.row_counts["ch.live.fact_gl"] == 100
+
+
+def test_legacy_manifest_defaults_to_clickhouse():
+    data = json.loads(_manifest().to_json())
+    del data["analytical_backend"]
+    assert BackupManifest.from_json(json.dumps(data)).analytical_backend == "clickhouse"
+
+
+def test_databricks_manifest_retains_backend_after_reload():
+    manifest = replace(_manifest(), analytical_backend="databricks")
+    assert BackupManifest.from_json(manifest.to_json()).analytical_backend == "databricks"
+
+
+def test_unknown_backend_manifest_rejected():
+    data = json.loads(_manifest().to_json())
+    data["analytical_backend"] = "unknown"
+    with pytest.raises(ValueError, match="Unknown analytical backend"):
+        BackupManifest.from_json(json.dumps(data))
+
+
+def test_planning_database_inventory_survives_manifest_reload():
+    manifest = replace(_manifest(), clickhouse_databases=["live", "staging", "semantic", "planning"])
+    assert BackupManifest.from_json(manifest.to_json()).included_clickhouse_databases == ("live", "staging", "semantic", "planning")
+
+
+def test_legacy_manifest_restores_only_databases_it_originally_captured():
+    data = json.loads(_manifest().to_json())
+    del data["clickhouse_databases"]
+    assert BackupManifest.from_json(json.dumps(data)).included_clickhouse_databases == ("live", "staging", "semantic")
+
+
+@pytest.mark.parametrize("databases", [[], ["planning"], ["live", "staging", "semantic", "system"],
+                                     ["live", "staging", "semantic", "planning; DROP DATABASE other"]])
+def test_invalid_restore_database_inventory_rejected(databases):
+    data = json.loads(_manifest().to_json())
+    data["clickhouse_databases"] = databases
+    with pytest.raises(ValueError, match="database inventory"):
+        BackupManifest.from_json(json.dumps(data))
 
 
 def test_artifact_lookup():

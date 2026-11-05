@@ -7,8 +7,8 @@ the shape that would sit in `profiles.definition` (JSONB) in the platform DB.
 ## Source of truth used when drafting these
 
 - **Scenarios** (`mcp__fpa__list_scenarios`): `ACTUALS`, `BUD-2026`,
-  `FC-2026-Q1`. Scenario kind is encoded today only as a prefix in the
-  `description` column (`ACTUALS|...`, `BUDGET|...`, `FORECAST|...`).
+  `FC-2026-Q1`. Scenario kind is stored in the dedicated `kind` column of
+  `semantic.scenarios` on both ClickHouse and Databricks.
 - **Domains** (`mcp__fpa__list_kpis` → `domain` field): `gl`, `payroll`,
   `pnl`, `project_economics`, `timesheets`.
 - **Dimensions**: `cost_centre`, `account`, `period`, `employee`, `project`,
@@ -19,18 +19,10 @@ the shape that would sit in `profiles.definition` (JSONB) in the platform DB.
   `General & Administration`, `Human Resources`, `Marketing & Sales`,
   `Software Engineering`.
 
-## Data model gap flagged here
+## Scenario kinds
 
-The current `scenarios` table does **not** carry a dedicated `kind` column.
-Category tokens like `PLAN`, `BUDGET`, `FORECAST`, `ACTUAL` used in these
-fixtures assume such a column exists. Proposed addition:
-
-```
-ALTER TABLE scenarios ADD COLUMN kind TEXT NOT NULL
-  CHECK (kind IN ('ACTUAL','BUDGET','FORECAST'));
-```
-
-Token-to-kind mapping used in these profiles:
+Category tokens in these profiles match the existing `semantic.scenarios.kind`
+column as follows:
 
 | Token      | Matches `scenarios.kind` |
 |------------|--------------------------|

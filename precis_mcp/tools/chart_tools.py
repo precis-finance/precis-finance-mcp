@@ -18,6 +18,15 @@ def eval_chart_transform(data_refs: list[str], transform_code: str, chart_spec: 
     taking one engine result per reference, in order, and returning flat rows.
     Use detail grain for ordinary series, row.item for metric identity,
     row.dimensions for dimensions and row.values for scenario values.
+    Cached values are already scaled: scale 3 divides non-exempt metrics by
+    1000; scale 0 leaves them in units. Percentages (75 means 75%), FTEs and
+    other scale-exempt metrics retain their units. Do not scale values again.
+    For multiple inputs, inspect each scale and item format; re-query same-unit
+    series at a common scale before combining them on one axis. Use separately
+    labelled axes for currency/FTE or currency/percent (line/bar/area only),
+    or separate charts. Conflicting nonempty caption scale labels are omitted;
+    unlabelled sources do not remove other labels. Axis labels must state each
+    unit. Values are not auto-converted.
     chart_spec requires chart_type, x_key and y_keys; engine precision drives
     left-axis decimals. This computes a chart; it performs no report writes.
     """

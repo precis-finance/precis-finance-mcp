@@ -2,25 +2,18 @@
 # Copyright (c) 2026 Sergio Naval Marimont
 """Dev MCP server registration — strip injected ``_scope`` for a real FastMCP.
 
-The shared ``register_*_tools`` factories accept the agent-injected ``_scope``
-parameter and register every tool with a plain ``@mcp.tool()``. The agent
-graph and the authenticated external ``/mcp`` transport register those
-functions **intact** through a duck-typed registry: they inspect the signature
-to inject ``_scope`` (``_make_agent_wrapper``) and strip it from the LLM-facing
-schema themselves (``derive_llm_facing_signature``).
+The shared ``register_*_tools`` factories accept injected ``_scope`` and
+``user_id`` parameters and register tools with ``@mcp.tool()``. FastMCP rejects
+parameter names starting with ``_``, so ``DevMcpRegistrar`` removes injected
+parameters from the advertised signature and supplies ``user_id`` from the
+active authentication context.
 
-A *real* FastMCP — the dev-only, unauthenticated MCP servers in
-``precis_mcp/server.py`` and ``precis/server.py`` — is the one consumer that
-can't take them intact: its schema builder rejects parameters whose names
-start with ``_``. ``DevMcpRegistrar`` wraps such a FastMCP so the factories
-register against it unchanged, stripping ``_scope`` from the advertised
-signature. That transport never enforces scope anyway (no per-user auth), so
-``_scope`` defaulting to ``None`` is the correct dev contract.
+The single-user server in ``precis_mcp/server.py`` authenticates MCP calls with
+a shared dev key and uses a fixed administrator context. It has no per-user
+scope restrictions, so ``_scope`` retains its default of ``None``.
 
-Keeping the strip here, at the dev-server boundary, is what lets the factories
-hand the production registry the real function — registering a stripped shim
-there would make the agent wrapper's ``needs_scope`` false and silently
-disable dimension-scope enforcement.
+Signature stripping belongs only at this boundary. Other registries need the
+original signatures to identify and inject scope parameters correctly.
 """
 from __future__ import annotations
 

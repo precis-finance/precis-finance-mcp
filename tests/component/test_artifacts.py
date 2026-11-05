@@ -155,6 +155,41 @@ def test_snapshot_exports_preserve_rows_precision_and_literal_excel_text(service
     assert len(db.files) == 2
 
 
+@pytest.mark.parametrize("tool", ["run_metric", "run_statement"])
+def test_financial_snapshot_export_has_convertible_report_provenance(services, tool):
+    from precis_mcp.excel.meta import read_meta
+    _, client, _ = services
+    snapshot = {"kind": "metric" if tool == "run_metric" else "statement", "dimensions": [], "scale": 0, "decimals": None,
+                "caption": {"description": "Financial report", "period": "2026-01 to 2026-03"},
+                "scenarios": [{"alias": "Actuals"}],
+                "rows": [{"grain": "detail", "dimensions": {}, "item": {"key": "margin", "label": "Margin", "format": "percent", "decimals": 2},
+                          "values": {"Actuals": 8.7654321}},
+                         {"grain": "detail", "dimensions": {}, "item": {"key": "total", "label": "Total", "format": "number", "style": "total", "separator_above": True},
+                          "values": {"Actuals": 0}}]}
+    args = {"metrics": ["margin"]} if tool == "run_metric" else {"statement": "pnl"}
+    args.update(period_start="2026-01", period_end="2026-03", scenarios=[{"scenario": "actuals", "alias": "Actuals"}], scale=0, decimals=None)
+    ref = datasets.cache_read_result(snapshot, tool, args)
+    artifact = artifact_tools.export_dataset(ref, "xlsx", "alice")["artifact"]
+    wb = load_workbook(BytesIO(client.get(local_url(artifact["download_url"])).content))
+    meta = read_meta(wb)
+    sheet, entry = next(iter(meta["sheets"].items()))
+    region = entry["regions"][0]
+    assert "source" not in entry
+    assert region["layout"] == "report"
+    assert region["source"] == {"tool": tool, "params": args}
+    assert region["origin"] == "https://precis.example"
+    assert region["shape"]["column_keys"] == ["label", "Actuals"]
+    assert region["shape"]["footer_rows"] == 1
+    assert wb[sheet]["A1"].value == "Financial report"
+    assert region["shape"]["row_count"] == 2
+    assert wb[sheet].max_row == region["shape"]["data_start_row"] + 4
+    assert list(wb.defined_names[region["range_name"]].destinations)[0][0] == sheet
+    cell = wb[sheet].cell(region["shape"]["data_start_row"] + 2, 2)
+    assert cell.value == 8.7654321 and '0.00"%"' in cell.number_format
+    assert wb[sheet].cell(cell.row + 1, 1).value == "Total"
+    assert wb[sheet].cell(cell.row + 1, 2).value == 0
+
+
 def test_failed_db_commit_keeps_original_blob_and_metadata(services):
     db, _, _ = services
     row = registry.create_file(user_id="alice", basename="data.json", blob_bytes=b"old", source="user_upload")

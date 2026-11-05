@@ -12,15 +12,23 @@ host-templated manifest at `/excel/manifest.xml`; see the Excel section of the
 Précis documentation (<https://docs.precis.finance>) for install and OAuth setup.
 This README covers local development.
 
+## License and community
+
+Précis-authored add-in code uses the repository's [Elastic License 2.0](../LICENSE).
+The original Microsoft template portions retain their MIT license; see
+[third-party notices](THIRD_PARTY_NOTICES.txt), also included in the built bundle.
+The [Précis Code of Conduct](../CODE_OF_CONDUCT.md) applies to this add-in.
+The npm package is a local build package and is marked private to prevent npm
+publication; deployments serve its built assets.
+
 ## Branding
 
 The task pane uses the Precision light palette, connected-P mark and a self-hosted
 Cormorant 600 wordmark beside the sans-serif product label. `assets/precis-mark.svg`
 is the packaged mark; `icon-16.png`, `icon-32.png`, `icon-64.png` and `icon-80.png`
 are the only brand raster sizes required by the manifest. The format/refresh
-symbols remain separate functional icons. Brand SVG masters live in the internal
-brand pack; the exported add-in contains its own assets and has no runtime
-dependency on that pack.
+symbols remain separate functional icons. All required brand assets are packaged
+with the add-in.
 
 The ribbon formatter applies light headers and cool subtotal/total fills while
 preserving native workbook fonts, financial number formats, grouping and variance

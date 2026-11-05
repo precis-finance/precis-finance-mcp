@@ -1,5 +1,5 @@
 /*
- * Précis task pane. Two states:
+ * Précis task pane. Connection, Members and Convert tabs share session state.
  *   - disconnected → Sign in. Both the /mcp URL (derived from the serving origin)
  *     and the OIDC config (endpoints + client_id, auto-discovered from the /mcp
  *     host) are server-supplied — no URL field, no issuer/client field, no manual
@@ -15,6 +15,22 @@
 import { getMcpUrl, getUserLabel, isConnected, disconnect, onAuthChange } from "../config";
 import { signIn } from "../oauth";
 import { fetchDimensions, insertDropdown, DropdownMode } from "./dropdowns";
+import { activateSelectedExtract, activationSupported } from "../regions/activate";
+
+let dimensionsLoaded = false;
+let conversionRunning = false;
+const tabs = ["connection", "members", "convert"] as const;
+type Tab = typeof tabs[number];
+
+function selectTab(selected: Tab, focus = false): void {
+  for (const tab of tabs) {
+    const button = el(`tab-${tab}`);
+    button.setAttribute("aria-selected", String(tab === selected));
+    button.tabIndex = tab === selected ? 0 : -1;
+    el(`panel-${tab}`).hidden = tab !== selected;
+  }
+  if (focus) el(`tab-${selected}`).focus();
+}
 
 Office.onReady(() => {
   el("sideload-msg").style.display = "none";
@@ -32,6 +48,25 @@ Office.onReady(() => {
   el("disconnect").onclick = onDisconnect;
   el("refresh").onclick = onRefresh;
   el("insert-dropdown").onclick = onInsertDropdown;
+  el("convert-live").onclick = onConvertLive;
+  tabs.forEach((tab, index) => {
+    const button = el(`tab-${tab}`);
+    button.onclick = () => selectTab(tab);
+    button.onkeydown = (event: KeyboardEvent) => {
+      let next: number;
+      if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+      else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      selectTab(tabs[next], true);
+    };
+  });
+  for (const id of ["members-connect", "convert-connect"]) {
+    el(id).onclick = () => { selectTab("connection"); el("signin").focus(); };
+  }
+  selectTab("connection");
 
   // A 401-forced disconnect inside a custom function flips the pane back to
   // the disconnected state (instead of staying falsely "Connected").
@@ -54,14 +89,37 @@ function el(id: string): HTMLElement {
   return node;
 }
 
-function setStatus(msg: string): void {
-  el("status").textContent = msg;
+function setStatus(msg: string, target: "connection" | "members" = "connection"): void {
+  el(`${target}-feedback`).textContent = msg;
+}
+
+function setConversionStatus(message: string, state = "progress"): void {
+  const feedback = el("conversion-feedback");
+  feedback.textContent = message;
+  feedback.dataset.state = state;
+  feedback.setAttribute("role", state === "error" ? "alert" : "status");
+  feedback.scrollIntoView({ block: "nearest" });
+}
+
+function renderConversionAvailability(): void {
+  const supported = activationSupported();
+  (el("convert-live") as HTMLButtonElement).disabled = !supported || !isConnected() || conversionRunning;
+  el("conversion-support").textContent = supported
+    ? "Other Précis regions are not converted."
+    : "Conversion is unavailable in this Excel version. Use Excel on the web or an updated Excel version supporting ExcelApi 1.13 or later.";
 }
 
 /** Toggle the connected / disconnected sections. */
 function render(connected: boolean): void {
   el("disconnected").style.display = connected ? "none" : "block";
   el("connected").style.display = connected ? "block" : "none";
+  el("connection-state").textContent = connected ? "Connected" : "Not connected";
+  el("connection-bar").dataset.connected = String(connected);
+  for (const tab of ["members", "convert"]) {
+    el(`${tab}-signin`).hidden = connected;
+    el(`${tab}-controls`).hidden = !connected;
+  }
+  renderActions();
   if (connected) {
     const user = getUserLabel();
     el("connected-user").textContent = user ? `Signed in as ${user}` : "";
@@ -72,7 +130,12 @@ function render(connected: boolean): void {
   }
 }
 
-let dimensionsLoaded = false;
+function renderActions(): void {
+  for (const id of ["refresh", "disconnect", "insert-dropdown", "dropdown-dim", "dropdown-mode"]) {
+    (el(id) as HTMLButtonElement).disabled = !isConnected() || conversionRunning;
+  }
+  renderConversionAvailability();
+}
 
 /** Fill the drop-down dimension picker from `list_dimensions` (once per session). */
 async function populateDimensionPicker(): Promise<void> {
@@ -92,7 +155,7 @@ async function populateDimensionPicker(): Promise<void> {
     }
     dimensionsLoaded = dims.length > 0;
   } catch (e) {
-    setStatus(`Could not load dimensions: ${(e as Error).message}`);
+    setStatus(`Could not load dimensions: ${(e as Error).message}`, "members");
   }
 }
 
@@ -100,24 +163,24 @@ async function onInsertDropdown(): Promise<void> {
   const picker = el("dropdown-dim") as HTMLSelectElement;
   const dim = picker.value;
   if (!dim) {
-    setStatus("Pick a dimension first.");
+    setStatus("Pick a dimension first.", "members");
     return;
   }
   const mode = (el("dropdown-mode") as HTMLSelectElement).value as DropdownMode;
-  setStatus(`Inserting ${dim} drop-down…`);
+  setStatus(`Inserting ${dim} drop-down…`, "members");
   try {
     const res = await insertDropdown(dim, mode);
-    let msg = res.provisioned
-      ? `Drop-down inserted; ${dim} list added to the hidden PrecisLists sheet.`
-      : `Drop-down inserted (reusing the existing ${dim} list).`;
+    let msg = `Added ${dim} drop-downs to the selected cells. Member lists refresh with workbook data.`;
     if (res.companion === "occupied") {
       msg += " Companion column not written — the adjacent cells aren't empty.";
     } else if (res.companion === "skipped-multi-column") {
       msg += " Companion column skipped for a multi-column selection.";
+    } else {
+      msg += " The matching name or code was added in the column to the right.";
     }
-    setStatus(msg);
+    setStatus(msg, "members");
   } catch (e) {
-    setStatus(`Insert failed: ${(e as Error).message}`);
+    setStatus(`Insert failed: ${(e as Error).message}`, "members");
   }
 }
 
@@ -125,7 +188,7 @@ async function onSignIn(): Promise<void> {
   const ok = await signIn(setStatus);
   if (ok) {
     render(true);
-    setStatus('Signed in. Try =PRECIS.STATEMENT("pnl";"2026-01";"2026-05")');
+    setStatus("Signed in. Workbook tools are ready.");
   }
 }
 
@@ -147,5 +210,26 @@ async function onRefresh(): Promise<void> {
     setStatus("Refreshed — Précis cells re-fetched.");
   } catch (e) {
     setStatus(`Refresh failed: ${(e as Error).message}`);
+  }
+}
+
+async function onConvertLive(): Promise<void> {
+  const button = el("convert-live") as HTMLButtonElement;
+  const label = button.textContent;
+  conversionRunning = true;
+  renderActions();
+  button.textContent = "Converting…";
+  button.setAttribute("aria-busy", "true");
+  try {
+    setConversionStatus("Checking the selected export…");
+    setConversionStatus(await activateSelectedExtract(setConversionStatus), "success");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setConversionStatus(`Conversion stopped: ${message}`, "error");
+  } finally {
+    conversionRunning = false;
+    button.textContent = label;
+    button.setAttribute("aria-busy", "false");
+    renderActions();
   }
 }

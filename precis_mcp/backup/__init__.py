@@ -27,7 +27,7 @@ class BundleNotFoundError(BackupError):
 
 
 class RestoreGuardError(BackupError):
-    """Restore refused: target is non-empty and --force not given (exit 5)."""
+    """Restore refused: unsafe target or unavailable/empty store selection (exit 5)."""
 
 
 class BackupExecutionError(BackupError):

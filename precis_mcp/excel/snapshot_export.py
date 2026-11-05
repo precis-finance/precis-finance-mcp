@@ -9,12 +9,13 @@ from precis_mcp.excel.statement_emit import statement_to_excel
 from precis_mcp.excel.hierarchy_emit import hierarchy_to_excel
 
 
-def write_snapshot_xlsx(result: dict, source: dict, path: Path) -> None:
+def write_snapshot_xlsx(result: dict, source: dict, path: Path, *, include_title: bool = True) -> None:
+    """Write a snapshot; financial title placement leaves the grid unchanged."""
     meta = {"tool": source["tool"], "params": source["args"]}
     if source["tool"] == "run_statement":
-        statement_to_excel(result, path, meta_source=meta)
+        statement_to_excel(result, path, meta_source=meta, include_title=include_title)
     elif source["tool"] == "run_metric":
-        metric_to_excel(result, path, meta_source=meta)
+        metric_to_excel(result, path, meta_source=meta, include_title=include_title)
     elif source["tool"] == "search_hierarchy":
         hierarchy_to_excel(result, path, meta_source=meta)
     elif source["tool"] == "inspect_rows":

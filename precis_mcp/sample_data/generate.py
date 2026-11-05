@@ -46,7 +46,6 @@ import holidays as hol
 from faker import Faker
 from dotenv import load_dotenv
 import psycopg
-import clickhouse_connect
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Seeding
@@ -75,12 +74,6 @@ PG_DSN = {
     "dbname": os.getenv("PGDATABASE", "fpa_actuals"),
 }
 
-CH_HOST = os.getenv("CHHOST", "localhost")
-CH_PORT = int(os.getenv("CHPORT", 8123))
-CH_USER = os.getenv("CHUSER", "default")
-CH_PASSWORD = os.getenv("CHPASSWORD", "")
-
-
 # Repo root in both layouts (the Précis monorepo and the open mirror): this file lives at
 # <root>/precis_mcp/sample_data/generate.py, so instance/ and scripts/ are
 # siblings two levels up.
@@ -92,9 +85,9 @@ def pg_conn():
 
 
 def ch_client():
-    return clickhouse_connect.get_client(
-        host=CH_HOST, port=CH_PORT, username=CH_USER, password=CH_PASSWORD
-    )
+    from precis_mcp.db import get_clickhouse_client
+
+    return get_clickhouse_client()
 
 
 def ensure_environment() -> None:
@@ -3633,12 +3626,14 @@ def trigger_ingestion() -> None:
 
       1. Apply `instance/live/*.sql` — create `live.<x>` + `staging.<x>`
          tables in CH (idempotent; existing tables left alone).
-      2. For each binding × period, run `extract → validate → swap`.
+      2. Provision semantic views and materialized hierarchies against the
+         empty live tables, before snapshot loads can refresh their mappings.
+      3. For each binding × period, run `extract → validate → swap`.
          PG-backed bindings pull aggregations source-side via Ibis;
          file-drop bindings read CSVs via DuckDB. Each load lands rows
          in `staging.<x>`, validates the shape, and atomically swaps
          into `live.<x>`.
-      3. Apply `instance/semantic/{dims,views}/*.sql` — every view is
+      4. Apply `instance/semantic/{dims,views}/*.sql` — every view is
          a fresh `CREATE OR REPLACE VIEW semantic.<name>` pointing at
          the just-populated `live.*` tables.
 
@@ -3673,6 +3668,11 @@ def trigger_ingestion() -> None:
     print("  Applying instance/live/*.sql (live + staging tables)...")
     apply_live_ddl(instance_root / "live", ch)
 
+    # Snapshot ingestion refreshes hierarchy mappings, so their edge and
+    # dimension views must exist even on a fresh database with empty inputs.
+    catalogue = load_and_validate(str(instance_root / "catalogue"))
+    apply_semantic(instance_root / "semantic", ch, catalogue=catalogue)
+
     # 2. Drive every binding × period through the orchestrator. The
     #    synth provider ignores binding.period_selection on purpose — we
     #    want a full-history backfill of the rows the generator just
@@ -3689,7 +3689,6 @@ def trigger_ingestion() -> None:
     #    `semantic.dim_*` and ragged-hierarchy views, matching what
     #    `clickhouse_init` provisions.
     print("  Applying instance/semantic/*.sql (views)...")
-    catalogue = load_and_validate(str(instance_root / "catalogue"))
     apply_semantic(instance_root / "semantic", ch, catalogue=catalogue)
 
 

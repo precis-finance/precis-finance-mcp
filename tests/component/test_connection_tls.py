@@ -70,7 +70,8 @@ def test_clickhouse_plaintext_by_default(monkeypatch):
     rec = _Recorder()
     monkeypatch.setattr(db.clickhouse_connect, "get_client", rec)
     db.get_clickhouse_client()
-    assert "secure" not in rec.kwargs
+    # Complete pool snapshots now pass the driver's plaintext default explicitly.
+    assert rec.kwargs.get("secure", False) is False
     assert rec.kwargs["port"] == 8123
 
 
@@ -84,6 +85,34 @@ def test_clickhouse_secure_flips_port_and_flag(monkeypatch):
     assert rec.kwargs["port"] == 8443  # HTTPS port by default when secure
 
 
+@pytest.mark.parametrize("secure,port", [("true", 8443), ("false", 8123)])
+def test_clickhouse_empty_compose_port_uses_protocol_default(monkeypatch, secure, port):
+    monkeypatch.setenv("CHSECURE", secure)
+    monkeypatch.setenv("CHPORT", "")
+    rec = _Recorder()
+    monkeypatch.setattr(db.clickhouse_connect, "get_client", rec)
+    db.get_clickhouse_client()
+    assert rec.kwargs["port"] == port
+
+
+def test_ingestion_destination_uses_verified_clickhouse_tls(monkeypatch):
+    from precis_mcp.ingestion.wiring import _default_ch_client
+
+    monkeypatch.setenv("CHSECURE", "true")
+    monkeypatch.setenv("CHVERIFY", "true")
+    monkeypatch.setenv("CHPORT", "")
+    monkeypatch.setenv("CHCACERT", "/etc/ssl/ch-ca.pem")
+    monkeypatch.setenv("CHDATABASE", "actuals")
+    rec = _Recorder()
+    monkeypatch.setattr(db.clickhouse_connect, "get_client", rec)
+    _default_ch_client()
+    assert rec.kwargs["secure"] is True
+    assert rec.kwargs["verify"] is True
+    assert rec.kwargs["port"] == 8443
+    assert rec.kwargs["ca_cert"] == "/etc/ssl/ch-ca.pem"
+    assert rec.kwargs["database"] == "actuals"
+
+
 def test_clickhouse_secure_respects_explicit_port_and_ca(monkeypatch):
     monkeypatch.setenv("CHSECURE", "1")
     monkeypatch.setenv("CHPORT", "9440")
@@ -95,6 +124,34 @@ def test_clickhouse_secure_respects_explicit_port_and_ca(monkeypatch):
     assert rec.kwargs["port"] == 9440
     assert rec.kwargs["ca_cert"] == "/etc/ssl/ch-ca.pem"
     assert rec.kwargs["verify"] is False
+    assert rec.kwargs["pool_mgr"].connection_pool_kw["ca_certs"] == "/etc/ssl/ch-ca.pem"
+    assert rec.kwargs["pool_mgr"].connection_pool_kw["cert_reqs"] == "CERT_NONE"
+
+
+def test_clickhouse_shared_pool_preserves_trust_and_isolates_policies(monkeypatch):
+    monkeypatch.setenv("CHSECURE", "true")
+    monkeypatch.setenv("CHVERIFY", "true")
+    monkeypatch.setenv("CHCACERT", "/etc/ssl/private-ca.pem")
+    rec = _Recorder()
+    monkeypatch.setattr(db.clickhouse_connect, "get_client", rec)
+    db.get_clickhouse_client()
+    trusted = rec.kwargs["pool_mgr"]
+    assert trusted.connection_pool_kw["ca_certs"] == "/etc/ssl/private-ca.pem"
+    assert trusted.connection_pool_kw["cert_reqs"] == "CERT_REQUIRED"
+    db.get_clickhouse_client()
+    assert rec.kwargs["pool_mgr"] is trusted
+    monkeypatch.setenv("CHVERIFY", "false")
+    db.get_clickhouse_client()
+    assert rec.kwargs["pool_mgr"] is not trusted
+    assert rec.kwargs["pool_mgr"].connection_pool_kw["cert_reqs"] == "CERT_NONE"
+
+
+def test_clickhouse_special_tls_options_are_left_to_driver(monkeypatch):
+    monkeypatch.setenv("CHSECURE", "true")
+    rec = _Recorder()
+    monkeypatch.setattr(db.clickhouse_connect, "get_client", rec)
+    db.get_clickhouse_client(server_host_name="warehouse.internal")
+    assert "pool_mgr" not in rec.kwargs
 
 
 # --- ingestion + federated read, one shared factory (<REF>_SSLMODE) ---------

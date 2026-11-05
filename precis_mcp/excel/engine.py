@@ -3,12 +3,12 @@
 """Shared primitives for Excel emitters.
 
 Exports the colour palette, font/fill/border constants, number-format helper,
-sheet-name sanitiser, column-width helper, caption-row writer, header-row
+sheet-name sanitiser, column-width helper, header-row
 styler, and variance-font resolver. Used by statement, metric, hierarchy and
 extract emitters.
 
 Everything here is module-private (leading underscore) but imported explicitly
-by sibling emitters — the package boundary is the `precis.excel.__init__`
+by sibling emitters — the package boundary is the `precis_mcp.excel`
 public API.
 """
 
@@ -54,9 +54,6 @@ _THIN_SIDE = Side(style="thin")
 _BORDER_TOP = Border(top=_THIN_SIDE)
 _BORDER_BOTTOM = Border(bottom=_THIN_SIDE)
 _BORDER_TOP_BOTTOM = Border(top=_THIN_SIDE, bottom=_THIN_SIDE)
-
-_FONT_CAPTION_TITLE = Font(name="Calibri", size=13, bold=True)
-_FONT_CAPTION = Font(name="Calibri", size=10, color="555555")
 
 
 # ---------------------------------------------------------------------------
@@ -123,70 +120,6 @@ def _auto_fit_columns(ws: Worksheet) -> None:
             if width > max_width:
                 max_width = width
         ws.column_dimensions[col_letter].width = min(max_width, 50)
-
-
-# ---------------------------------------------------------------------------
-# Caption / metadata header rows
-# ---------------------------------------------------------------------------
-
-def _write_caption_rows(ws: Worksheet, caption: dict) -> int:
-    """Write report metadata rows at the top of a sheet.
-
-    Returns the next available row number (1-based) after the caption block.
-    If *caption* is empty, returns 1 (no rows written).
-    """
-    if not caption:
-        return 1
-
-    row = 1
-
-    # Title / description
-    desc = caption.get("description")
-    if desc:
-        cell = ws.cell(row=row, column=1, value=desc)
-        cell.font = _FONT_CAPTION_TITLE
-        row += 1
-
-    # Scenarios
-    scenarios = caption.get("scenarios")
-    if scenarios:
-        cell = ws.cell(row=row, column=1, value=f"Scenarios: {', '.join(scenarios)}")
-        cell.font = _FONT_CAPTION
-        row += 1
-
-    # Period
-    period = caption.get("period")
-    if period:
-        cell = ws.cell(row=row, column=1, value=f"Period: {period}")
-        cell.font = _FONT_CAPTION
-        row += 1
-
-    # Filters
-    filters = caption.get("filters")
-    if filters and isinstance(filters, dict):
-        parts = [f"{k}={v}" for k, v in filters.items()]
-        cell = ws.cell(row=row, column=1, value=f"Filters: {', '.join(parts)}")
-        cell.font = _FONT_CAPTION
-        row += 1
-
-    # Scale
-    scale = caption.get("scale")
-    if scale:
-        cell = ws.cell(row=row, column=1, value=f"Scale: {scale}")
-        cell.font = _FONT_CAPTION
-        row += 1
-
-    # Generated at
-    generated_at = caption.get("generated_at")
-    if generated_at:
-        cell = ws.cell(row=row, column=1, value=generated_at)
-        cell.font = _FONT_CAPTION
-        row += 1
-
-    # Blank separator row
-    row += 1
-
-    return row
 
 
 # ---------------------------------------------------------------------------

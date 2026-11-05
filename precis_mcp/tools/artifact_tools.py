@@ -25,7 +25,15 @@ def _error(exc):
 
 
 def export_dataset(data_ref: str, format: str, user_id: str) -> dict:
-    """Export the exact cached query snapshot as JSON or XLSX; never reruns it."""
+    """Export a previously run report's cached data_ref as JSON or XLSX.
+
+    Use for standard exports of run_statement/run_metric results already shown
+    to the user. Never reruns the query. XLSX uses the shared server renderer,
+    retaining financial source/region metadata for conversion and consistent
+    formatting. Do not rebuild a standard report from JSON in execute_python.
+    Returns an artifact descriptor/download link, or an explicit error if the
+    snapshot expired or access changed. Fresh queries may return different values.
+    """
     try:
         tokens.require_configuration()
         if format not in {"json", "xlsx"}:

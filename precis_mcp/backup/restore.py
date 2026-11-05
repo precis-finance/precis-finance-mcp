@@ -32,12 +32,13 @@ from precis_mcp.backup import (
     BundleNotFoundError,
     RestoreGuardError,
 )
+from precis_mcp.analytical import selected_backend
 from precis_mcp.backup.ch_render import BACKUP_DISK_NAME
 from precis_mcp.backup.config import BackupConfig
 from precis_mcp.backup.destination import BackupDestination, build_destination
 from precis_mcp.backup.history import record_history
 from precis_mcp.backup.manifest import BackupManifest, manifest_key, sha256_file
-from precis_mcp.backup.runner import CH_DATABASES, backup_ch_client
+from precis_mcp.backup.runner import backup_ch_client
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,8 @@ DRILL_SUFFIX = "_drill"
 
 # Stores this module can restore; CH restores server-side from its disk.
 _FETCHED_STORES = ("postgres", "instance", "files")
+_RESTORABLE_STORES = frozenset((*_FETCHED_STORES, "clickhouse"))
+_DRILL_STORES = frozenset(("postgres", "clickhouse"))
 
 
 @dataclass
@@ -160,8 +163,8 @@ def _run_pg_restore(dump_path: Path, dbname: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _ch_nonempty_databases(ch_client) -> list[str]:
-    dbs = ", ".join(f"'{db}'" for db in CH_DATABASES)
+def _ch_nonempty_databases(ch_client, databases: tuple[str, ...]) -> list[str]:
+    dbs = ", ".join(f"'{db}'" for db in databases)
     result = ch_client.query(
         "SELECT DISTINCT database FROM system.tables "
         f"WHERE database IN ({dbs}) AND total_rows > 0"
@@ -169,8 +172,8 @@ def _ch_nonempty_databases(ch_client) -> list[str]:
     return [row[0] for row in result.result_rows]
 
 
-def _ch_drill_table_counts(ch_client) -> dict[str, int]:
-    dbs = ", ".join(f"'{db}{DRILL_SUFFIX}'" for db in CH_DATABASES)
+def _ch_drill_table_counts(ch_client, databases: tuple[str, ...]) -> dict[str, int]:
+    dbs = ", ".join(f"'{db}{DRILL_SUFFIX}'" for db in databases)
     result = ch_client.query(
         "SELECT database, name, total_rows FROM system.tables "
         f"WHERE database IN ({dbs}) AND engine NOT LIKE '%View%'"
@@ -235,6 +238,7 @@ def restore_bundle(
     dest_factory: Callable[[], BackupDestination] | None = None,
     pg_restore_runner: Callable[[Path, str], None] | None = None,
 ) -> RestoreResult:
+    backend = selected_backend()
     started = datetime.now(timezone.utc)
     dest = dest_factory() if dest_factory else build_destination(cfg, credential="reader")
     pg_restore = pg_restore_runner or _run_pg_restore
@@ -248,9 +252,28 @@ def restore_bundle(
         ) from exc
 
     available = {
-        a.store for a in manifest.artifacts if a.outcome == "success" and a.key
+        a.store for a in manifest.artifacts
+        if a.store in _RESTORABLE_STORES and a.outcome == "success" and a.key
     }
-    selected = (stores or available) & available
+    selected = available if stores is None else set(stores)
+    unavailable = selected - available
+    if unavailable:
+        raise RestoreGuardError(
+            "requested store(s) have no successful artifact in this bundle: "
+            + ", ".join(sorted(unavailable))
+        )
+    if not selected:
+        raise RestoreGuardError("no restorable stores selected from this bundle")
+    if "clickhouse" in selected and (backend != "clickhouse" or manifest.analytical_backend != "clickhouse"):
+        raise RestoreGuardError(
+            "ClickHouse artifacts cannot be restored or drilled for a Databricks backend/bundle, even with --force; "
+            "explicitly select platform stores only. Warehouse recovery is customer/operator managed."
+        )
+    if drill and not selected & _DRILL_STORES:
+        raise RestoreGuardError(
+            "a restore drill requires a successful postgres or clickhouse artifact; "
+            "instance and files artifacts support real restore only"
+        )
 
     ch_client = None
     if "clickhouse" in selected:
@@ -272,11 +295,22 @@ def restore_bundle(
                 selected, local, ch_client, pg_restore,
                 force=force, target_db=target_db,
                 instance_out_dir=instance_out_dir, run_id=run_id,
+                ch_databases=manifest.included_clickhouse_databases,
             )
+
+    if backend == "databricks" or manifest.analytical_backend == "databricks":
+        results.append(StoreRestoreResult(
+            store="databricks", outcome="skipped",
+            detail="Warehouse recovery is customer/operator managed and was not exercised by this restore/drill",
+        ))
 
     failed = [r for r in results if r.outcome == "failed"]
     verify_failed = [v for v in verification if not v.ok]
-    outcome = "failed" if failed or verify_failed else "success"
+    outcome = (
+        "failed"
+        if failed or verify_failed or not any(r.outcome == "success" for r in results)
+        else "success"
+    )
 
     record_history(
         run_id=run_id,
@@ -324,6 +358,7 @@ def _run_real_restore(
     target_db: str | None,
     instance_out_dir: Path | None,
     run_id: str,
+    ch_databases: tuple[str, ...],
 ) -> list[StoreRestoreResult]:
     results: list[StoreRestoreResult] = []
 
@@ -340,15 +375,15 @@ def _run_real_restore(
                                           detail=f"restored into {target!r}"))
 
     if "clickhouse" in selected and ch_client is not None:
-        nonempty = _ch_nonempty_databases(ch_client)
+        nonempty = _ch_nonempty_databases(ch_client, ch_databases)
         if nonempty and not force:
             raise RestoreGuardError(
                 f"ClickHouse database(s) {nonempty} are non-empty — "
                 "pass --force to drop and overwrite"
             )
-        for db in CH_DATABASES:
+        for db in ch_databases:
             ch_client.command(f"DROP DATABASE IF EXISTS {db} SYNC")
-        databases = ", ".join(f"DATABASE {db}" for db in CH_DATABASES)
+        databases = ", ".join(f"DATABASE {db}" for db in ch_databases)
         ch_client.command(
             f"RESTORE {databases} FROM Disk('{BACKUP_DISK_NAME}', '{run_id}.zip')"
         )
@@ -388,7 +423,14 @@ def _run_drill(
     pg_restore: Callable[[Path, str], None],
     keep_drill: bool,
 ) -> tuple[list[StoreRestoreResult], list[VerificationItem]]:
-    results: list[StoreRestoreResult] = []
+    databases = manifest.included_clickhouse_databases
+    results: list[StoreRestoreResult] = [
+        StoreRestoreResult(
+            store=store, outcome="skipped",
+            detail="artifact fetched; extraction is not exercised by database drills",
+        )
+        for store in sorted(selected - _DRILL_STORES)
+    ]
     verification: list[VerificationItem] = []
 
     if "postgres" in selected and "postgres" in local:
@@ -419,15 +461,15 @@ def _run_drill(
 
     if "clickhouse" in selected and ch_client is not None:
         try:
-            for db in CH_DATABASES:
+            for db in databases:
                 ch_client.command(f"DROP DATABASE IF EXISTS {db}{DRILL_SUFFIX} SYNC")
             renames = ", ".join(
-                f"DATABASE {db} AS {db}{DRILL_SUFFIX}" for db in CH_DATABASES
+                f"DATABASE {db} AS {db}{DRILL_SUFFIX}" for db in databases
             )
             ch_client.command(
                 f"RESTORE {renames} FROM Disk('{BACKUP_DISK_NAME}', '{manifest.run_id}.zip')"
             )
-            counts = _ch_drill_table_counts(ch_client)
+            counts = _ch_drill_table_counts(ch_client, databases)
             for key, expected in manifest.row_counts.items():
                 if key.startswith("ch."):
                     _, db, table = key.split(".", 2)
@@ -442,7 +484,7 @@ def _run_drill(
                                               detail=str(exc)))
         finally:
             if not keep_drill:
-                for db in CH_DATABASES:
+                for db in databases:
                     try:
                         ch_client.command(f"DROP DATABASE IF EXISTS {db}{DRILL_SUFFIX} SYNC")
                     except Exception:

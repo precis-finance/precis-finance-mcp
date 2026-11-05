@@ -262,10 +262,14 @@ class _CountingClient:
 
     def __init__(self):
         self.calls = 0
+        self.closes = 0
 
     def query(self, sql: str):
         self.calls += 1
         return self._Result()
+
+    def close(self):
+        self.closes += 1
 
 
 def test_get_scenario_registry_caches_within_ttl():
@@ -275,6 +279,7 @@ def test_get_scenario_registry_caches_within_ttl():
     second = get_scenario_registry(lambda: client)
 
     assert client.calls == 1
+    assert client.closes == 1
     assert second is first
 
 
@@ -306,4 +311,90 @@ def test_invalidate_scenario_registry_cache_forces_reload():
     invalidate_scenario_registry_cache()
     get_scenario_registry(lambda: client)
 
+    assert client.calls == 2
+
+
+def test_registry_borrows_execution_client_without_closing_it():
+    client = _CountingClient()
+    first = get_scenario_registry(client=client)
+    assert get_scenario_registry(client=client) is first
+    assert client.calls == 1
+    assert client.closes == 0
+
+
+def test_expired_registry_failure_does_not_return_old_snapshot(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(scenario_registry.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(scenario_registry, "_REGISTRY_TTL_SECONDS", 60)
+    client = _CountingClient()
+    first = get_scenario_registry(lambda: client)
+    clock[0] = 59.0
+    assert get_scenario_registry(lambda: client) is first
+    clock[0] = 60.0
+
+    def unavailable():
+        raise RuntimeError("Warehouse unavailable")
+
+    with pytest.raises(RuntimeError, match="Warehouse unavailable"):
+        get_scenario_registry(unavailable)
+    assert get_scenario_registry(lambda: client) is not first
+    assert client.calls == 2
+
+
+def test_concurrent_registry_misses_share_one_refresh():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    entered, release = Event(), Event()
+
+    class SlowClient(_CountingClient):
+        def query(self, sql):
+            entered.set()
+            assert release.wait(2), "refresh was not released"
+            return super().query(sql)
+
+    client = SlowClient()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        tasks = [pool.submit(get_scenario_registry, lambda: client) for _ in range(4)]
+        try:
+            assert entered.wait(2)
+        finally:
+            release.set()
+        results = [task.result(timeout=2) for task in tasks]
+    assert all(result is results[0] for result in results)
+    assert client.calls == client.closes == 1
+
+
+def test_invalidation_during_refresh_prevents_old_snapshot_remaining_cached():
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    entered, release, invalidating, invalidated = (Event() for _ in range(4))
+
+    class SlowClient(_CountingClient):
+        def query(self, sql):
+            entered.set()
+            assert release.wait(2), "refresh was not released"
+            return super().query(sql)
+
+    def invalidate():
+        invalidating.set()
+        invalidate_scenario_registry_cache()
+        invalidated.set()
+
+    client = SlowClient()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        refresh = pool.submit(get_scenario_registry, lambda: client)
+        try:
+            assert entered.wait(2)
+            invalidation = pool.submit(invalidate)
+            assert invalidating.wait(2)
+            # Let an uncoordinated invalidation finish before releasing the old
+            # read; a coordinated invalidation may wait for that read instead.
+            invalidated.wait(0.1)
+        finally:
+            release.set()
+        old = refresh.result(timeout=2)
+        invalidation.result(timeout=2)
+    assert get_scenario_registry(lambda: client) is not old
     assert client.calls == 2

@@ -1,10 +1,9 @@
 -- Declared shape of the plan fact table (open tier).
 --
 -- Budget / forecast / what-if scenarios land here as plain period amounts,
--- one row per (period, account_code, cost_centre, scenario). This is the
--- open-tier analogue of the Précis planning.entries delta table — no
--- delta_amount, no commit_id, no versioning. A deployer lands a static plan
--- set (snapshot binding or direct seed) and the semantic views read it.
+-- one row per (period, account_code, cost_centre, scenario). A deployer loads
+-- this static plan snapshot through a snapshot binding or direct seed, and
+-- the semantic views read it.
 --
 -- Kept a SEPARATE table from live.fact_gl on purpose. fact_gl is the
 -- period-swap target for actuals (`ALTER TABLE … REPLACE PARTITION '<period>'`,

@@ -155,9 +155,9 @@ class LocalFsObjectStore:
 
 
 class S3ObjectStore:
-    """boto3-backed S3 client. boto3 is intentionally not yet in
-    `requirements.txt`; deployments that need S3 install it explicitly. The
-    first attempt to instantiate raises a clear ImportError.
+    """boto3-backed S3 client, available through the package's optional `s3` extra.
+
+    Instantiation raises ImportError if boto3 is not installed.
     """
 
     kind = "s3"

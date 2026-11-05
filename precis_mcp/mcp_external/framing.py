@@ -107,8 +107,22 @@ _MCP_TOOL_DESCRIPTIONS: dict[str, str] = {
         "`full_pnl` when it is listed by precis_orientation. Give every scenario "
         "a concise, user-facing `alias` such as Actuals, Budget, Variance, or Var %."
     ),
-    "eval_chart_transform": "Create a chart from data_refs (an array of snapshot IDs), a bounded JavaScript function, and chart_spec. Supports line, bar, area, waterfall, scatter, horizontal_bar, forecast_line, cohort_heatmap and sparkline_row. Query first and inspect rows; the transform takes one result per ref and returns flat rows.",
-    "export_dataset": "Export a cached data_ref to json or xlsx without rerunning the query; returns a temporary file and download link.",
+    "eval_chart_transform": (
+        "Create a chart from data_refs (an array of snapshot IDs), a bounded "
+        "JavaScript function, and chart_spec. Supports line, bar, area, waterfall, "
+        "scatter, horizontal_bar, forecast_line, cohort_heatmap and sparkline_row. "
+        "Query first and inspect rows; the transform takes one result per ref "
+        "and returns flat rows. Cached values are already scaled: scale 3 means "
+        "non-exempt metrics are in thousands; scale 0 means units. Percentages "
+        "(75 means 75%), FTEs and other scale-exempt metrics retain their units. "
+        "Do not scale again; y_scale is forced to 0. For multiple sources, "
+        "inspect each scale and format; re-query same-unit series at a common "
+        "scale, and use separately labelled axes for different units "
+        "(line/bar/area) or separate charts. Conflicting nonempty caption scale "
+        "labels are omitted; unlabelled sources leave other labels intact. "
+        "Set axis unit labels explicitly."
+    ),
+    "export_dataset": "Export a previously returned data_ref to json or xlsx without rerunning the query. Use this for standard Excel exports of reports already shown, rather than rebuilding their JSON with Python. Financial XLSX uses shared server formatting and retains source/region metadata for add-in conversion. Returns a temporary file/download link; an expired snapshot requires a fresh authorized query, whose values may change.",
     "run_metric": (
         "Break one or more metrics down by a dimension — revenue by project, "
         "utilisation by employee, headcount trends, GL account drill-down. Rows "

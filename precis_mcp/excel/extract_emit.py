@@ -26,6 +26,7 @@ layout in this module.
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -37,12 +38,13 @@ from openpyxl.utils import get_column_letter
 from openpyxl.workbook.defined_name import DefinedName
 from openpyxl.worksheet.table import Table, TableStyleInfo
 
+from precis_mcp.excel.cells import write_source_cell, write_footer_row
+from precis_mcp.excel.worksheet import extract_worksheet, flatten_extract as _flatten_role_indexed, caption_text
 from precis_mcp.excel.engine import (
     _FILL_ALT_ROW,
     _FONT_DEFAULT,
     _apply_header_row,
     _auto_fit_columns,
-    _number_format,
     _sheet_name,
 )
 from precis_mcp.excel.workbook import (
@@ -156,11 +158,10 @@ def extract_to_excel(
     col_count = len(all_columns)
 
     for col_idx, name in enumerate(all_columns, start=1):
-        ws.cell(row=header_row, column=col_idx, value=name)
+        write_source_cell(ws, row=header_row, column=col_idx, value=name)
     _apply_header_row(ws, header_row, col_count)
 
-    decimals = result.get("decimals", 0) or 0
-    nf = _number_format("currency", decimals)
+    worksheet = extract_worksheet(result)
     key_col_count = len(key_columns)
     data_start_row = header_row + 1
 
@@ -169,14 +170,14 @@ def extract_to_excel(
         for col_idx, col_name in enumerate(all_columns, start=1):
             val = row_data.get(col_name)
             if val is not None:
-                ws.cell(row=row_idx, column=col_idx, value=val)
+                write_source_cell(ws, row=row_idx, column=col_idx, value=val)
             cell = ws.cell(row=row_idx, column=col_idx)
             if col_idx <= key_col_count:
                 cell.alignment = Alignment(horizontal="left", vertical="center")
                 cell.font = _FONT_DEFAULT
             else:
                 cell.alignment = Alignment(horizontal="right", vertical="center")
-                cell.number_format = nf
+                cell.number_format = worksheet["number_formats"][row_offset + 1][col_idx - 1]
         if row_idx % 2 == 0:
             for col_idx in range(1, col_count + 1):
                 ws.cell(row=row_idx, column=col_idx).fill = _FILL_ALT_ROW
@@ -184,6 +185,10 @@ def extract_to_excel(
     last_row = data_start_row + len(data_rows) - 1
     last_col_letter = get_column_letter(col_count)
     table_ref = f"A{header_row}:{last_col_letter}{last_row}"
+    region_name = _unique_range_name(wb, f"precis_region_{_slug(actual_sheet_name)}")
+    wb.defined_names[region_name] = DefinedName(
+        region_name, attr_text=f"'{actual_sheet_name.replace(chr(39), chr(39) * 2)}'!$A${header_row}:${last_col_letter}${last_row + 1}"
+    )
 
     table_name = _unique_table_name(wb, actual_sheet_name)
     tbl = Table(displayName=table_name, ref=table_ref)
@@ -209,6 +214,7 @@ def extract_to_excel(
 
     ws.freeze_panes = f"{get_column_letter(key_col_count + 1)}{data_start_row}"
     _auto_fit_columns(ws)
+    write_footer_row(ws, row=last_row + 1, columns=col_count, text=caption_text(result.get("caption")))
 
     sheet_entry = _build_sheet_entry(
         source_tool=source_tool,
@@ -224,6 +230,25 @@ def extract_to_excel(
         excel_tables=excel_tables_meta,
         refresh_policy=policy,
     )
+    # Effective settings come from the result, never an implicit MCP default.
+    sheet_entry["shape"]["footer_rows"] = 1
+    effective_params = dict(sheet_entry["source"]["params"])
+    effective_params["scale"] = result.get("scale", effective_params.get("scale"))
+    if "decimals" in result:
+        effective_params["decimals"] = result["decimals"]
+    else:
+        effective_params.setdefault("decimals", None)
+    sheet_entry["source"]["params"] = effective_params
+    sheet_entry["regions"] = [{
+        "range_name": region_name, "state": "static", "layout": "extract",
+        "origin": os.environ.get("PRECIS_BASE_URL", "").rstrip("/") or None,
+        "source": sheet_entry["source"], "table_name": table_name,
+        "named_ranges": named_ranges_meta,
+        "shape": {key: value for key, value in sheet_entry["shape"].items() if key != "row_identities"},
+        "presentation": {"scale": effective_params["scale"],
+                         "decimals": effective_params["decimals"]},
+    }]
+    del sheet_entry["source"]
 
     meta = merge_meta(
         existing_meta=existing_meta,
@@ -238,68 +263,6 @@ def extract_to_excel(
     )
     finalize_workbook(wb, path, meta)
     return path, actual_sheet_name
-
-
-# ---------------------------------------------------------------------------
-# Flattening
-# ---------------------------------------------------------------------------
-
-def _flatten_role_indexed(
-    result: Mapping[str, Any],
-) -> tuple[list[str], list[str], list[dict], list[dict]]:
-    """Return (key_columns, value_columns, data_rows, row_identities).
-
-    Extract layout is leaf data only: subtotal and grand-total rows are
-    intentionally excluded because Excel owns downstream formulas/totals.
-    """
-    dimensions: list[str] = list(result.get("dimensions", []))
-    value_columns: list[str] = [
-        s.get("alias") for s in result.get("scenarios", []) if s.get("alias")
-    ]
-    kind = result.get("kind", "metric")
-
-    data_rows: list[dict] = []
-    row_identities: list[dict] = []
-    saw_line_item = False
-    saw_metric = False
-    item_keys = {
-        row.get("item", {}).get("key")
-        for row in result.get("rows", [])
-        if row.get("grain") == "detail"
-    }
-    multi_metric = kind == "metric" and len({k for k in item_keys if k}) > 1
-
-    for row in result.get("rows", []):
-        if row.get("grain") != "detail":
-            continue
-        values = row.get("values", {})
-        dim_values = dict(row.get("dimensions", {}))
-        item = row.get("item", {})
-        key = item.get("key")
-
-        identity: dict[str, Any] = {d: dim_values.get(d) for d in dimensions}
-        out_row: dict[str, Any] = dict(identity)
-
-        if kind == "statement" and key:
-            saw_line_item = True
-            identity["line_item"] = key
-            out_row["line_item"] = key
-        elif multi_metric and key:
-            saw_metric = True
-            identity["metric"] = key
-            out_row["metric"] = key
-
-        for alias in value_columns:
-            out_row[alias] = values.get(alias)
-        data_rows.append(out_row)
-        row_identities.append(identity)
-
-    key_columns: list[str] = list(dimensions)
-    if saw_line_item:
-        key_columns.append("line_item")
-    if saw_metric:
-        key_columns.append("metric")
-    return key_columns, value_columns, data_rows, row_identities
 
 
 # ---------------------------------------------------------------------------

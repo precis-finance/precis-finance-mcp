@@ -25,7 +25,7 @@ A financial statement — rows are statement lines (Revenue → EBITDA), columns
 scenarios.
 
 ```
-=PRECIS.STATEMENT(statement, periodStart, periodEnd, [scenarios], [dimensions], [filters], [scale], [decimals])
+=PRECIS.STATEMENT(statement, periodStart, periodEnd, [scenarios], [dimensions], [filters], [scale], [decimals], [layout])
 ```
 
 | Argument | Required | Description |
@@ -37,7 +37,8 @@ scenarios.
 | `dimensions` | no | Comma-separated dimensions to break by, e.g. `"cost_centre"`. |
 | `filters` | no | `key=value` pairs, comma-separated; multi-value with `\|`. |
 | `scale` | no | Currency scaling power: `0`=units, `3`=thousands, `6`=millions. |
-| `decimals` | no | Decimal places. |
+| `decimals` | no | Displayed decimal places; defaults to `1` when omitted. |
+| `layout` | no | `report` (default) or `extract` (flat detail rows with stable line-item keys). |
 
 ```excel
 =PRECIS.STATEMENT("pnl";"2026-01";"2026-05")
@@ -74,13 +75,36 @@ scenarios (columns).
 | `filters` | no | `key=value` pairs, comma-separated; multi-value with `\|`. |
 | `layout` | no | `report` (default — styled, hierarchical) or `extract` (flat, formula-friendly leaf table). |
 | `scale` | no | `0`/`3`/`6`. |
-| `decimals` | no | Decimal places. |
+| `decimals` | no | Displayed decimal places; defaults to `1` when omitted. |
 
 With more than one metric **and** more than one scenario, the report layout adds
 a two-row header: the metric label sits above its scenario columns (a spill can't
 merge cells, so the label appears at the start of each group). The `extract`
 layout returns a flat leaf table with the dimensions as columns — use it for
-downstream formulas; it isn't styled by **Format**.
+downstream formulas. **Format** applies its latest per-metric number formats.
+After a recalculation changes the spill's shape or row order, use **Format**
+again to align those formats with the current rows. Values retain full available
+engine/Excel precision; decimal places control display. Multi-metric extracts
+use metric keys rather than display labels.
+Both layouts use server worksheet projections and retain engine percentage
+units (8.7 means 8.7%). Report exports and the add-in resolve formats per cell:
+percentage-comparison columns take precedence, otherwise the metric's unit and
+decimal settings apply. Both financial layouts end with the same single context
+footer as native static exports. It contains scenarios, period, filters,
+dimensions, units and timing information in platform caption-bar order. Text is
+in the first cell of the final row, with other cells blank. Conversion and Apply
+Précis formatting leave that cell unwrapped. Conversion preserves shared rows; the
+Format action autofits the whole footer row. Typed formulas use the existing
+explicit-formatting workflow. Report headers are unmerged. A standalone export's
+title is outside the managed region and remains user maintained. Extract Tables
+and generated value-column names exclude the footer; dynamic names end at
+`ROWS(spill)-1`. Decorative separators are omitted while semantic headings,
+subtotals and totals remain. Fresh results can change body-row positions.
+File adapters use the same statement/metric argument contract, including explicit
+zero scale/decimals and the normal omitted-argument defaults. They do not evaluate arbitrary
+Excel expressions: headless conversion requires saved spill bounds and literal
+or non-formula scalar reference arguments. Keep live execution in Excel; a
+structurally generated file is not evidence that the add-in calculated it.
 
 ```excel
 =PRECIS.METRIC("revenue";"2026-01";"2026-05";"cost_centre")

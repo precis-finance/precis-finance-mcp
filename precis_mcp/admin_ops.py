@@ -5,8 +5,8 @@
 Open module shared by both admin surfaces: the Précis HTTP admin
 routes (`precis/routes/admin.py`) and the open admin CLI
 (`precis_mcp/admin_cli.py`). It owns the Pydantic schemas (profile tree + input
-bodies), the schema registry the admin UI renders, and — in a later increment —
-the user/profile/assignment write operations.
+bodies), the schema registry the admin UI renders, and the user/profile/assignment
+write operations.
 
 The logic raises the domain exceptions below, never `HTTPException`: the HTTP
 layer maps them to status codes, the CLI maps them to exit codes. This keeps the
@@ -118,11 +118,12 @@ Role = Literal["analyst", "planner", "manager"]
 
 class DomainScope(BaseModel):
     """Domain-axis scope: explicit allow list, explicit deny list, or both.
-    Empty allow means "universe"; deny subtracts members."""
+    Omitted/null allow means unrestricted; explicit [] denies every domain.
+    Deny subtracts members in either case, matching runtime enforcement."""
 
     model_config = ConfigDict(extra="forbid")
 
-    allow: list[str] = Field(default_factory=list)
+    allow: list[str] | None = None
     deny: list[str] = Field(default_factory=list)
 
 

@@ -31,24 +31,25 @@ is whatever the caller passed (often `None` for parameterless DDL).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import re
 from typing import Any
 
 
-__all__ = ["FakeQueryResult", "FakeClickHouseClient", "FakeScenarioClickHouseClient"]
+__all__ = ["FakeQueryResult", "FakeClickHouseClient"]
 
 
 @dataclass
 class FakeQueryResult:
     """The shape production code reads back from a ClickHouse `.query()` call.
 
-    Mirrors the attributes actually used in `precis/`: `result_rows` and
+    Exposes the query result attributes `result_rows` and
     `column_names`, plus a `named_results()` convenience that zips them into
     dicts.
     """
 
     result_rows: list[tuple] = field(default_factory=list)
     column_names: list[str] = field(default_factory=list)
+    column_types: list[str] = field(default_factory=list)
+    query_id: str | None = None
 
     def named_results(self) -> list[dict[str, Any]]:
         # If column_names is empty, zip yields empty dicts — matches the
@@ -80,6 +81,7 @@ class FakeClickHouseClient:
         # (None when the caller passed none).
         self.command_settings: list[dict[str, Any] | None] = []
         self.inserts: list[tuple[str, Any, tuple, dict[str, Any]]] = []
+        self.close_calls = 0
 
     # -- programmatic setup ------------------------------------------------
 
@@ -179,47 +181,5 @@ class FakeClickHouseClient:
     ) -> None:
         self.inserts.append((table, data, args, kwargs))
 
-    def close(self) -> None:  # pragma: no cover — no-op in fakes
-        pass
-
-
-class FakeScenarioClickHouseClient(FakeClickHouseClient):
-    """Stateful scenario metadata for create-then-query component trajectories.
-
-    Other tables retain the parent's canned-response behaviour. Plan row
-    counts default to zero, allowing empty scenario/variant creation.
-    """
-
-    def __init__(self, scenarios: list[dict[str, Any]]) -> None:
-        super().__init__(response_map={
-            "SELECT COUNT(*), SUM": [(0, 0)], "SELECT COUNT(*)": [(0,)],
-        })
-        self.scenarios = {row["scenario_id"]: dict(row) for row in scenarios}
-
-    def query(self, sql, parameters=None) -> FakeQueryResult:
-        if "from semantic.scenarios" not in " ".join(sql.lower().split()):
-            return super().query(sql, parameters)
-        self.queries.append((sql, parameters))
-        rows = list(self.scenarios.values())
-        if parameters and "sid" in parameters:
-            rows = [row for row in rows if row["scenario_id"] == parameters["sid"]]
-        if "count(*)" in sql.lower():
-            return FakeQueryResult([(len(rows),)], ["count"])
-        selected = re.split(r"\bFROM\b", sql, flags=re.IGNORECASE)[0]
-        columns = [c.strip() for c in selected.strip()[len("SELECT"):].split(",")]
-        return FakeQueryResult(
-            [tuple(row.get(c) for c in columns) for row in rows], columns,
-        )
-
-    def command(self, sql, parameters=None, *args, **kwargs) -> None:
-        super().command(sql, parameters, *args, **kwargs)
-        if "insert into semantic.scenarios" in sql.lower():
-            p = parameters
-            self.scenarios[p["sid"]] = {
-                "scenario_id": p["sid"], "alias": p["alias"], "name": p["name"],
-                "kind": p["kind"], "status": "DRAFT", "base_scenario": p["base"],
-                "description": p["desc"], "variant_of": p["vof"],
-                "horizon_start": p["hs"], "horizon_end": p["he"],
-                "actuals_cutoff": p["ac"], "granularity": p["gran"],
-                "created_by": p["uid"], "owner_user_id": p["uid"],
-            }
+    def close(self) -> None:
+        self.close_calls += 1

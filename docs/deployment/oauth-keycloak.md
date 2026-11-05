@@ -62,19 +62,21 @@ must be installed with the deployment files; production Keycloak theme caches
 require a restart to load them. External OIDC providers in mode C own their
 sign-in appearance.
 
-Release 0.2.7 bundles Keycloak 26.7.5, which removes the three server-runtime
-findings temporarily accepted in 0.2.6 (CVE-2026-13506, CVE-2026-75595, and
-CVE-2026-8763). The bundled PostgreSQL configuration does not load Keycloak's
-MSSQL JDBC driver; its separate scan exception remains. See the
-[0.2.7 changelog](https://github.com/precis-finance/precis-finance-mcp/blob/v0.2.7/CHANGELOG.md)
-for the full scope of this update.
+The 0.4.0 candidate pins upstream Keycloak 26.8.1. Its remaining Guava
+CVE-2026-102554 has a temporary availability-risk exception for the exact
+reviewed image and Guava JAR, expiring on 2026-12-05 at 00:00 UTC. Reachability
+of untrusted Java deserialization has not been disproved. CI rejects expiry or
+scope drift; the deadline applies even if the next release is delayed. The
+older MSSQL JDBC exception has been removed. See
+[temporary Keycloak risk acceptance](../operations/upgrades.md#temporary-keycloak-risk-acceptance).
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `PRECIS_AUTH_MODE` | `keycloak` | — |
 | `PRECIS_BASE_URL` | Public address of your server; the other URLs derive from it | — |
 | `KC_BASE_URL_INTERNAL` | Backend → Keycloak (container topology) | `http://localhost:8080/auth` |
-| `KC_BOOTSTRAP_ADMIN_PASSWORD` | Keycloak realm-admin password | — |
+| `KC_BOOTSTRAP_ADMIN_PASSWORD` | Operator-only realm configuration (bundle: `KEYCLOAK_ADMIN_PASSWORD`) | — |
+| `KC_PROVISIONING_CLIENT_SECRET` | Scoped user lifecycle; realm-apply and one-off admin CLI only | — |
 | `KC_REALM` / `KC_CLIENT_ID` | Realm + client | `precis` / `precis-spa` |
 | `KC_MCP_AUDIENCE` | Expected token audience on `/mcp` | derived from `PRECIS_BASE_URL` |
 | `KC_ENABLE_EXCEL_ADDIN` | Provision and advertise the hosted Excel add-in public client | unset |
@@ -169,18 +171,38 @@ manual steps below are only for adding admins later, or if you didn't set it.
 To do it by hand, run the **admin CLI** in the `precis-mcp` container. One
 wrinkle in bundled-Keycloak (mode B): `create-admin`, `create-user`, and
 `reset-password` provision a *Keycloak* account, so they need the Keycloak
-bootstrap-admin password — which the long-running server deliberately does not
+scoped provisioning client secret — which the long-running server deliberately does not
 carry. Inject it for that one call (it lives in `deploy/.env` as
-`KEYCLOAK_ADMIN_PASSWORD`) by using `run` rather than `exec`:
+`KC_PROVISIONING_CLIENT_SECRET`) by using `run` rather than `exec`:
 
 ```bash
+export KC_PROVISIONING_CLIENT_SECRET="$(grep '^KC_PROVISIONING_CLIENT_SECRET=' deploy/.env | cut -d= -f2-)"
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env run --rm \
-  -e KC_BOOTSTRAP_ADMIN_PASSWORD="$(grep '^KEYCLOAK_ADMIN_PASSWORD=' deploy/.env | cut -d= -f2-)" \
+  -e KC_PROVISIONING_CLIENT_SECRET \
   precis-mcp python -m precis_mcp.admin_cli create-admin --id alice@example.com
 # mode C (external IdP — no Keycloak account, the IdP owns the credential):
 docker compose -f deploy/docker-compose.yml exec precis-mcp \
   python -m precis_mcp.admin_cli create-admin --id alice --no-keycloak --external-id <idp-subject>
 ```
+
+The same scoped identity serves `create-admin`, `create-user`, `reset-password`
+and `disable-user`. Reconcile the bundled realm with the independent secret first;
+ordinary reruns retain it. The serving MCP container receives neither provisioning
+nor bootstrap credentials. External-IdP `--no-keycloak` operations need neither.
+
+Provisioning authority is restricted to `/precis-application-users` through
+Keycloak FGAP V2, without `manage-users` or client administration. Only the two
+owned FGAP definitions are supported; competing policies disable provisioning and
+require operator review. Never enroll Keycloak administrators/service accounts,
+add subgroups or role grants to this group, or promote an enrolled account to
+Keycloak administration without first removing its membership. The credential
+can reset or alter any enrolled Précis account, including Précis application admins.
+
+On upgrade, existing platform sign-in accounts require explicit operator enrollment
+with `scripts/keycloak/migrate_users.py --enroll-existing`, supplying operator
+credentials for enrollment and the scoped secret for user lifecycle. This does
+not reset existing passwords unless requested by the migration options. Normal
+runtime user operations cannot enroll an existing account or fall back to bootstrap.
 
 Then provision and grant access. `create-user` provisions Keycloak too, so it
 takes the same injected credential as above; profile and assignment commands

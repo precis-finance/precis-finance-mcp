@@ -35,7 +35,6 @@ def _seed_user(db, user_id="sergio", is_admin=False):
     load_permissions reads only the users table + profile assignments."""
     db.users.append({
         "id": user_id,
-        "entity_id": "ENT-001",
         "is_admin": is_admin,
     })
 
@@ -87,22 +86,22 @@ def test_load_permissions_admin():
     assert perms.scenarios == {}
 
 
-def test_load_scenario_kinds_reads_semantic_scenarios():
+@pytest.mark.parametrize("backend", ["clickhouse", "databricks"])
+def test_load_scenario_kinds_reads_semantic_scenarios(ch_client, backend):
     from precis_mcp.auth import _load_scenario_kinds
-
-    seen = {}
-
-    def fake_query(sql):
-        seen["sql"] = sql
-        return [
-            {"scenario_id": "ACTUALS", "kind": "ACTUAL"},
-            {"scenario_id": "BUD-2026", "kind": "BUDGET"},
-        ]
-
-    with patch("precis_mcp.auth.query_clickhouse", side_effect=fake_query):
+    from precis_mcp.analytical.sql import SqlDialect
+    from tests.fakes.fake_clickhouse import FakeQueryResult
+    ch_client.dialect = SqlDialect(backend, "customer")
+    ch_client.set_response("FROM ", FakeQueryResult(
+        column_names=["scenario_id", "alias", "name", "kind"],
+        result_rows=[("ACTUALS", "actuals", "Actuals", "ACTUAL"),
+                     ("BUD-2026", "budget", "Budget", "BUDGET")]))
+    with patch("precis_mcp.auth.get_analytical_client", return_value=ch_client):
         result = _load_scenario_kinds()
-
-    assert "FROM semantic.scenarios" in seen["sql"]
+        assert _load_scenario_kinds() == result
+    assert f"FROM {ch_client.dialect.table('semantic.scenarios')}" in ch_client.queries[-1][0]
+    assert ch_client.close_calls == 1
+    assert len(ch_client.queries) == 1
     assert result == {"ACTUALS": "ACTUAL", "BUD-2026": "BUDGET"}
 
 
@@ -111,6 +110,58 @@ def test_load_permissions_user_not_found():
     with patch("precis_mcp.auth.query_platform", side_effect=db.query):
         with pytest.raises(AuthError, match="not found"):
             load_permissions("nonexistent_user")
+
+
+def test_cached_scenarios_do_not_cache_profile_grants_or_disabled_accounts(ch_client):
+    from tests.fakes.fake_clickhouse import FakeQueryResult
+
+    db = FakePlatformDB()
+    _seed_user(db, "actor")
+    _seed_profile(db, "all", {"scenarios": {"*": {"analyst": {}}}})
+    _assign_profile(db, "actor", "all")
+    ch_client.set_response("FROM semantic.scenarios", FakeQueryResult(
+        column_names=["scenario_id", "alias", "name", "kind"],
+        result_rows=[("ACTUALS", "actuals", "Actuals", "ACTUAL")],
+    ))
+    with patch("precis_mcp.auth.query_platform", side_effect=db.query), \
+         patch("precis_mcp.auth.get_analytical_client", return_value=ch_client):
+        assert "ACTUALS" in load_permissions("actor").scenarios
+        db.user_profile_assignments.clear()
+        assert load_permissions("actor").scenarios == {}
+        _assign_profile(db, "actor", "all")
+        assert "ACTUALS" in load_permissions("actor").scenarios
+        db.users[0]["is_disabled"] = True
+        with pytest.raises(AccountDisabledError):
+            load_permissions("actor")
+    assert len(ch_client.queries) == 1
+
+
+def test_registry_refresh_failure_clears_previously_loaded_permissions(ch_client, monkeypatch):
+    from precis_mcp.engine import scenario_registry
+    from tests.fakes.fake_clickhouse import FakeQueryResult
+
+    db = FakePlatformDB()
+    _seed_user(db, "actor", is_admin=True)
+    _seed_profile(db, "all", {"scenarios": {"*": {"analyst": {}}}})
+    _assign_profile(db, "actor", "all")
+    ch_client.set_response("FROM semantic.scenarios", FakeQueryResult(
+        column_names=["scenario_id", "alias", "name", "kind"],
+        result_rows=[("ACTUALS", "actuals", "Actuals", "ACTUAL")],
+    ))
+    with patch("precis_mcp.auth.query_platform", side_effect=db.query), \
+         patch("precis_mcp.auth.get_analytical_client", side_effect=[
+             ch_client, RuntimeError("Warehouse unavailable"),
+         ]):
+        permissions = load_permissions("actor")
+        set_auth_context(AuthContext("actor", permissions))
+        try:
+            monkeypatch.setattr(scenario_registry, "_REGISTRY_TTL_SECONDS", 0)
+            with pytest.raises(RuntimeError, match="Warehouse unavailable"):
+                refresh_permissions()
+            assert permissions.scenarios == {}
+            assert permissions.is_admin is False
+        finally:
+            clear_auth_context()
 
 
 def test_load_permissions_with_profile():

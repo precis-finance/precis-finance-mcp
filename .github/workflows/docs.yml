@@ -7,11 +7,11 @@
 # One-time setup in the mirror repo before the first run succeeds:
 #   - Repository must be public (or on a plan that permits Pages from private).
 #   - Settings -> Pages -> Source: "GitHub Actions".
-# The custom domain docs.precis.finance is carried by open_docs/CNAME, which
+# The custom domain docs.precis.finance is carried by docs/CNAME, which
 # MkDocs copies into the built site (site/CNAME); GitHub Pages reads it.
 #
 # Builds on push and PR (strict — broken links/nav fail the run); deploys on
-# push to main and manual dispatch. Docs toolchain mirrors pyproject-open.toml's
+# push to main and manual dispatch. Docs toolchain mirrors pyproject.toml's
 # [dev] extra.
 name: docs
 

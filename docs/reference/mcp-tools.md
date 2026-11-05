@@ -111,6 +111,11 @@ with the exact filter key to use) and `hierarchy_nodes` (rollup nodes —
 filter with the node id exactly as returned). Visibility is scoped: a member
 is returned only if at least one readable scenario allows it.
 
+Unknown dimension **keys** are catalogue errors: use `precis_orientation` or
+`list_kpis` to discover the supported names. Unknown member **values** direct
+the caller to `search_hierarchy`; validation errors do not list member
+alternatives. Discovery applies the caller's visibility scope.
+
 ### `list_dimensions`
 
 No parameters. The dimension catalogue as metadata — each entry carries `key`
@@ -204,6 +209,11 @@ shortened.
 
 ## Ingestion status
 
+Available only in Précis-managed ingestion mode. With
+`PRECIS_INGESTION_MODE=customer_managed`, the ingestion tool family—including
+`reload_integrations`—is omitted on either primary backend. Customer pipelines
+own freshness reporting in that mode; see [Analytical client](../configuration/analytical-client.md).
+
 Data-freshness questions, answerable by any user from the client — "is April
 in yet?", "when was this last loaded?". These read the
 [ingestion](../configuration/ingestion.md) configuration and audit trail;
@@ -275,6 +285,19 @@ inspect_rows(source_key="gl", scenario_id="actuals",
   where the keys these tools accept are defined.
 
 ## Charts and artifacts
+
+Chart transforms receive full-precision cached values **already scaled** by
+the engine. `scale: 0` means units and `scale: 3` divides non-exempt values by
+1000. Percentages (`75` means 75%) and scale-exempt metrics such as FTEs retain
+their units even in mixed statements. Do not scale the values again; chart
+`y_scale` is forced to `0`, and left-axis decimals come from the first input.
+For multiple sources, inspect every scale and metric format. Re-query
+same-unit series at a common scale before sharing an axis. Use separately
+labelled left/right axes for different units on line/bar/area charts, or use
+separate charts; set right-axis format and decimals explicitly when needed.
+The tool does not reconcile units automatically. Merged captions omit
+conflicting nonempty scale labels; an unlabelled source does not remove another
+source's label. Axis labels must therefore state each series' units.
 
 | Tool | Parameters | Behaviour |
 |---|---|---|

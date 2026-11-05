@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import sys
 import time
 import urllib.error
@@ -308,6 +309,11 @@ def main() -> None:
     else:
         print("KC_MCP_AUDIENCE unset — skipping audience mapper (dev posture).", flush=True)
 
+    # Shared with native/commercial operator tooling; never used by HTTP routes.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from precis_mcp.keycloak_operator import provisioning_secret, reconcile_provisioner
+    reconcile_provisioner(_admin, provisioning_secret())
+    print("Realm-local user provisioning policy reconciled.", flush=True)
     print(f"Realm reconciled for {ORIGIN or '(no public origin)'}.", flush=True)
 
 

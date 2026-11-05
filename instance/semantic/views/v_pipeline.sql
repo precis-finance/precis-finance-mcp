@@ -25,6 +25,8 @@ SELECT
     o.created_date,
     o.close_date,
     formatDateTime(o.close_date, '%Y-%m')       AS period,
+    coalesce(pd.quarter, '')                    AS quarter,
+    coalesce(pd.fiscal_year, '')                AS fiscal_year,
     o.last_stage_change_date,
     o.owner,
     o.service_line,
@@ -36,3 +38,5 @@ SELECT
 FROM live.fact_pipeline o
 LEFT JOIN live.dim_crm_account a
     ON o.account_id = a.account_id
+LEFT JOIN live.dim_period pd
+    ON formatDateTime(o.close_date, '%Y-%m') = pd.period

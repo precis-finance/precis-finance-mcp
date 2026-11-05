@@ -43,7 +43,7 @@ their secrets:
   (your existing IdP, mode C — set `OIDC_ISSUER`, `OIDC_JWKS_URL`,
   `OIDC_AUDIENCE`, `OIDC_CLIENT_ID/SECRET`, `PRECIS_IDENTITY_CLAIM/COLUMN`).
 - **Data** (`PRECIS_DATA_MODE`): `byo` (your ClickHouse — set `CHHOST` etc.),
-  `bundle-empty`, or `bundle-sample`.
+  `bundle-empty`, `bundle-sample`, or `databricks` (your SQL warehouse).
 - **Ingress** (`PRECIS_INGRESS_MODE`): `bundled` (Caddy auto-HTTPS on 80/443
   for `PRECIS_DOMAIN` — needs public DNS + ACME reachability) or `byo` (front
   the loopback-published ports with your own proxy; reference vhost in
@@ -83,8 +83,11 @@ profile — the script selects the right profiles for your three axes.
 
 Your model lives in an `instance/` directory — `catalogue/`, `semantic/`,
 `integrations/`, `scenarios.yml`. Fork the shipped `instance/` template
-and replace its contents with your definitions, then provision the schema and
-verify it:
+and replace its contents with your definitions.
+
+For Databricks, follow [backend setup](../configuration/analytical-client.md#docker-deployment-with-databricks)
+and [schema provisioning and validation](../configuration/databricks-schema-contract.md#provisioning-and-validation).
+For ClickHouse, provision and verify with:
 
 ```bash
 # schema only (no demo data)
@@ -118,12 +121,13 @@ in the deploy output. If you already deployed with `--admin-id`, it's done; the
 manual path below is only for adding admins later, or if you didn't set it.
 
 To seed it by hand in mode B, note that `create-admin` provisions a Keycloak
-account and so needs the Keycloak bootstrap-admin password — which the
+account and so needs the Keycloak scoped provisioning client secret — which the
 long-running server does not carry. Inject it with `run` (not `exec`):
 
 ```bash
+export KC_PROVISIONING_CLIENT_SECRET="$(grep '^KC_PROVISIONING_CLIENT_SECRET=' deploy/.env | cut -d= -f2-)"
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env run --rm \
-  -e KC_BOOTSTRAP_ADMIN_PASSWORD="$(grep '^KEYCLOAK_ADMIN_PASSWORD=' deploy/.env | cut -d= -f2-)" \
+  -e KC_PROVISIONING_CLIENT_SECRET \
   precis-mcp python -m precis_mcp.admin_cli create-admin --id you@example.com
 # mode C (external IdP owns the credential): exec the running server is fine
 docker compose -f deploy/docker-compose.yml exec precis-mcp \
@@ -142,8 +146,12 @@ verify the realm came up and the claim mapping is right with
 ## 6. Smoke-test before announcing
 
 ```bash
-curl -fsS https://YOUR_DOMAIN/readyz        # 200 + {"status":"ready"} when CH + Postgres are reachable
+curl -fsS https://YOUR_DOMAIN/readyz
 ```
+
+Expect HTTP 200 with `status: ready` when PostgreSQL, Redis, artifacts and the
+selected backend check pass. For Databricks, this validates configuration only,
+not warehouse connectivity.
 
 Then, as a signed-in user: list scenarios, run one metric, and confirm
 `admin_cli show-access --user <id>` resolves the access you intended.

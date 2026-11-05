@@ -10,6 +10,12 @@ materialises the `live.*` tables and `semantic.*` views — you can skip this
 entirely and run [query-only](../getting-started/quickstart.md). This page is
 for letting Précis Finance MCP pull from your own sources.
 
+Set `PRECIS_INGESTION_MODE=customer_managed` when your pipelines own the inputs.
+That mode omits Précis ingestion tools and upload/load/configuration routes;
+CH can use either mode, while the native Databricks implementation currently
+requires customer-managed inputs. Its setup and implementation limits are in
+[Analytical client](analytical-client.md).
+
 It applies to both [data modes](../deployment/clickhouse-data-modes.md) where
 you bring your own data: a bundled ClickHouse provisioned empty
 (`bundle-empty`) or your own cluster (`byo`). The `bundle-sample` mode runs
@@ -53,12 +59,12 @@ files are a working reference configuration.
       deliberately no in-place path; a runtime install is lost on the next image
       rebuild.
 
-!!! warning "Optional Databricks driver finding in 0.2.7"
-    Databricks SQL Connector currently requires `oauthlib<4`, so an image
-    built with `--extras databricks` retains OAuthlib 3.3.1 and its
-    CVE-2026-49265 PKCE timing finding. The published core image does not
-    include this extra. The optional-driver audit exception expires after
-    2026-10-31; do not enable this extra if your policy disallows the finding.
+!!! note "Databricks dependency update in source"
+    The optional constraints now select SQL Connector 4.7.0 and OAuthlib 4.0.0,
+    resolving the earlier CVE-2026-49265 dependency finding. The temporary
+    OAuthlib audit exception is removed. Older releases retain their original
+    dependencies until rebuilt/upgraded; this source change does not update
+    running images or establish that all optional dependencies audit cleanly.
 
 ## How a load works
 
@@ -87,6 +93,24 @@ cleared before each extract. Failed and `--stop-after` attempts may leave their
 slices in staging for operator inspection; attempt-scoped validation prevents
 them from affecting a later period. Every attempt, success or failure, is
 recorded in `load_history`.
+
+## Hierarchy updates
+
+Hierarchy master and parent-child edge inputs should use snapshot bindings.
+Précis-managed CH snapshot loads rebuild the materialized hierarchy mappings
+before success; period fact loads do not trigger this step. Source swap can
+complete before a refresh fails, so `failed_swap` does not imply that source data
+was rolled back. Hierarchy changes require serialized publication and an
+orchestrated maintenance window for affected reports, because mappings also
+resolve authorization scopes.
+
+For customer-managed ingestion on CH or Databricks, integrate the explicit
+`python -m precis_mcp.admin_cli hierarchy refresh` command into the customer
+pipeline after hierarchy input updates. Use separate operator/pipeline credentials;
+normal reporting access can remain read-only. Initial setup and hierarchy
+definition changes use `--provision`. No scheduled refresh is installed. The
+[hierarchy refresh contract](analytical-client.md#explicit-hierarchy-provisioning-and-refresh)
+defines failure, recovery and publication requirements.
 
 ## Describing a source
 

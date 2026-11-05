@@ -324,3 +324,16 @@ def test_reload_integrations_returns_summary(tools, registry_ref):
     """The reload tool calls registry_ref.reload() and returns its summary."""
     summary = tools["reload_integrations"]()
     assert "Reloaded" in summary
+
+
+def test_customer_managed_mode_does_not_attach_ingestion_or_construct_clients(monkeypatch, registry_ref):
+    from precis_mcp.ingestion import wiring
+    monkeypatch.setenv("PRECIS_INGESTION_MODE", "customer_managed")
+    monkeypatch.setattr(wiring, "_default_ch_client", lambda: pytest.fail("opened CH"))
+    mcp = MockMCP()
+    register_ingestion_tools(mcp, registry_ref)
+    assert mcp.tools == {}
+    assert wiring.attach_ingestion_to_app(None) is False
+    assert wiring.attach_admin_routes_to_app(None, registry_ref=registry_ref) is False
+    assert wiring.attach_run_endpoint_to_app(None, ctx=object()) is False
+    assert wiring.build_default_ingestion_context_from_env() is None

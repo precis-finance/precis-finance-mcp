@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "precis"
-SERVER_VERSION = "0.3.0"
+SERVER_VERSION = "0.4.0"
 
 # Synthetic, MCP-only tool whose *result* is the orientation block. The MCP
 # `instructions` field (initialize) is dropped by claude.ai and only partly read
@@ -440,6 +440,12 @@ async def _handle_tools_call(params: dict, auth_ctx: AuthContext) -> dict:
         name, pinned_out = resolve_mcp_tool(mcp_name)
         span.set_attribute("precis.out_mode", pinned_out)
 
+        from precis_mcp.excel.worksheet import worksheet_options, extract_worksheet, report_worksheet, WORKSHEET_META_KEY
+        try:
+            worksheet = worksheet_options(params, name)
+        except ValueError as exc:
+            return {"isError": True, "content": [{"type": "text", "text": str(exc)}]}
+
         _ensure_tools_loaded()
         assert _descriptors is not None and _wrappers is not None
         desc = _descriptors.get(name)
@@ -455,7 +461,7 @@ async def _handle_tools_call(params: dict, auth_ctx: AuthContext) -> dict:
         # flagged mcp_read on a write/admin entry can never be invoked here.
         from precis_mcp.tools.artifact_tools import ARTIFACT_MUTATING_TOOLS
         exposed_read = desc.mcp_read and desc.access in {"read", "general"}
-        exposed_artifact = desc.mcp_artifact and desc.access == "artifact" and name in ARTIFACT_MUTATING_TOOLS
+        exposed_artifact = desc.mcp_artifact and desc.access == "general" and name in ARTIFACT_MUTATING_TOOLS
         if not _tool_enabled(name) or not (exposed_read or exposed_artifact):
             span.set_attribute("precis.is_error", True)
             _audit_call(auth_ctx, name=mcp_name, out_mode="", outcome="not_exposed")
@@ -501,7 +507,12 @@ async def _handle_tools_call(params: dict, auth_ctx: AuthContext) -> dict:
                 from precis_mcp.artifacts.routes import transfer_slot
                 limiter = transfer_slot(auth_ctx.user_id) if desc.mcp_artifact or name == "get_file_download" else read_limiter.acquire(auth_ctx.user_id)
                 async with limiter:
-                    result = await asyncio.to_thread(wrapper, **cleaned)
+                    from precis_mcp.tools.read_tools import _suppress_consumer_rounding
+                    precision_token = _suppress_consumer_rounding.set(bool(worksheet))
+                    try:
+                        result = await asyncio.to_thread(wrapper, **cleaned)
+                    finally:
+                        _suppress_consumer_rounding.reset(precision_token)
             except (TooBusy, HTTPException) as exc:
                 span.set_attribute("precis.is_error", True)
                 _audit_call(auth_ctx, name=mcp_name, out_mode=pinned_out,
@@ -545,6 +556,11 @@ async def _handle_tools_call(params: dict, auth_ctx: AuthContext) -> dict:
                     tool_result=result,
                     render_block=render_block,
                 )
+                if worksheet and isinstance(result, dict) and "error" not in result:
+                    projection = extract_worksheet(result)
+                    if render_block is not None:
+                        projection["report"] = report_worksheet(render_block)
+                    framed.setdefault("_meta", {})[WORKSHEET_META_KEY] = projection
                 _audit_call(auth_ctx, name=mcp_name, out_mode=pinned_out,
                             outcome="ok", scenario_id=scenario_id)
                 return framed

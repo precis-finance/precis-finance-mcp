@@ -7,6 +7,7 @@ server; the drill's correctness is the orchestration around them)."""
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -72,6 +73,111 @@ def test_unknown_bundle_raises_not_found(tmp_path, ch_client):
         restore_bundle(cfg, "20990101T000000Z", ch_client_factory=lambda: ch_client)
 
 
+@pytest.mark.parametrize("drill", [False, True])
+@pytest.mark.parametrize("force", [False, True])
+def test_databricks_refuses_legacy_ch_restore_before_fetch_or_database_work(tmp_path, monkeypatch, drill, force):
+    cfg = _cfg(tmp_path)
+    dest = _seed_bundle(cfg)
+    monkeypatch.setenv("PRECIS_ANALYTICAL_BACKEND", "databricks")
+    touched = []
+    monkeypatch.setattr(dest, "fetch_to", lambda *args: touched.append("fetch"))
+    with pytest.raises(RestoreGuardError, match="ClickHouse artifacts cannot"):
+        restore_bundle(cfg, RUN_ID, drill=drill, force=force, dest_factory=lambda: dest,
+                       ch_client_factory=lambda: touched.append("CH"),
+                       pg_restore_runner=lambda *args: touched.append("PG"))
+    assert touched == []
+
+
+def test_databricks_bundle_cannot_smuggle_ch_artifact_into_ch_restore(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    dest = _seed_bundle(cfg)
+    original = BackupManifest.from_json(dest.get_bytes(manifest_key(RUN_ID)))
+    dest.put_bytes(replace(original, analytical_backend="databricks").to_json().encode(), manifest_key(RUN_ID))
+    monkeypatch.setenv("PRECIS_ANALYTICAL_BACKEND", "clickhouse")
+    with pytest.raises(RestoreGuardError, match="ClickHouse artifacts cannot"):
+        restore_bundle(cfg, RUN_ID, stores={"clickhouse"}, force=True)
+
+
+@pytest.mark.parametrize("source_backend", ["clickhouse", "databricks"])
+@pytest.mark.parametrize("drill", [False, True])
+def test_databricks_platform_restore_preserves_payload_and_external_boundary(tmp_path, monkeypatch, source_backend, drill):
+    cfg = _cfg(tmp_path)
+    dest = _seed_bundle(cfg)
+    if source_backend == "databricks":
+        original = BackupManifest.from_json(dest.get_bytes(manifest_key(RUN_ID)))
+        manifest = replace(original, analytical_backend="databricks",
+                           artifacts=[a for a in original.artifacts if a.store == "postgres"],
+                           row_counts={"pg.users": 3})
+        dest.put_bytes(manifest.to_json().encode(), manifest_key(RUN_ID))
+    monkeypatch.setenv("PRECIS_ANALYTICAL_BACKEND", "databricks")
+    restored = []
+    monkeypatch.setattr(restore_mod, "_pg_database_exists", lambda _: False)
+    monkeypatch.setattr(restore_mod, "_pg_execute_admin", lambda _: None)
+    monkeypatch.setattr(restore_mod, "_pg_table_counts", lambda _: {"users": 3})
+    monkeypatch.setattr(restore_mod, "record_history", lambda **_: None)
+    result = restore_bundle(cfg, RUN_ID, stores={"postgres"} if source_backend == "clickhouse" else None,
+                            drill=drill, target_db="restored_platform",
+                            pg_restore_runner=lambda path, db: restored.append((path.read_bytes(), db)),
+                            ch_client_factory=lambda: pytest.fail("CH client must not be opened"))
+    assert result.outcome == "success"
+    assert restored == [(b"pg-dump-sentinel", "precis_platform_drill" if drill else "restored_platform")]
+    assert result.stores[-1].store == "databricks" and result.stores[-1].outcome == "skipped"
+
+
+@pytest.mark.parametrize("drill", [False, True])
+@pytest.mark.parametrize("stores", [{"files"}, {"postgres", "files"}, {"unknown"}])
+def test_unavailable_requested_store_refuses_entire_operation(tmp_path, monkeypatch, drill, stores):
+    cfg = _cfg(tmp_path)
+    dest = _seed_bundle(cfg)
+    touched = []
+    monkeypatch.setattr(dest, "fetch_to", lambda *args: touched.append("fetch"))
+    monkeypatch.setattr(restore_mod, "record_history", lambda **kwargs: touched.append("history"))
+    with pytest.raises(RestoreGuardError, match="requested store.*no successful artifact"):
+        restore_bundle(
+            cfg, RUN_ID, drill=drill, stores=stores,
+            dest_factory=lambda: dest,
+            ch_client_factory=lambda: touched.append("clickhouse"),
+            pg_restore_runner=lambda *args: touched.append("postgres"),
+        )
+    assert touched == []
+
+
+@pytest.mark.parametrize("outcome,key", [("failed", "pg/x.dump"), ("skipped", None), ("success", None)])
+def test_requested_failed_skipped_or_keyless_artifact_refused(tmp_path, outcome, key):
+    cfg = _cfg(tmp_path)
+    dest = _seed_bundle(cfg)
+    manifest = BackupManifest.from_json(dest.get_bytes(manifest_key(RUN_ID)))
+    manifest.artifacts[0] = replace(manifest.artifacts[0], outcome=outcome, key=key)
+    dest.put_bytes(manifest.to_json().encode(), manifest_key(RUN_ID))
+    with pytest.raises(RestoreGuardError, match="postgres"):
+        restore_bundle(cfg, RUN_ID, stores={"postgres"})
+
+
+@pytest.mark.parametrize("drill", [False, True])
+@pytest.mark.parametrize("explicit_empty", [False, True])
+def test_empty_restore_selection_refused(tmp_path, drill, explicit_empty):
+    cfg = _cfg(tmp_path)
+    dest = _seed_bundle(cfg)
+    if not explicit_empty:
+        manifest = BackupManifest.from_json(dest.get_bytes(manifest_key(RUN_ID)))
+        manifest.artifacts.clear()
+        dest.put_bytes(manifest.to_json().encode(), manifest_key(RUN_ID))
+    with pytest.raises(RestoreGuardError, match="no restorable stores"):
+        restore_bundle(cfg, RUN_ID, drill=drill, stores=set() if explicit_empty else None)
+
+
+@pytest.mark.parametrize("store", ["instance", "files"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_drill_refuses_selection_without_database_artifacts(tmp_path, store, explicit):
+    cfg = _cfg(tmp_path)
+    dest = _seed_bundle(cfg)
+    manifest = BackupManifest.from_json(dest.get_bytes(manifest_key(RUN_ID)))
+    manifest.artifacts[:] = [replace(manifest.artifacts[0], store=store)]
+    dest.put_bytes(manifest.to_json().encode(), manifest_key(RUN_ID))
+    with pytest.raises(RestoreGuardError, match="requires a successful postgres or clickhouse"):
+        restore_bundle(cfg, RUN_ID, drill=True, stores={store} if explicit else None)
+
+
 def test_nonempty_postgres_target_refused_without_force(tmp_path, ch_client, monkeypatch):
     cfg = _cfg(tmp_path)
     _seed_bundle(cfg)
@@ -110,6 +216,63 @@ def test_force_restore_drops_and_restores_clickhouse(tmp_path, ch_client):
         "RESTORE DATABASE live, DATABASE staging, DATABASE semantic "
         f"FROM Disk('precis_backups', '{RUN_ID}.zip')"
     ) in sqls
+    assert all("planning" not in sql for sql in sqls)  # legacy bundle did not capture planning
+
+
+@pytest.mark.parametrize("drill", [False, True])
+def test_recorded_planning_inventory_is_restored_and_drilled(tmp_path, ch_client, monkeypatch, drill):
+    cfg = _cfg(tmp_path)
+    dest = _seed_bundle(cfg)
+    original = BackupManifest.from_json(dest.get_bytes(manifest_key(RUN_ID)))
+    manifest = replace(original,
+                       clickhouse_databases=["live", "staging", "semantic", "planning"],
+                       row_counts={"ch.live.fact_gl": 100, "ch.planning.entries": 13, "ch.planning.commits": 2})
+    dest.put_bytes(manifest.to_json().encode(), manifest_key(RUN_ID))
+    ch_client.set_response("_drill", [("live_drill", "fact_gl", 100),
+                                      ("planning_drill", "entries", 13), ("planning_drill", "commits", 2)])
+    monkeypatch.setattr(restore_mod, "record_history", lambda **_: None)
+    result = restore_bundle(cfg, RUN_ID, stores={"clickhouse"}, drill=drill, force=True,
+                            ch_client_factory=lambda: ch_client)
+    assert result.outcome == "success"
+    commands = [sql for sql, _ in ch_client.commands]
+    restore_sql = next(sql for sql in commands if sql.startswith("RESTORE"))
+    if drill:
+        assert "DATABASE planning AS planning_drill" in restore_sql
+        assert "DROP DATABASE IF EXISTS planning_drill SYNC" in commands
+        assert all(v.ok for v in result.verification)
+        assert {v.name for v in result.verification} == {"ch.live.fact_gl", "ch.planning.entries", "ch.planning.commits"}
+        assert "DROP DATABASE IF EXISTS planning SYNC" not in commands
+    else:
+        assert "DATABASE planning" in restore_sql
+        assert "DROP DATABASE IF EXISTS planning SYNC" in commands
+
+
+def test_nonempty_planning_database_is_guarded_when_in_bundle(tmp_path, ch_client):
+    cfg = _cfg(tmp_path)
+    dest = _seed_bundle(cfg)
+    original = BackupManifest.from_json(dest.get_bytes(manifest_key(RUN_ID)))
+    dest.put_bytes(replace(original, clickhouse_databases=["live", "staging", "semantic", "planning"]).to_json().encode(),
+                   manifest_key(RUN_ID))
+    ch_client.set_response("system.tables", [("planning",)])
+    with pytest.raises(RestoreGuardError, match="planning"):
+        restore_bundle(cfg, RUN_ID, stores={"clickhouse"}, ch_client_factory=lambda: ch_client)
+    assert ch_client.commands == []
+    assert "'planning'" in ch_client.queries[0][0]
+
+
+def test_default_selection_restores_available_stores_from_partial_bundle(tmp_path, ch_client):
+    cfg = _cfg(tmp_path)
+    dest = _seed_bundle(cfg)
+    manifest = BackupManifest.from_json(dest.get_bytes(manifest_key(RUN_ID)))
+    manifest.artifacts[0] = replace(manifest.artifacts[0], outcome="failed", key=None)
+    manifest = replace(manifest, outcome="partial")
+    dest.put_bytes(manifest.to_json().encode(), manifest_key(RUN_ID))
+    with patch("precis_mcp.db.execute_platform", side_effect=FakePlatformDB().execute):
+        result = restore_bundle(
+            cfg, RUN_ID, ch_client_factory=lambda: ch_client,
+        )
+    assert result.outcome == "success"
+    assert [store.store for store in result.stores] == ["clickhouse"]
 
 
 def test_checksum_mismatch_aborts_before_any_restore(tmp_path, ch_client, monkeypatch):
@@ -187,6 +350,25 @@ def test_drill_row_count_mismatch_fails(tmp_path, ch_client, monkeypatch):
     bad = [v for v in result.verification if not v.ok]
     assert [v.name for v in bad] == ["pg.users"]
     assert db.backup_history[0]["outcome"] == "failed"
+
+
+def test_database_drill_reports_file_artifact_as_unexercised(tmp_path, ch_client, monkeypatch):
+    cfg = _cfg(tmp_path)
+    dest = _seed_bundle(cfg)
+    manifest = BackupManifest.from_json(dest.get_bytes(manifest_key(RUN_ID)))
+    manifest.artifacts.append(replace(manifest.artifacts[0], store="files"))
+    dest.put_bytes(manifest.to_json().encode(), manifest_key(RUN_ID))
+    _drill_env(monkeypatch, FakePlatformDB(), pg_counts={"users": 3})
+    ch_client.set_response("_drill", [("live_drill", "fact_gl", 100)])
+    with patch("precis_mcp.db.execute_platform", side_effect=FakePlatformDB().execute):
+        result = restore_bundle(
+            cfg, RUN_ID, drill=True, ch_client_factory=lambda: ch_client,
+            pg_restore_runner=lambda path, dbname: None,
+        )
+    assert result.outcome == "success"
+    files = next(store for store in result.stores if store.store == "files")
+    assert files.outcome == "skipped"
+    assert "extraction is not exercised" in files.detail
 
 
 def test_keep_drill_skips_drop(tmp_path, ch_client, monkeypatch):

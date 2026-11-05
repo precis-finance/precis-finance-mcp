@@ -33,6 +33,40 @@ from precis_mcp.excel.extract_emit import (
     extract_to_excel,
 )
 from precis_mcp.excel.meta import META_SHEET_NAME, read_meta
+from precis_mcp.excel.worksheet import extract_worksheet
+
+
+def test_static_and_live_extracts_share_keys_precision_and_resolved_formats(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRECIS_BASE_URL", "https://finance.example")
+    result = {
+        "kind": "metric", "dimensions": ["department"], "scale": 0, "decimals": None,
+        "scenarios": [{"alias": "Actuals", "format": "currency"}],
+        "rows": [
+            {"grain": "detail", "dimensions": {"department": "D1"},
+             "item": {"key": "revenue", "label": "Sales", "format": "currency", "decimals": 2},
+             "values": {"Actuals": 123.456789}},
+            {"grain": "detail", "dimensions": {"department": "D1"},
+             "item": {"key": "margin", "label": "Margin %", "format": "percent", "decimals": 0},
+             "values": {"Actuals": 8.7654321}},
+            {"grain": "grand_total", "item": {"key": "revenue"}, "values": {"Actuals": 999}},
+        ],
+    }
+    source = {"metrics": ["revenue", "margin"], "period_start": "2026-01", "period_end": "2026-03",
+              "scenarios": [{"scenario": "actuals", "alias": "Actuals"}], "scale": 0, "decimals": None}
+    path = tmp_path / "parity.xlsx"
+    extract_to_excel(result, path, source_tool="run_metric", source_params=source)
+    wb = load_workbook(path)
+    live = extract_worksheet(result)
+    assert [["" if c is None else c for c in row] for row in wb["Extract"].values] == live["grid"]
+    assert live["grid"][1] == ["D1", "revenue", 123.456789]
+    assert wb["Extract"]["C3"].value == 8.7654321
+    assert wb["Extract"]["C3"].number_format == '0"%";–0"%"'
+    assert wb["Extract"]["C2"].number_format == live["number_formats"][1][2]
+    region = read_meta(wb)["sheets"]["Extract"]["regions"][0]
+    assert region["origin"] == "https://finance.example"
+    assert region["presentation"] == {"scale": 0, "decimals": None}
+    assert list(wb.defined_names[region["range_name"]].destinations) == [("Extract", "$A$1:$C$4")]
+    wb.close()
 
 
 def _item(line: dict) -> dict:
@@ -178,7 +212,7 @@ def test_statement_no_dims_sheet_layout(tmp_path, statement_no_dims):
     assert rows[2] == ("revenue.licence", 80000, 90000)
     # Separator dropped — COGS moves up to row 4
     assert rows[3] == ("cogs.total", 250000, 260000)
-    assert len(rows) == 4
+    assert len(rows) == 5  # header + three detail rows + context footer
 
 
 def test_statement_no_dims_meta_shape(tmp_path, statement_no_dims):
@@ -192,7 +226,8 @@ def test_statement_no_dims_meta_shape(tmp_path, statement_no_dims):
     assert meta["workbook_kind"] == "extract"
     entry = meta["sheets"]["Extract"]
     assert entry["kind"] == "extract"
-    assert entry["source"]["tool"] == "run_statement"
+    assert "source" not in entry
+    assert entry["regions"][0]["source"]["tool"] == "run_statement"
     shape = entry["shape"]
     assert shape["layout"] == "role_indexed"
     assert shape["key_columns"] == ["line_item"]
@@ -418,8 +453,10 @@ def test_out_stripped_from_persisted_params(tmp_path, statement_no_dims):
     meta = read_meta(load_workbook(path))
     # The caller's `out=excel` is an emit-time detail, not a refresh input —
     # meta persists only refresh-relevant params.
-    assert "out" not in meta["sheets"]["Extract"]["source"]["params"]
-    assert meta["sheets"]["Extract"]["source"]["params"]["statement"] == "pnl"
+    source = meta["sheets"]["Extract"]["regions"][0]["source"]
+    assert "source" not in meta["sheets"]["Extract"]
+    assert "out" not in source["params"]
+    assert source["params"]["statement"] == "pnl"
 
 
 def test_user_id_and_generated_at_propagate(tmp_path, statement_no_dims):
@@ -439,6 +476,18 @@ def test_user_id_and_generated_at_propagate(tmp_path, statement_no_dims):
     }
     assert meta["generated_at"] == "2026-04-21T14:32:07Z"
     assert meta["catalogue_version"] == "2026.04.01"
+
+
+def test_extract_source_strings_are_literal(tmp_path, metric_with_dims):
+    metric_with_dims["rows"][0]["dimensions"]["cost_centre"] = "=1+1"
+    metric_with_dims["rows"][0]["values"]["Actuals"] = -12.5
+    path = tmp_path / "extract.xlsx"
+    extract_to_excel(metric_with_dims, path, source_tool="run_metric", source_params={})
+    ws = load_workbook(path).active
+    assert ws["A2"].value == "=1+1"
+    assert ws["A2"].data_type == "s"
+    assert ws["B2"].value == -12.5
+    assert ws["B2"].data_type == "n"
 
 
 def test_meta_sheet_hidden(tmp_path, statement_no_dims):

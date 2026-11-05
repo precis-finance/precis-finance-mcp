@@ -1,7 +1,5 @@
-/* Self-hosted webfonts — same faces the SPA bundles (@fontsource), copied
-   into resources/fonts/ so the login page never depends on Google Fonts.
-   Precision presentation: cmo/precis-app-precision.md.
-   Cormorant 600 is reserved for the wordmark, matching the SPA. */
+/* Self-hosted webfonts in resources/fonts/ keep the login page independent
+   of Google Fonts. Cormorant 600 is reserved for the wordmark. */
 @font-face {
   font-family: "DM Sans";
   font-style: normal;

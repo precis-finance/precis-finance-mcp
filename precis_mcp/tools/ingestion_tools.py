@@ -24,12 +24,17 @@ if TYPE_CHECKING:
 
     from precis_mcp.ingestion.wiring import IntegrationRegistryRef
 
+INGESTION_TOOL_NAMES = frozenset({"reload_integrations", "list_load_history", "get_load_status", "list_bindings", "get_binding"})
+
 
 def register_ingestion_tools(
     mcp: "FastMCP",
     registry_ref: "IntegrationRegistryRef",
 ) -> None:
     """Register ingestion-related MCP tools on the server instance."""
+    from precis_mcp.analytical.runtime import ingestion_mode
+    if ingestion_mode() == "customer_managed":
+        return
 
     @mcp.tool()
     def reload_integrations() -> str:

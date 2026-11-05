@@ -45,6 +45,7 @@ from typing import Any
 import yaml
 
 from precis_mcp.observability import get_logger
+from precis_mcp.scenario_contract import COLUMNS, SCENARIO_COLUMNS
 
 _logger = get_logger("ingestion.scenario_runner")
 
@@ -58,27 +59,6 @@ class ScenarioSeedError(Exception):
 # `semantic.scenarios` table. The insert always
 # names every column; omitted optionals get a default (DEFAULTS) so the row
 # shape is uniform and does not rely on CH-side DEFAULT resolution.
-COLUMNS: tuple[str, ...] = (
-    "scenario_id",
-    "alias",
-    "name",
-    "base_scenario",
-    "status",
-    "description",
-    "created_by",
-    "created_at",
-    "locked_at",
-    "horizon_start",
-    "horizon_end",
-    "actuals_cutoff",
-    "granularity",
-    "owner_user_id",
-    "updated_at",
-    "variant_of",
-    "locks",
-    "kind",
-)
-
 REQUIRED: frozenset[str] = frozenset({"scenario_id", "alias", "name", "kind"})
 
 _ALLOWED: frozenset[str] = frozenset(COLUMNS)
@@ -121,29 +101,12 @@ def _scenarios_ddl(schema: str) -> str:
 
     The schema is fixed; only the (qualified) name varies by `schema`.
     """
-    return (
-        f"CREATE TABLE IF NOT EXISTS {schema}.scenarios (\n"
-        "    scenario_id     String,\n"
-        "    alias           String,\n"
-        "    name            String,\n"
-        "    base_scenario   Nullable(String),\n"
-        "    status          String,\n"
-        "    description     String,\n"
-        "    created_by      String,\n"
-        "    created_at      DateTime,\n"
-        "    locked_at       Nullable(DateTime),\n"
-        "    horizon_start   String         DEFAULT '',\n"
-        "    horizon_end     String         DEFAULT '',\n"
-        "    actuals_cutoff  Nullable(String),\n"
-        "    granularity     String         DEFAULT 'monthly',\n"
-        "    owner_user_id   String         DEFAULT '',\n"
-        "    updated_at      DateTime       DEFAULT now(),\n"
-        "    variant_of      Nullable(String),\n"
-        "    locks           String         DEFAULT '[]',\n"
-        "    kind            LowCardinality(String)\n"
-        ") ENGINE = MergeTree()\n"
-        "ORDER BY scenario_id"
+    columns = ",\n".join(
+        f"    {column.name} {column.source_type}"
+        + (f" DEFAULT {column.default}" if column.default is not None else "")
+        for column in SCENARIO_COLUMNS
     )
+    return f"CREATE TABLE IF NOT EXISTS {schema}.scenarios (\n{columns}\n) ENGINE = MergeTree()\nORDER BY scenario_id"
 
 
 def _coerce_dt(value: Any) -> Any:

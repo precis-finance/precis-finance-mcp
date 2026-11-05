@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Elastic-2.0
 # Copyright (c) 2026 Sergio Naval Marimont
-"""ClickHouse-backed scenario metadata store.
+"""Shared scenario metadata store with default ClickHouse persistence hooks.
 
 ``ScenarioRegistry`` owns in-memory resolution and generated scenario
 vocabulary. ``ScenarioStore`` owns persistence reads/writes for
@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from precis_mcp.analytical.sql import dialect_for
 
 from precis_mcp.engine.scenario_registry import (
     RealScenarioRef,
@@ -20,6 +21,7 @@ from precis_mcp.engine.scenario_registry import (
 )
 from precis_mcp.engine.scenario_registry import (
     invalidate_scenario_registry_cache,
+    get_scenario_registry,
     load_scenario_registry,
 )
 
@@ -27,18 +29,16 @@ from precis_mcp.engine.scenario_registry import (
 class ScenarioStore:
     def __init__(self, client: Any):
         self.client = client
-        self._registry: ScenarioRegistry | None = None
 
     def load_registry(self) -> ScenarioRegistry:
-        if self._registry is None:
-            self._registry = load_scenario_registry(self.client)
-        return self._registry
+        return get_scenario_registry(client=self.client)
 
     def get(self, value: str) -> RealScenarioRef:
         return self.load_registry().get_real_scenario(value)
 
     def resolve_writable(self, value: str) -> RealScenarioRef:
-        return self.load_registry().resolve_writable(value)
+        # Mutation targets must reflect current alias mappings, not the TTL cache.
+        return load_scenario_registry(self.client).resolve_writable(value)
 
     def resolve_writable_id(self, value: str) -> str:
         if _looks_like_literal_scenario_id(value):
@@ -59,32 +59,31 @@ class ScenarioStore:
         scenario = self.get(value)
         return scenario.horizon_start, scenario.horizon_end
 
-    def get_horizon_metadata(self, scenario_id: str) -> tuple[str, str] | None:
-        result = self.client.query(
-            "SELECT horizon_start, horizon_end FROM semantic.scenarios "
-            "WHERE scenario_id = {sid:String}",
+    def _read_metadata(self, columns: str, scenario_id: str, *, limit_one: bool = False):
+        """Columns are fixed internal expressions; values remain native binds."""
+        sql = dialect_for(self.client)
+        suffix = " LIMIT 1" if limit_one else ""
+        return self.client.query(
+            f"SELECT {columns} FROM {sql.table('semantic.scenarios')} "
+            f"WHERE scenario_id = {sql.parameter('sid')}{suffix}",
             parameters={"sid": scenario_id},
         )
+
+    def get_horizon_metadata(self, scenario_id: str) -> tuple[str, str] | None:
+        result = self._read_metadata("horizon_start, horizon_end", scenario_id)
         if not result.result_rows:
             return None
         hs, he = result.result_rows[0]
         return hs, he
 
     def get_status_metadata(self, scenario_id: str) -> str | None:
-        result = self.client.query(
-            "SELECT status FROM semantic.scenarios WHERE scenario_id = {sid:String}",
-            parameters={"sid": scenario_id},
-        )
+        result = self._read_metadata("status", scenario_id)
         if not result.result_rows:
             return None
         return result.result_rows[0][0]
 
     def get_variant_parent(self, scenario_id: str) -> str | None:
-        result = self.client.query(
-            "SELECT variant_of FROM semantic.scenarios "
-            "WHERE scenario_id = {sid:String} LIMIT 1",
-            parameters={"sid": scenario_id},
-        )
+        result = self._read_metadata("variant_of", scenario_id, limit_one=True)
         if not result.result_rows:
             return None
         parent = result.result_rows[0][0]
@@ -98,27 +97,17 @@ class ScenarioStore:
         return _parse_locks(raw)
 
     def get_locks_metadata(self, scenario_id: str) -> list[dict] | None:
-        result = self.client.query(
-            "SELECT locks FROM semantic.scenarios WHERE scenario_id = {sid:String}",
-            parameters={"sid": scenario_id},
-        )
+        result = self._read_metadata("locks", scenario_id)
         if not result.result_rows:
             return None
         return _parse_locks(result.result_rows[0][0])
 
     def scenario_id_exists(self, scenario_id: str) -> bool:
-        result = self.client.query(
-            "SELECT COUNT(*) FROM semantic.scenarios WHERE scenario_id = {sid:String}",
-            parameters={"sid": scenario_id},
-        )
+        result = self._read_metadata("COUNT(*)", scenario_id)
         return bool(result.result_rows and int(result.result_rows[0][0]) > 0)
 
     def get_creation_metadata(self, scenario_id: str) -> dict[str, Any] | None:
-        result = self.client.query(
-            "SELECT horizon_start, horizon_end, actuals_cutoff, granularity, kind "
-            "FROM semantic.scenarios WHERE scenario_id = {sid:String}",
-            parameters={"sid": scenario_id},
-        )
+        result = self._read_metadata("horizon_start, horizon_end, actuals_cutoff, granularity, kind", scenario_id)
         if not result.result_rows:
             return None
         hs, he, ac, gran, kind = result.result_rows[0]
@@ -131,12 +120,7 @@ class ScenarioStore:
         }
 
     def get_update_metadata(self, scenario_id: str) -> dict[str, Any] | None:
-        result = self.client.query(
-            "SELECT scenario_id, status, horizon_start, horizon_end, "
-            "actuals_cutoff, granularity "
-            "FROM semantic.scenarios WHERE scenario_id = {sid:String}",
-            parameters={"sid": scenario_id},
-        )
+        result = self._read_metadata("scenario_id, status, horizon_start, horizon_end, actuals_cutoff, granularity", scenario_id)
         if not result.result_rows:
             return None
         sid, status, horizon_start, horizon_end, actuals_cutoff, granularity = (
@@ -169,6 +153,19 @@ class ScenarioStore:
     ) -> str:
         alias_value = alias or _alias_from_scenario_id(scenario_id)
         _validate_alias(alias_value)
+        self._insert_scenario({
+            "sid": scenario_id, "alias": alias_value, "name": name,
+            "base": base_scenario, "desc": description, "uid": str(user_id),
+            "hs": horizon_start, "he": horizon_end,
+            "ac": None if not actuals_cutoff else actuals_cutoff,
+            "gran": granularity, "vof": variant_of if variant_of else None,
+            "kind": kind,
+        })
+        invalidate_scenario_registry_cache()
+        return alias_value
+
+    def _insert_scenario(self, parameters: dict) -> None:
+        """Existing open CH persistence; commercial packages may override the SQL."""
         self.client.command(
             """INSERT INTO semantic.scenarios
                (scenario_id, alias, name, base_scenario, status, description,
@@ -179,31 +176,16 @@ class ScenarioStore:
                        {hs:String}, {he:String}, {ac:Nullable(String)},
                        {gran:String}, {uid:String}, {vof:Nullable(String)},
                        {kind:String})""",
-            parameters={
-                "sid": scenario_id,
-                "alias": alias_value,
-                "name": name,
-                "base": base_scenario,
-                "desc": description,
-                "uid": str(user_id),
-                "hs": horizon_start,
-                "he": horizon_end,
-                "ac": None if not actuals_cutoff else actuals_cutoff,
-                "gran": granularity,
-                "vof": variant_of if variant_of else None,
-                "kind": kind,
-            },
+            parameters=parameters,
         )
-        self._registry = None
-        invalidate_scenario_registry_cache()
-        return alias_value
 
     def update_scenario_metadata(
         self,
         scenario_id: str,
         updates: dict[str, Any],
     ) -> None:
-        set_parts: list[str] = []
+        assignments: dict[str, str] = {}
+        dialect = dialect_for(self.client)
         params: dict[str, Any] = {"sid": scenario_id}
 
         field_specs = {
@@ -218,30 +200,30 @@ class ScenarioStore:
                 raise ValueError(f"Unsupported scenario metadata field: {field}")
             column, type_name, param_name = field_specs[field]
             if field == "actuals_cutoff" and value is None:
-                set_parts.append("actuals_cutoff = NULL")
+                assignments["actuals_cutoff"] = "NULL"
                 continue
-            set_parts.append(f"{column} = {{{param_name}:{type_name}}}")
+            assignments[column] = dialect.parameter(param_name, type_name)
             params[param_name] = value
 
-        if not set_parts:
+        if not assignments:
             return
-        set_parts.append("updated_at = now()")
-        self.client.command(
-            "ALTER TABLE semantic.scenarios UPDATE "
-            + ", ".join(set_parts)
-            + " WHERE scenario_id = {sid:String}",
-            parameters=params,
-        )
-        self._registry = None
+        assignments["updated_at"] = "now()"
+        self._update_columns(assignments, params)
         invalidate_scenario_registry_cache()
 
-    def update_locks(self, scenario_id: str, locks: list[dict]) -> None:
+    def _update_columns(self, assignments: dict[str, str], parameters: dict) -> None:
         self.client.command(
-            "ALTER TABLE semantic.scenarios UPDATE locks = {locks:String} "
-            "WHERE scenario_id = {sid:String}",
-            parameters={"sid": scenario_id, "locks": json.dumps(locks)},
+            "ALTER TABLE semantic.scenarios UPDATE "
+            + ", ".join(f"{key} = {value}" for key, value in assignments.items())
+            + " WHERE scenario_id = {sid:String}",
+            parameters=parameters,
         )
-        self._registry = None
+
+    def update_locks(self, scenario_id: str, locks: list[dict]) -> None:
+        self._update_columns(
+            {"locks": dialect_for(self.client).parameter("locks")},
+            {"sid": scenario_id, "locks": json.dumps(locks)},
+        )
         invalidate_scenario_registry_cache()
 
 

@@ -5,8 +5,8 @@
 
 /* global console, document, Excel, Office */
 
-import { getBlock, setBlock, getMcpUrl, getToken, blockKeys } from "../config";
-import { applyBlockFormat } from "../format";
+import { getBlock, setBlock, getMcpUrl, getToken, blockKeys, getWorksheetFormats } from "../config";
+import { applyBlockFormat, applyFooterFormat } from "../format";
 import { FinancialTableBlock } from "../functions/block";
 import { callTool } from "../mcp";
 import { splitCsv, applyCommonArgs } from "../functions/functions";
@@ -56,6 +56,22 @@ async function applyPrecisFormatting(event: Office.AddinCommands.Event): Promise
         (onAnchor ? (cell as Excel.Range) : (parent as Excel.Range)).formulas?.[0]?.[0] ?? ""
       );
 
+      const extractFormats = getWorksheetFormats(anchorAddress);
+      if (extractFormats) {
+        const extract = anchor.getSpillingToRangeOrNullObject();
+        extract.load(["isNullObject", "rowCount", "columnCount"]);
+        await context.sync();
+        if (extract.isNullObject || extract.rowCount !== extractFormats.length || extract.columnCount !== extractFormats[0]?.length) {
+          report("Refresh the extract before applying its formats.");
+          return;
+        }
+        extract.numberFormat = extractFormats;
+        applyFooterFormat(extract, true);
+        await context.sync();
+        report("Applied the extract's current per-metric number formats.");
+        return;
+      }
+
       let block = getBlock(anchorAddress);
       if (!block) {
         report(
@@ -89,7 +105,7 @@ async function applyPrecisFormatting(event: Office.AddinCommands.Event): Promise
         return;
       }
 
-      applyBlockFormat(spill, block);
+      applyBlockFormat(spill, block, true);
       await context.sync(); // single batched apply
       report(
         `Formatted ${spill.address} (block ${blockRows}×${blockCols}, spill ${spill.rowCount}×${spill.columnCount}).`
@@ -130,13 +146,18 @@ function toNum(s: string | undefined): number {
  * formula and re-fetch the block. Returns null if the cell isn't a formattable
  * PRECIS spill (or we can't reach /mcp). Mirrors the custom-function arg mapping.
  */
-async function refetchFromFormula(formula: string): Promise<FinancialTableBlock | null> {
+export async function refetchFromFormula(formula: string): Promise<FinancialTableBlock | null> {
   const m = formula.match(/=\s*PRECIS\.(STATEMENT|METRIC)\s*\((.*)\)\s*$/i);
   if (!m) {
     return null;
   }
   const fn = m[1].toUpperCase();
   const a = parseFormulaArgs(m[2]);
+  const layout = (a[fn === "STATEMENT" ? 8 : 6] || "report").toLowerCase();
+  if (a.length > 9) throw new Error("The formula has unsupported extra arguments.");
+  if (layout === "extract") {
+    throw new Error("Refresh data, then apply formatting to use the current extract number formats.");
+  }
 
   const mcpUrl = getMcpUrl();
   const token = getToken();
@@ -156,11 +177,6 @@ async function refetchFromFormula(formula: string): Promise<FinancialTableBlock 
     tool = "run_statement";
   } else {
     // METRIC(metrics, periodStart, periodEnd, dimensions, scenarios, filters, layout, scale, decimals)
-    const layout = (a[6] ?? "report").toLowerCase();
-    if (layout === "extract") {
-      report("Extract layout is a flat table — nothing to format.");
-      return null;
-    }
     args.metrics = splitCsv(a[0]);
     args.period_start = a[1];
     args.period_end = a[2];

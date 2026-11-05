@@ -286,6 +286,73 @@ def test_full_pnl_with_mock_data(catalogue, scenario_registry):
     assert any(r['item'].get('separator_above') for r in response['rows'])
 
 
+@pytest.mark.parametrize(
+    "scenario,revenues,cost,commit_predicate",
+    [
+        ("forecast_q2", (100.0, 0.0), 40.0, "t.commit_id != '__uncommitted__'"),
+        ("forecast_q2&uncommitted_delta", (-100.0, 100.0), 0.0, "t.commit_id = '__uncommitted__'"),
+        ("forecast_q2&uncommitted", (0.0, 100.0), 40.0, "1 = 1"),
+        # After commit, the moved balance uses the ordinary committed filter.
+        ("forecast_q2", (0.0, 100.0), 40.0, "t.commit_id != '__uncommitted__'"),
+        # A net debit revenue balance must remain negative, including actuals.
+        ("actuals", (-20.0, 0.0), 40.0, "t.commit_id != '__uncommitted__'"),
+    ],
+)
+def test_revenue_move_signed_results_and_profit(
+    catalogue, scenario_registry, scenario, revenues, cost, commit_predicate,
+):
+    """Check generated sign/filter SQL and downstream signed results with a fake.
+
+    The shared fake supplies aggregate rows, not an emulation of ClickHouse.
+    Before/delta/after fixtures represent moving 100 revenue from Oct to Nov.
+    """
+    rows = [
+        (period, revenue, cost, 0.0, 0.0, 0)
+        for period, revenue in zip(("2026-10", "2026-11"), revenues)
+    ]
+    rows.append(("", sum(revenues), cost * 2, 0.0, 0.0, 1))
+    ch = FakeClickHouseClient(response_map={
+        "FROM semantic.v_pnl": FakeQueryResult(
+            column_names=["period", "revenue", "direct_cost", "indirect_cost", "sga", "_grouping"],
+            result_rows=rows,
+        ),
+    })
+    response = execute_report(
+        {
+            "context": {"period_start": "2026-10", "period_end": "2026-11"},
+            "dimensions": ["period"],
+            "grains": {"detail": True, "grand_total": True},
+            "blocks": [{
+                "model": "metrics:revenue,direct_cost,indirect_cost,sga,gross_margin,ebitda",
+                "scenario": scenario,
+                "alias": "Forecast",
+            }],
+        },
+        catalogue,
+        ch_client=ch,
+        scenario_registry=scenario_registry,
+    )
+    fact_queries = [sql for sql, _ in ch.queries if "FROM semantic.v_pnl" in sql]
+    assert len(fact_queries) == 1
+    assert "THEN -t.amount" in fact_queries[0]
+    assert "ABS(t.amount)" not in fact_queries[0]
+    assert commit_predicate in fact_queries[0]
+    assert "GROUP BY GROUPING SETS" in fact_queries[0]
+
+    for row in response["rows"]:
+        key = row["item"]["key"]
+        if key not in {"revenue", "gross_margin", "ebitda"}:
+            continue
+        if row["grain"] == "grand_total":
+            expected = sum(revenues) - (0 if key == "revenue" else cost * 2)
+        else:
+            index = ("2026-10", "2026-11").index(row["dimensions"]["period"])
+            expected = revenues[index] - (0 if key == "revenue" else cost)
+        assert row["values"]["Forecast"] == pytest.approx(expected)
+    for key in ("revenue", "gross_margin", "ebitda"):
+        assert sum(row["item"]["key"] == key for row in response["rows"]) == 3
+
+
 # ---------------------------------------------------------------------------
 # Test 3: Actuals vs Budget variance — four blocks
 # ---------------------------------------------------------------------------
@@ -540,9 +607,109 @@ def test_prior_year_period_remapped_in_retriever():
     assert results['prior_year'][('2025-02',)]['revenue'] == 95.0
 
 
+@pytest.mark.parametrize("backend", ["clickhouse", "databricks"])
+def test_mixed_rollups_merge_combined_rows_and_align_prior_year(catalogue, backend):
+    from precis_mcp.analytical.sql import SqlDialect
+    from precis_mcp.engine.retriever import DataQuery, ExecutionPlan, retrieve
+
+    client = FakeClickHouseClient()
+    client.dialect = SqlDialect(backend, "customer")
+    for period, revenue, average, closing in [
+        ("2025-01", 120.0, 10.5, 11.0),
+        ("2024-01", 0.0, None, 0.0),
+    ]:
+        client.push((period, revenue, average), column_names=["period", "revenue", "avg_fte_billable"])
+        client.push((period, closing), column_names=["period", "closing_fte_billable"])
+
+    metrics = ["revenue", "avg_fte_billable", "closing_fte_billable"]
+    plan = ExecutionPlan(
+        data_queries=[
+            DataQuery("actuals", "ACTUALS", "2025-01", "2025-01", metrics),
+            DataQuery("prior_year", "ACTUALS", "2024-01", "2024-01", metrics, time_offset=-12),
+        ],
+        dimensions=["period"],
+    )
+    raw = retrieve(plan, catalogue, client, dimension_filters={"cost_centre": ["CC-1"]})
+
+    assert raw == {
+        "actuals": {("2025-01",): {
+            "revenue": 120.0, "avg_fte_billable": 10.5, "closing_fte_billable": 11.0,
+        }},
+        "prior_year": {("2025-01",): {
+            "revenue": 0.0, "avg_fte_billable": None, "closing_fte_billable": 0.0,
+        }},
+    }
+    assert len(client.queries) == 4  # combined range + closing per scenario
+    for sql, parameters in client.queries[::2]:
+        assert " AS revenue" in sql and " AS avg_fte_billable" in sql
+        assert "/ NULLIF(COUNT(DISTINCT t.period), 0)" in sql
+        assert "CC-1" in str(parameters) and "CC-1" not in sql
+
+
 # ---------------------------------------------------------------------------
 # Test 5c: Quarter dimension remapped for shifted scenarios
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("backend", ["clickhouse", "databricks"])
+def test_parallel_mixed_rollups_preserve_time_totals_nulls_and_prior_year(catalogue, backend):
+    from precis_mcp.analytical.clickhouse import ClickHouseClient
+    from precis_mcp.analytical.databricks import DatabricksClient
+    from precis_mcp.analytical.config import DatabricksConfig
+    from precis_mcp.analytical.resources import ClientPool, PooledQueries
+    from precis_mcp.engine.retriever import DataQuery, ExecutionPlan, retrieve
+    from precis_mcp.engine.resolver import GrainSpec
+    from precis_mcp.engine.types import ROLLED_UP
+    from tests.fakes.fake_analytical import FakeNativeClient
+
+    calls = []
+
+    def query(sql, parameters):
+        calls.append((sql, parameters))
+        period = parameters["period_start"]
+        prior = period.startswith("2024")
+        # Script the three existing query shapes, without interpreting SQL.
+        if " AS revenue" in sql:
+            return FakeQueryResult(
+                [(period, 0.0 if prior else 120.0, None if prior else 10.5, 0),
+                 ("", 0.0 if prior else 240.0, None if prior else 12.0, 1)],
+                ["period", "revenue", "avg_fte_billable", "_grouping"],
+            )
+        total = "'' AS period" in sql
+        return FakeQueryResult(
+            [("" if total else period, 0.0 if prior else (14.0 if total else 11.0), int(total))],
+            ["period", "closing_fte_billable", "_grouping"],
+        )
+
+    pool = ClientPool(lambda: FakeNativeClient(query))
+    execution = PooledQueries(pool)
+    client = (ClickHouseClient(execution=execution) if backend == "clickhouse" else
+              DatabricksClient(DatabricksConfig(
+                  "https://workspace.example", "/sql/1.0/warehouses/test", catalog="customer",
+                  client_id="fake", client_secret="fake",
+              ), execution=execution))
+    metrics = ["revenue", "avg_fte_billable", "closing_fte_billable"]
+    plan = ExecutionPlan([
+        DataQuery("actuals", "ACTUALS", "2025-01", "2025-02", metrics),
+        DataQuery("prior_year", "ACTUALS", "2024-01", "2024-02", metrics, time_offset=-12),
+    ], ["period"], GrainSpec(detail=True, grand_total=True))
+    try:
+        with client:
+            raw = retrieve(plan, catalogue, client, {"cost_centre": ["CC-1"]})
+    finally:
+        pool.close()
+    assert raw == {
+        "actuals": {
+            ("2025-01",): {"revenue": 120.0, "avg_fte_billable": 10.5, "closing_fte_billable": 11.0},
+            (ROLLED_UP,): {"revenue": 240.0, "avg_fte_billable": 12.0, "closing_fte_billable": 14.0},
+        },
+        "prior_year": {
+            ("2025-01",): {"revenue": 0.0, "avg_fte_billable": None, "closing_fte_billable": 0.0},
+            (ROLLED_UP,): {"revenue": 0.0, "avg_fte_billable": None, "closing_fte_billable": 0.0},
+        },
+    }
+    assert len(calls) == 6
+    assert all("CC-1" in str(parameters) and "CC-1" not in sql for sql, parameters in calls)
 
 def test_prior_year_quarter_remapped_in_retriever():
     """Shifted scenario quarter keys are remapped (2024-Q1 → 2025-Q1)."""

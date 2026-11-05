@@ -41,16 +41,30 @@ def favorability(
     return "favorable" if value > 0 else "unfavorable"
 
 
-def excel_number_format(fmt: str, decimals: int = 0) -> str:
+def report_cell_number_format(row: dict, column: dict) -> str:
+    """A percentage scenario wins; otherwise a metric row owns its unit."""
+    owner = column if column.get("format") == "percent" or not row.get("format") else row
+    fmt = owner.get("format") or "currency"
+    decimals = owner.get("decimals")
+    if decimals is None:
+        decimals = 1 if fmt == "percent" else 0
+    return excel_number_format(fmt, decimals, percent_decimals=decimals if fmt == "percent" else None)
+
+
+def excel_number_format(fmt: str, decimals: int = 0, *, percent_decimals: int | None = None) -> str:
     """Return an Excel custom number-format string (en-dash negatives).
 
-    ``percent`` is always one decimal place. The engine emits human-readable
+    ``percent`` defaults to one decimal place; worksheet projections can supply
+    an explicit ``percent_decimals`` while legacy renderers retain their default.
+    The engine emits human-readable
     percents (e.g. ``15.3``, not ``0.153``), so the ``%`` is a **literal suffix**
     (``"%"``) — Excel's percent operator would multiply the value by 100 and show
     1530%. ``currency`` / ``number`` honour ``decimals``.
     """
     if fmt == "percent":
-        return f'0.0"%";{_EN_DASH}0.0"%"'
+        places = 1 if percent_decimals is None else percent_decimals
+        pattern = "0" + ("." + "0" * places if places else "")
+        return f'{pattern}"%";{_EN_DASH}{pattern}"%"'
     if fmt == "currency" or fmt == "number":
         dec_part = ("." + "0" * decimals) if decimals > 0 else ""
         return f"#,##0{dec_part};{_EN_DASH}#,##0{dec_part}"

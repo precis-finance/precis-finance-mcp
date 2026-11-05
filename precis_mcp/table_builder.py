@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 
-from precis_mcp.cell_format import excel_number_format, favorability
+from precis_mcp.cell_format import excel_number_format, favorability, report_cell_number_format
 
 EM_DASH = "—"
 
@@ -81,14 +81,15 @@ def _add_scale_label(result: dict, scale: int) -> None:
 
 
 def _enrich_block_for_excel(block: dict) -> None:
-    """Add resolved Excel ``nf`` per value column + sparse per-row ``alerts``.
+    """Add Excel formats, resolved per-cell ``cell_nf`` and sparse ``alerts``.
 
     In-place. Lets the Excel add-in build its spill grid and apply formatting
     without re-implementing the number-format string or the variance sign rule
     (favorability) client-side — both stay single-sourced in
     ``precis_mcp.cell_format``. The add-in pivots the existing ``columns`` /
     ``rows`` into its 2-D spill matrix itself (pure layout, no logic), reading
-    ``nf`` and ``alerts`` for the format pass.
+    ``cell_nf`` and ``alerts`` for the format pass. Row/column ``nf`` remain
+    for older clients; ``cell_nf`` resolves percentage-scenario precedence.
 
     Off by default (see ``build_financial_table_block(for_excel=…)``) so the
     high-volume SSE / report paths stay lean; only the MCP render variant — the
@@ -110,6 +111,7 @@ def _enrich_block_for_excel(block: dict) -> None:
         # still applies there.
         if r.get("format"):
             r["nf"] = excel_number_format(r["format"], r.get("decimals") or 0)
+        r["cell_nf"] = {c["key"]: report_cell_number_format(r, c) for c in value_cols}
         vals = r.get("values", {})
         row_effect = r.get("variance_effect", "natural")
         alerts: dict[str, str] = {}
@@ -528,6 +530,10 @@ def _build_crosstab_table(
                 col["is_total"] = True
             if col_meta.get(alias, {}).get("variance"):
                 col["variance"] = True
+            for field in ("format", "decimals"):
+                value = col_meta.get(alias, {}).get(field)
+                if value is not None:
+                    col[field] = value
             columns.append(col)
 
     rows: list[dict] = []

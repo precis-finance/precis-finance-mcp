@@ -46,7 +46,8 @@ SELECT
     s.contract_value                             AS contract_value,
     CAST(NULL AS Nullable(Decimal(14,2)))        AS etc_cost,
     CAST(NULL AS Nullable(Decimal(14,2)))        AS eac_cost,
-    s.percent_complete,
+    -- Stored progress is a fraction; catalogue percentages use percentage points.
+    s.percent_complete * 100                     AS percent_complete,
     -- cumulative stock (period-end)
     s.cum_revenue_recognised                     AS cum_revenue_recognised,
     s.cum_cost_recognised                        AS cum_cost_recognised,

@@ -4,7 +4,7 @@
 # .github/workflows/ci.yml (GitHub Actions only runs workflows under
 # .github/workflows/). It is inert in the Précis monorepo, which has no Actions runner.
 #
-# Six jobs:
+# Eight jobs:
 #   - boundary: the open import check (no `precis` import) — replaces the
 #     Précis monorepo's `lint-imports`, which degenerates once `precis` is absent. Pure
 #     stdlib AST scan, so it runs before any install.
@@ -13,11 +13,14 @@
 #     e2e tier (real services, marked `slow`) is excluded here.
 #   - audit: pip-audit over the hashed lockfile (requirements.lock; regenerate
 #     with `make lock`) — known-vulnerability gate on the pinned dependency set.
+#   - npm-audit: gate both release-builder closures, including build tools;
+#     separately report Excel's full developer installation advisories.
 #   - image-scan: build the Docker image and trivy-scan it; fails on fixable
 #     HIGH/CRITICAL findings in the OS layer or site-packages.
-#   - sidecar-scan: scan the exact Postgres, ClickHouse, Valkey, and Keycloak digest
+#   - sidecar-scan: scan the exact ClickHouse, Valkey, and Keycloak digest
 #     pins shipped in Compose.
 #   - caddy-scan: build and scan the custom rate-limited Caddy image.
+#   - postgres-scan: build and scan the APT-only PostgreSQL patch layer.
 name: ci
 
 on:
@@ -64,17 +67,38 @@ jobs:
         # though they ride a separate constraints file (see Dockerfile / Makefile
         # lock-extras). --no-deps audits the fully-pinned set as-is (the file
         # carries no hashes, so --require-hashes does not apply).
-        # Databricks SQL Connector 4.6.0 requires oauthlib<4, while the only
-        # published fix for CVE-2026-49265 is oauthlib 4.0.0. This finding is
-        # limited to optional, build-from-source drivers and the vulnerable
-        # PKCE comparison is an authorization-server path, not the connector's
-        # client role. Expire the exception rather than silently retaining it.
-        run: |
-          if [[ "$(date -u +%F)" > "2026-10-31" ]]; then
-            echo "::error::OAuthlib CVE-2026-49265 exception expired; review the Databricks dependency"
-            exit 1
-          fi
-          pip-audit --no-deps --ignore-vuln CVE-2026-49265 -r constraints-extras.txt
+        # Connector 4.7.0 accepts fixed OAuthlib 4.0.0; no CVE exception remains.
+        run: pip-audit --no-deps -r constraints-extras.txt
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - directory: ui/mcp-widgets
+            omit: ""
+          - directory: excel-addin
+            # Match Dockerfile's actual release-builder install. The omitted
+            # peer-only Office login/sideload CLI is not used by webpack.
+            omit: --omit=peer
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24.22.2"
+          cache: npm
+          cache-dependency-path: ${{ matrix.directory }}/package-lock.json
+      - name: Match patched builder npm
+        run: npm install --global npm@12.2.2
+      - name: Audit release-builder dependencies (HIGH/CRITICAL gate)
+        working-directory: ${{ matrix.directory }}
+        run: npm audit --package-lock-only --ignore-scripts --include=dev ${{ matrix.omit }} --audit-level=high
+      - name: Report full Excel developer installation advisories (informational)
+        if: always() && matrix.directory == 'excel-addin'
+        continue-on-error: true
+        working-directory: excel-addin
+        run: npm audit --package-lock-only --ignore-scripts --include=dev --audit-level=high
 
   image-scan:
     runs-on: ubuntu-latest
@@ -85,6 +109,7 @@ jobs:
       - name: Trivy scan (fixable HIGH/CRITICAL gate)
         uses: aquasecurity/trivy-action@0.35.0
         with:
+          version: v0.76.1
           image-ref: precis-finance-mcp:scan
           format: table
           exit-code: "1"
@@ -97,31 +122,31 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: postgres
-            image: postgres:16-bookworm@sha256:0ea6700a3b4f0ae6ce746519073558aed4d88a79d8d07622a9a644946c7319c4
-            # gosu only drops privileges and execs postgres; it does not use
-            # the network/parser code implicated by its Go stdlib findings.
-            # Debian's ssl-cert package ships this public snake-oil test key;
-            # it is not a credential and cannot protect production traffic.
-            skip_files: /usr/local/bin/gosu,/etc/ssl/private/ssl-cert-snakeoil.key
-            trivyignores: ""
           - name: clickhouse
             image: clickhouse/clickhouse-server:26.3-alpine@sha256:13801d987af5b890e6843d9d72df6ee0ca9c664d56a5d8ccbe6065460f0eb20f
             skip_files: ""
             trivyignores: ""
           - name: keycloak
-            image: quay.io/keycloak/keycloak:26.7.5@sha256:37dbaf6f0722c9ec246335f36e1ef8b2e6cb960f7c27e0d8c615121a3d475a85
+            image: quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
             skip_files: ""
-            trivyignores: deploy/.trivyignore-keycloak
+            trivyignores: deploy/.trivyignore-keycloak.yaml
           - name: valkey
-            image: valkey/valkey:7.2.14-alpine@sha256:c6c2f0020be34bbf684a53a0ef716ab16ff70295186d4d9f2518435beb7afbff
+            image: valkey/valkey:7.2.15-alpine@sha256:f8c1a646f4b31ae4dc3980ff06723a20b533ea1123b9796d450d78ed53ad6d3e
             skip_files: ""
             trivyignores: ""
     steps:
       - uses: actions/checkout@v6
+      - name: Validate temporary Guava waiver scope and deadline
+        if: matrix.name == 'keycloak'
+        env:
+          KEYCLOAK_IMAGE: ${{ matrix.image }}
+        run: |
+          docker compose --env-file /dev/null -f deploy/docker-compose.yml config --no-interpolate --format json > /tmp/waiver-compose.json
+          python deploy/check_keycloak_waiver.py --image "$KEYCLOAK_IMAGE" --compose-config /tmp/waiver-compose.json
       - name: Trivy scan ${{ matrix.name }} (fixable HIGH/CRITICAL gate)
         uses: aquasecurity/trivy-action@0.35.0
         with:
+          version: v0.76.1
           image-ref: ${{ matrix.image }}
           format: table
           exit-code: "1"
@@ -139,8 +164,41 @@ jobs:
       - name: Trivy scan Caddy (fixable HIGH/CRITICAL gate)
         uses: aquasecurity/trivy-action@0.35.0
         with:
+          version: v0.76.1
           image-ref: precis-caddy:scan
           format: table
           exit-code: "1"
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+
+  postgres-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check both Compose bundles use the same PostgreSQL patch
+        run: |
+          docker compose --env-file /dev/null -f deploy/docker-compose.yml config --no-interpolate --format json > /tmp/remote-compose.json
+          docker compose --env-file /dev/null -f deploy/docker-compose.local.yml config --no-interpolate --format json > /tmp/local-compose.json
+          python - <<'PYTHON'
+          import json
+          a = json.load(open("/tmp/remote-compose.json"))["services"]
+          b = json.load(open("/tmp/local-compose.json"))["services"]
+          for key in ("image", "build", "pull_policy"):
+              assert a["postgres"][key] == a["keycloak-db-init"][key] == b["postgres"][key]
+          PYTHON
+      - name: Build the APT-patched PostgreSQL image
+        env:
+          MCP_DEV_KEY: ci-build-only-placeholder-not-a-credential
+          ARTIFACT_SIGNING_KEY: ci-build-only-placeholder-not-a-credential
+        run: docker compose -f deploy/docker-compose.local.yml build postgres
+      - name: Scan patched PostgreSQL (fixable HIGH/CRITICAL gate)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          version: v0.76.1
+          image-ref: precis-mcp-postgres:16-bookworm-apt-2.6.2
+          format: table
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          # Existing exclusions: privilege-drop helper and public distro key.
+          skip-files: /usr/local/bin/gosu,/etc/ssl/private/ssl-cert-snakeoil.key

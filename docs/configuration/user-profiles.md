@@ -77,6 +77,10 @@ Three layers, top to bottom:
   node): a parent member expands to its current leaves at query time.
   Multiple keys combine as **AND** (the row must satisfy every clause); the
   ids within one list combine as **OR**.
+- An explicit empty dimension allowance (for example `allow: {cost_centre: []}`)
+  permits no members. Empty leaf, parent and hierarchy clauses remain restrictive
+  after resolution. Separate clauses resolving to the same leaf still combine
+  with AND; an empty clause cannot be broadened by another clause.
 - On both axes: an absent `allow` means "the universe"; `deny` is applied
   after `allow` and **deny wins** on conflict.
 
@@ -237,8 +241,8 @@ python -m precis_mcp.admin_cli audit --target bob --limit 50
 ```
 
 `show-access` resolves the *effective* access a profile grants — not just the
-assigned profile id — so it needs ClickHouse reachable to read the live
-scenario list. Every privilege-grant operation (user create, admin
+assigned profile id — so it needs the configured analytical backend reachable
+to read the live scenario list. Every privilege-grant operation (user create, admin
 grant/revoke, disable, password reset, profile assign/revoke) writes a row to
 `security_audit_log`, which `audit` reads back; filter by `--actor`,
 `--target`, `--event`, `--since`, and `--limit`. Rows carry a `trace_id` when

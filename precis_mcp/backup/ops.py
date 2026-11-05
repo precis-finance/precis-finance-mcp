@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from precis_mcp.backup.ch_render import BACKUP_DISK_NAME, render_clickhouse_disk_xml
+from precis_mcp.analytical import selected_backend
 from precis_mcp.backup.config import (
     BackupConfig,
     ResolvedCreds,
@@ -33,7 +34,7 @@ _PROBE_KEY = "manifest/.write_probe"
 
 @dataclass
 class InitReport:
-    xml_path: Path
+    xml_path: Path | None
     warnings: list[str] = field(default_factory=list)
     notices: list[str] = field(default_factory=list)
 
@@ -61,23 +62,22 @@ def op_init(
     check_clickhouse: bool = True,
 ) -> InitReport:
     cfg = load_backup_config(config_path)
-    report = InitReport(xml_path=render_to or default_render_path())
+    backend = selected_backend()
+    report = InitReport(xml_path=(render_to or default_render_path()) if backend == "clickhouse" else None)
     report.notices.extend(cfg.notices)
 
     creds: ResolvedCreds | None = None
-    if cfg.destination.type == "s3":
-        creds = resolve_credentials(cfg.credentials.writer or "")
-
-    xml = render_clickhouse_disk_xml(cfg, creds)
-    report.xml_path.parent.mkdir(parents=True, exist_ok=True)
-    report.xml_path.write_text(xml, encoding="utf-8")
-    # The rendered XML is mounted into the clickhouse service, which runs as
-    # a different uid than this writer — 0600 would make the mount unreadable
-    # and crash-loop the server. Restrict only when the XML actually embeds a
-    # secret (s3 writer credential); the local-destination render is plain
-    # disk config. For s3, ownership must then be transferred to the
-    # clickhouse uid (see the backups guide).
-    os.chmod(report.xml_path, 0o600 if creds is not None else 0o644)
+    if report.xml_path is not None:
+        if cfg.destination.type == "s3":
+            creds = resolve_credentials(cfg.credentials.writer or "")
+        xml = render_clickhouse_disk_xml(cfg, creds)
+        report.xml_path.parent.mkdir(parents=True, exist_ok=True)
+        report.xml_path.write_text(xml, encoding="utf-8")
+        # CH reads the rendered mount under its own UID. Restrict an S3 render
+        # containing credentials; operators then assign the CH reader identity.
+        os.chmod(report.xml_path, 0o600 if creds is not None else 0o644)
+    else:
+        report.notices.append("Databricks warehouse recovery is customer/operator managed; no ClickHouse disk configuration is rendered")
 
     try:
         dest = build_destination(cfg, credential="writer")
@@ -86,7 +86,7 @@ def op_init(
     except Exception as exc:
         report.warnings.append(f"destination write probe failed: {exc}")
 
-    if check_clickhouse and cfg.scope.get("clickhouse") == "managed":
+    if backend == "clickhouse" and check_clickhouse and cfg.scope.get("clickhouse") == "managed":
         try:
             from precis_mcp.db import get_clickhouse_client
 
@@ -147,7 +147,7 @@ def op_list(config_path: Path | None = None) -> list[dict]:
             continue
         try:
             manifest = BackupManifest.from_json(dest.get_bytes(key))
-        except (json.JSONDecodeError, TypeError, KeyError):
+        except (ValueError, TypeError, KeyError):
             logger.warning("backup list: unreadable manifest %s", key)
             continue
         out.append(
@@ -160,6 +160,7 @@ def op_list(config_path: Path | None = None) -> list[dict]:
                 "total_bytes": sum(a.size_bytes for a in manifest.artifacts),
                 "stores": {a.store: a.outcome for a in manifest.artifacts},
                 "instance_git_sha": manifest.instance_git_sha,
+                "analytical_backend": manifest.analytical_backend,
             }
         )
     return sorted(out, key=lambda m: m["run_id"], reverse=True)

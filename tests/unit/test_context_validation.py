@@ -239,6 +239,8 @@ class TestValidateFiltersForReport:
             catalogue=catalogue,
         )
         assert len(result.errors) == 1
+        assert "precis_orientation() or list_kpis()" in result.errors[0]
+        assert "search_hierarchy" not in result.errors[0]
         assert "nonexistent_dim" not in result.cleaned_filters
 
     def test_irrelevant_filter_removed_with_warning(self, catalogue):
@@ -355,12 +357,14 @@ class TestValidateDimensionMap:
 
     def test_schema_error_for_unknown_key(self, catalogue):
         result = validate_dimension_map(
-            {"nonexistent_dim": "v"}, "report_domains",
+            {"banana": "invalid"}, "report_domains",
             "run_statement", {"statement": "pnl"}, catalogue,
         )
-        assert len(result.errors) == 1
-        assert "nonexistent_dim" in result.errors[0]
-        assert "nonexistent_dim" not in result.cleaned
+        assert result.errors == [
+            "Unknown dimension key 'banana'. Use precis_orientation() or "
+            "list_kpis() to find valid dimension keys."
+        ]
+        assert result.cleaned == {}
 
     def test_valid_report_domain_key_passes(self, catalogue):
         result = validate_dimension_map(

@@ -28,6 +28,7 @@ def metric_to_excel(
     target: str = "new",
     overwrite: bool = False,
     sheet_name: str | None = None,
+    include_title: bool = True,
 ) -> Path:
     """Write a metric engine result to Excel via the shared block writer.
 
@@ -41,6 +42,7 @@ def metric_to_excel(
         overwrite: On ``target="new"``, allow clobbering an existing file.
             On ``target="append"``, allow replacing a colliding sheet.
         sheet_name: Override the default sheet name (``"Metric"``).
+        include_title: Include a standalone title outside the managed region.
 
     Returns:
         The path written to.
@@ -53,4 +55,5 @@ def metric_to_excel(
         target=target,
         overwrite=overwrite,
         sheet_name=sheet_name,
+        include_title=include_title,
     )

@@ -13,8 +13,8 @@ catalogue's data-model sections — the SAME renderers Précis's system prompt u
 so the data model always matches what this instance actually serves. It is
 **static across users** (no profile, scope, or report context is injected) and
 **dynamic per instance** (the catalogue). Composed per `initialize` (infrequent,
-once per session) so it always reflects the current catalogue — no cache to
-invalidate on reload.
+once per session) from the current catalogue and the shared TTL-cached scenario
+metadata. The rendered instructions themselves are not cached.
 """
 from __future__ import annotations
 
@@ -75,13 +75,13 @@ def get_mcp_instructions() -> str:
         catalogue = _catalogue_ref.current
     except Exception:
         catalogue = None
-    # Scenarios render from the live registry (semantic.scenarios), loaded the
-    # same way the gate does. Best-effort — None renders a placeholder line.
+    # Scenario metadata uses the same process cache as the permission gate.
+    # Best-effort — None renders a placeholder line.
     scenario_registry = None
     try:
-        from precis_mcp.db import get_clickhouse_client
-        from precis_mcp.engine.scenario_registry import load_scenario_registry
-        scenario_registry = load_scenario_registry(get_clickhouse_client())
+        from precis_mcp.analytical import get_analytical_client
+        from precis_mcp.engine.scenario_registry import get_scenario_registry
+        scenario_registry = get_scenario_registry(get_analytical_client)
     except Exception:
         logger.warning("MCP instructions: scenario registry unavailable", exc_info=True)
     try:

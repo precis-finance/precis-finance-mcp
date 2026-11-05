@@ -89,35 +89,39 @@ def load_and_validate(catalogue_dir: str) -> Catalogue:
 
 
 def check_dimension_sources(catalogue: Catalogue) -> list[str]:
-    """Probe ClickHouse for each leaf dimension's source table.
+    """Probe the selected backend for each leaf dimension's source table.
 
     Returns a list of warning strings for tables that don't exist or can't be
     reached.  Logs each warning.  Never raises — this is advisory only.
     """
-    from precis_mcp.db import get_clickhouse_client
+    from precis_mcp.analytical import get_analytical_client
+    from precis_mcp.analytical.sql import dialect_for
 
     warnings: list[str] = []
     try:
-        ch = get_clickhouse_client()
+        ch = get_analytical_client()
     except Exception as exc:
-        msg = f"Cannot check dimension sources — ClickHouse unavailable: {exc}"
+        msg = f"Cannot check dimension sources — analytical backend unavailable ({type(exc).__name__})"
         logger.warning(msg)
         return [msg]
 
-    checked: set[str] = set()
-    for key, dim in catalogue.dimensions.items():
-        if not dim.is_leaf or dim.source is None:
-            continue
-        table = dim.source.table
-        if table in checked:
-            continue
-        checked.add(table)
-        try:
-            ch.query(f"SELECT 1 FROM {table} LIMIT 0")
-        except Exception:
-            msg = f"Dimension '{key}': source table '{table}' is not reachable in ClickHouse"
-            logger.warning(msg)
-            warnings.append(msg)
+    try:
+        checked: set[str] = set()
+        for key, dim in catalogue.dimensions.items():
+            if not dim.is_leaf or dim.source is None:
+                continue
+            table = dim.source.table
+            if table in checked:
+                continue
+            checked.add(table)
+            try:
+                ch.query(f"SELECT 1 FROM {dialect_for(ch).table(table)} LIMIT 0")
+            except Exception:
+                msg = f"Dimension '{key}': source table '{table}' is not reachable in the analytical backend"
+                logger.warning(msg)
+                warnings.append(msg)
+    finally:
+        ch.close()
 
     return warnings
 
@@ -195,7 +199,8 @@ def _fetch_dimension_lookup(
             select_cols.append(source_col)
         attr_to_col[attr_name] = source_col
 
-    sql = f"SELECT DISTINCT {', '.join(select_cols)} FROM {dim.source.table}"
+    from precis_mcp.analytical.sql import dialect_for
+    sql = f"SELECT DISTINCT {', '.join(select_cols)} FROM {dialect_for(ch_client).table(dim.source.table)}"
     result = ch_client.query(sql)
     cols = result.column_names
 
@@ -353,7 +358,8 @@ def _ragged_dim_format(ragged_breakdown: dict, ch_client):
     leaf = ragged_breakdown["leaf_dimension"]
     view = f"semantic.dim_{leaf}_{key}"
     try:
-        res = ch_client.query(f"SELECT node_id, display_name FROM {view}")
+        from precis_mcp.analytical.sql import dialect_for
+        res = ch_client.query(f"SELECT node_id, display_name FROM {dialect_for(ch_client).table(view)}")
         lookup = {str(r[0]): {"display_name": str(r[1])} for r in res.result_rows}
     except Exception:
         logger.warning(
@@ -405,9 +411,9 @@ def execute_report(
     # ------------------------------------------------------------------
     if scenario_registry is None and ch_client is not None:
         try:
-            from precis_mcp.engine.scenario_registry import load_scenario_registry
+            from precis_mcp.engine.scenario_registry import get_scenario_registry
 
-            scenario_registry = load_scenario_registry(ch_client)
+            scenario_registry = get_scenario_registry(client=ch_client)
         except Exception:
             logger.warning("Could not load semantic scenario registry", exc_info=True)
     if scenario_registry is None:
@@ -492,9 +498,6 @@ def execute_report(
     # Stage 2b: Resolve fork modifiers (requires scenario metadata)
     # ------------------------------------------------------------------
     if ch_client is not None:
-        from precis_mcp.engine.scenario_store import ScenarioStore
-
-        scenario_store = ScenarioStore(ch_client)
         for dq in plan.data_queries:
             if "fork" in dq.modifiers:
                 fork_target = dq.modifiers["fork"]
@@ -502,7 +505,7 @@ def execute_report(
                     # Explicit fork target: use as scenario_id directly
                     dq.scenario_id = fork_target
                 else:
-                    parent = scenario_store.get_variant_parent(dq.scenario_id)
+                    parent = scenario_registry.get_real_scenario(dq.scenario_id).variant_of
                     if parent:
                         dq.scenario_id = parent
                     else:

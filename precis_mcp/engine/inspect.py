@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from typing import Any
+from precis_mcp.analytical.sql import CLICKHOUSE_SQL, SqlDialect, dialect_for
 
 from precis_mcp.engine.catalogue import Catalogue, DomainCatalogue
 from precis_mcp.engine.filter_resolver import resolve_filters
@@ -50,7 +51,7 @@ def _inspect_period_column(
         raise InspectionError(str(exc)) from exc
 
 
-def list_inspection_sources(catalogue: Catalogue) -> list[dict[str, Any]]:
+def list_inspection_sources(catalogue: Catalogue, *, primary_backend: str = "clickhouse") -> list[dict[str, Any]]:
     """Return inspect-enabled catalogue domains."""
     sources: list[dict[str, Any]] = []
     for source_key, domain in sorted(catalogue.domains.items()):
@@ -60,7 +61,7 @@ def list_inspection_sources(catalogue: Catalogue) -> list[dict[str, Any]]:
             {
                 "source_key": source_key,
                 "source_view": domain.source_view,
-                "backend_kind": domain.backend_kind,
+                "backend_kind": "ibis" if domain.backend_kind == "ibis" else primary_backend,
                 "inspect_columns": list(domain.inspect_columns),
                 "filter_dimensions": _filter_dimensions(catalogue, domain),
             }
@@ -68,13 +69,13 @@ def list_inspection_sources(catalogue: Catalogue) -> list[dict[str, Any]]:
     return sources
 
 
-def get_inspection_schema(catalogue: Catalogue, source_key: str) -> dict[str, Any]:
+def get_inspection_schema(catalogue: Catalogue, source_key: str, *, primary_backend: str = "clickhouse") -> dict[str, Any]:
     """Return the configured inspection projection and filter dimensions."""
     domain = _inspect_domain(catalogue, source_key)
     return {
         "source_key": source_key,
         "source_view": domain.source_view,
-        "backend_kind": domain.backend_kind,
+        "backend_kind": "ibis" if domain.backend_kind == "ibis" else primary_backend,
         "inspect_columns": list(domain.inspect_columns),
         "filter_dimensions": _filter_dimensions(catalogue, domain),
     }
@@ -253,7 +254,7 @@ def _resolve_dimension_filters(
     dimension_filters: dict[str, list[str]] | None = None
     if filters:
         if ch_client is None:
-            raise InspectionError("A ClickHouse client is required to resolve filters")
+            raise InspectionError("An analytical client is required to resolve filters")
         dimension_filters = resolve_filters(
             filters,
             catalogue,
@@ -263,7 +264,7 @@ def _resolve_dimension_filters(
 
     if per_scenario_scope is not None:
         if ch_client is None:
-            raise InspectionError("A ClickHouse client is required to resolve scope")
+            raise InspectionError("An analytical client is required to resolve scope")
         dimension_filters = enforce_cross_scenario_scope(
             per_scenario_scope,
             dimension_filters,
@@ -287,8 +288,9 @@ def _inspect_clickhouse_rows(
     period_column: str = "period",
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if ch_client is None:
-        raise InspectionError("A ClickHouse client is required for this source")
+        raise InspectionError("An analytical client is required for this source")
 
+    dialect = dialect_for(ch_client)
     sql, params = _clickhouse_sql(
         domain,
         columns,
@@ -298,11 +300,12 @@ def _inspect_clickhouse_rows(
         period_start,
         period_end,
         period_column,
+        dialect,
     )
     result = ch_client.query(sql, parameters=params)
     rows = [dict(zip(result.column_names, row)) for row in result.result_rows]
     return rows, {
-        "backend_kind": "clickhouse",
+        "backend_kind": dialect.backend,
         "backend": domain.backend,
         "source_view": domain.source_view,
         "sql": sql,
@@ -319,6 +322,7 @@ def _clickhouse_sql(
     period_start: str | None,
     period_end: str | None,
     period_column: str = "period",
+    dialect: SqlDialect = CLICKHOUSE_SQL,
 ) -> tuple[str, dict[str, Any]]:
     params: dict[str, Any] = {"inspect_limit": limit}
     conditions = _base_conditions(
@@ -328,15 +332,16 @@ def _clickhouse_sql(
         period_end,
         params,
         period_column,
+        dialect,
     )
     if domain.versioned:
         conditions.append("commit_id != '__uncommitted__'")
 
     select_cols = ", ".join(_quote_identifier(col) for col in columns)
-    sql = f"SELECT {select_cols}\nFROM {domain.source_view}"
+    sql = f"SELECT {select_cols}\nFROM {dialect.table(domain.source_view)}"
     if conditions:
         sql += "\nWHERE " + "\nAND ".join(conditions)
-    sql += "\nLIMIT {inspect_limit:UInt64}"
+    sql += f"\nLIMIT {dialect.parameter('inspect_limit', 'UInt64')}"
     return sql, params
 
 
@@ -347,19 +352,20 @@ def _base_conditions(
     period_end: str | None,
     params: dict[str, Any],
     period_column: str = "period",
+    dialect: SqlDialect = CLICKHOUSE_SQL,
 ) -> list[str]:
     if not _SAFE_COLUMN_RE.match(period_column):
         raise InspectionError(f"Invalid period column name: {period_column!r}")
     conditions: list[str] = []
     if scenario_id is not None:
         params["scenario_id"] = scenario_id
-        conditions.append("scenario = {scenario_id:String}")
+        conditions.append(f"scenario = {dialect.parameter('scenario_id')}")
     if period_start is not None:
         params["period_start"] = period_start
-        conditions.append(f"{period_column} >= {{period_start:String}}")
+        conditions.append(f"{period_column} >= {dialect.parameter('period_start')}")
     if period_end is not None:
         params["period_end"] = period_end
-        conditions.append(f"{period_column} <= {{period_end:String}}")
+        conditions.append(f"{period_column} <= {dialect.parameter('period_end')}")
     if dimension_filters:
         # Empty value list = resolved deny-all scope — emit the predicate so
         # it matches nothing; skipping it would invert deny into allow-all.
@@ -367,8 +373,7 @@ def _base_conditions(
             if not _SAFE_COLUMN_RE.match(col):
                 raise InspectionError(f"Invalid dimension column name: {col!r}")
             param_key = f"dimf_{col}"
-            params[param_key] = values
-            conditions.append(f"toString({col}) IN ({{{param_key}:Array(String)}})")
+            conditions.append(dialect.in_values(dialect.string(col), param_key, values, params))
     return conditions
 
 

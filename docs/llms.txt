@@ -2,8 +2,8 @@
 
 > Self-hostable, read-only financial-model access over the Model Context
 > Protocol: a metric engine driven by a declarative YAML catalogue over a SQL
-> semantic layer in ClickHouse, with ingestion, OAuth 2.1 identity, profiles,
-> backups, and an MCP tool surface for AI clients. The open core of the
+> semantic layer in ClickHouse or Databricks, with ingestion, OAuth 2.1
+> identity, profiles, backups, and an MCP tool surface for AI clients. The open core of the
 > Précis platform.
 
 Read "How Précis Finance MCP works" first — it defines the vocabulary (scenario,
@@ -21,12 +21,16 @@ serve an inconsistent model.
 
 ## Configuration
 
+- [Analytical backends — ClickHouse and Databricks](configuration/analytical-client/):
+  backend selection, Databricks setup and runtime permissions
 - [Catalogue & semantic model](configuration/catalogue-and-semantic/): the
   two-layer model walkthrough — SQL views for meaning, YAML for exposure
 - [Adding metrics & dimensions](configuration/adding-metrics-and-dimensions/):
   the change contract — invariants, federated-domain limits, traps, checklist
 - [ClickHouse schema contract](configuration/clickhouse-schema-contract/):
   the databases, tables, views, and scenario registry a ready cluster holds
+- [Databricks schema contract](configuration/databricks-schema-contract/):
+  required reporting views, dimensions, scenario registry and hierarchy objects
 - [Ingestion & data sources](configuration/ingestion/): sources, bindings,
   extract→validate→atomic swap, scheduling, load verification
 - [User profiles & permissions](configuration/user-profiles/): scenario

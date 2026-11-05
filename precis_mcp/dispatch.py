@@ -111,11 +111,11 @@ _FULL_READ_CONTEXT: tuple[str, ...] = (
 
 TOOL_CATALOGUE: dict[str, dict[str, Any]] = {
     "eval_chart_transform": {"skills": {"analysis", "reporting", "routines"}, "access": "general", "mcp_read": True},
-    "export_dataset": {"skills": {"reporting", "analysis", "excel_workflow"}, "access": "artifact", "mcp_artifact": True},
-    "begin_file_upload": {"access": "artifact", "mcp_artifact": True},
-    "complete_file_upload": {"access": "artifact", "mcp_artifact": True},
+    "export_dataset": {"skills": {"reporting", "analysis", "excel_workflow"}, "access": "general", "mcp_artifact": True},
+    "begin_file_upload": {"access": "general", "mcp_artifact": True},
+    "complete_file_upload": {"access": "general", "mcp_artifact": True},
     "get_file_download": {"access": "general", "mcp_read": True},
-    "import_chatgpt_file": {"access": "artifact", "mcp_artifact": True},
+    "import_chatgpt_file": {"access": "general", "mcp_artifact": True},
     # --- read tools (skill-gated, receive report context) ---
     "run_statement": {
         "skills": {"reporting", "analysis", "planning", "excel_workflow", "routines"},
@@ -401,6 +401,10 @@ def build_descriptors(catalogue_ref, *, include_commercial=True) -> dict[str, To
     """
     raw_funcs = _load_all_tools(catalogue_ref, include_commercial=include_commercial)
     catalogue = tool_catalogue() if include_commercial else TOOL_CATALOGUE
+    from precis_mcp.analytical.runtime import ingestion_mode
+    if ingestion_mode() == "customer_managed":
+        from precis_mcp.tools.ingestion_tools import INGESTION_TOOL_NAMES
+        catalogue = {name:meta for name, meta in catalogue.items() if name not in INGESTION_TOOL_NAMES}
 
     # Forward-drift guard: a catalogue entry with no registered tool function is
     # silently absent from the bound tool set (build only iterates raw_funcs), so
@@ -694,10 +698,10 @@ def _expand_scenario_ref_for_permissions(ref: str, catalogue: Any | None) -> set
     registry = None
     base_ids: set[str] = set()
     try:
-        from precis_mcp.db import get_clickhouse_client
+        from precis_mcp.analytical import get_analytical_client
         from precis_mcp.engine.scenario_registry import get_scenario_registry
 
-        registry = get_scenario_registry(get_clickhouse_client)
+        registry = get_scenario_registry(get_analytical_client)
         base_ids = registry.expand_dependencies(base)
     except Exception:
         logger.info(
@@ -872,7 +876,7 @@ def _permission_gate(
         return None
 
     # General tools — no scope/scenario check
-    if access in {"general", "artifact"}:
+    if access == "general":
         return None
 
     # Scenario-scoped tools (read / write / plan_manager)

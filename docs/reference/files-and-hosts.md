@@ -6,6 +6,16 @@ Précis exposes one file contract across its remote MCP deployments. Redis/Valke
 
 Use a `data_ref` from `run_statement`, `run_metric` or `inspect_rows` or `search_hierarchy`, then call `export_dataset(data_ref, format="json"|"xlsx")`. Export reads the same cached snapshot; it does not run a new query. It preserves engine precision and the bounded rows omitted from the model preview. The former `run_statement_excel` and `run_metric_excel` tool names are removed.
 
+XLSX exports store source strings as literal text, including formula-like labels
+and headers; native numeric values retain their types and precision.
+Statement and metric XLSX snapshots use report layout and record a named region,
+resolved source settings and originating instance. With the matching updated
+add-in and server, select that region in Excel and use **Convert selected export
+to live formula**. Conversion queries fresh data; it does not depend on the
+snapshot remaining in Redis. See [Excel conversion](../excel/index.md#convert-a-selected-export-to-a-live-formula)
+for layout and dependency limits. Inspection and hierarchy downloads are outside
+this conversion contract.
+
 The result contains `artifact`: `file_id`, filename, MIME type, byte size, SHA-256, version, artifact expiry, `download_url` and URL expiry. MCP framing also delivers a Markdown link and `resource_link`. Fetch the URL with HTTP GET. Call `get_file_download(file_id)` to renew an expired URL while the artifact remains available.
 
 Download URLs expire within fifteen minutes; generated exports expire after twenty-four hours. Ownership, current grants and file availability are checked again on download. Updating a file invalidates older version-bound URLs. A resource link does not guarantee that the host downloads bytes into its sandbox.
@@ -26,18 +36,22 @@ authenticated multipart upload workflow.
 
 Files are limited to 10 MiB and owners to 100 MiB. Reservations count toward quota. A failed or partial transfer can retry within its fifteen-minute reservation; an individual receiving attempt is bounded to sixty seconds. Expired files and failed deletions continue counting until the GC removes physical storage. File registration does not ingest or modify financial data.
 
-## Host adapters and acceptance
+## Host adapters and requirements
 
-| Host | Integration contract | Acceptance status |
-|---|---|---|
-| An organisation's own agent | HTTPS GET/PUT plus the MCP lifecycle above; the caller controls its filesystem | Local fake-based verification pending; deployed transfer acceptance required |
-| Claude.ai | Deliver the link; sandbox download/upload requires the host's permitted HTTP capabilities and network policy | Live account/sandbox acceptance pending |
-| ChatGPT | Optional `import_chatgpt_file(file)` attachment adapter using `_meta["openai/fileParams"]`; signed GET is available by default; receiving files requires upload opt-in | Descriptor follows documented file inputs; live account acceptance pending |
-| Copilot Studio | Map attachments through the host's connector/action and call the shared upload lifecycle | Live action/connector acceptance pending |
+| Host | Integration requirements |
+|---|---|
+| An organisation's own agent | HTTPS GET/PUT plus the MCP lifecycle above; the caller controls its filesystem |
+| Claude.ai | Deliver the link; sandbox download/upload requires the host's permitted HTTP capabilities and network policy |
+| ChatGPT | Optional `import_chatgpt_file(file)` attachment adapter using `_meta["openai/fileParams"]`; signed GET is available by default; receiving files requires upload opt-in |
+| Copilot Studio | Map attachments through the host's connector/action and call the shared upload lifecycle |
+
+Attachment handling and sandbox transfers depend on the host and deployment;
+the interfaces above do not guarantee compatibility with every client. Verify
+the required transfer workflow with your client before relying on it.
 
 The ChatGPT importer requires both `PRECIS_MCP_UPLOADS_ENABLED=true` and explicit trusted hostnames in `PRECIS_FILE_IMPORT_HOSTS`. It accepts a host-supplied file object with required `download_url` and `file_id`, and optional `mime_type` and `file_name` properties. An actual import needs a supported filename. It permits HTTPS on port 443, requires all resolved addresses to be public, pins the connection to a validated address while verifying the original TLS hostname, rejects redirects and encoded responses, and limits bytes/time. It never forwards OAuth credentials or stores the transient URL. Keep the hostname allow-list narrow; this is not an arbitrary URL-fetch tool.
 
-Host attachment metadata and sandbox access are separate capabilities. MCP resources and links alone do not provide a portable bidirectional filesystem bridge. The file-input descriptor is based on [OpenAI's file API reference](https://developers.openai.com/plugins/reference#file-apis). Claude sandbox network access depends on [the host's file features](https://support.claude.com/en/articles/12111783-create-and-edit-files-with-claude); Copilot attachment mapping is described in [Microsoft's connector guidance](https://learn.microsoft.com/en-us/microsoft-copilot-studio/guidance/pass-files-to-connectors). These references do not substitute for live acceptance.
+Host attachment metadata and sandbox access are separate capabilities. MCP resources and links alone do not provide a portable bidirectional filesystem bridge. The file-input descriptor is based on [OpenAI's file API reference](https://developers.openai.com/plugins/reference#file-apis). Claude sandbox network access depends on [the host's file features](https://support.claude.com/en/articles/12111783-create-and-edit-files-with-claude); Copilot attachment mapping is described in [Microsoft's connector guidance](https://learn.microsoft.com/en-us/microsoft-copilot-studio/guidance/pass-files-to-connectors).
 
 ## Copilot Studio attachment mapping recipe
 

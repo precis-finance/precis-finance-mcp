@@ -16,7 +16,7 @@
 #   bash scripts/deploy-mcp.sh --build              # build the image from source instead of pulling (rolling main / forks)
 #   bash scripts/deploy-mcp.sh --no-build           # explicit pull (the default; kept for back-compat)
 #   bash scripts/deploy-mcp.sh --data-mode MODE     # provision ClickHouse (see below)
-#   bash scripts/deploy-mcp.sh --extras bigquery    # bake a warehouse driver into the image (bigquery|snowflake|mssql|databricks; comma-separate for several). Re-run on a live instance to add one later — rebuilds (cached layers) + recreates.
+#   bash scripts/deploy-mcp.sh --extras telemetry   # install optional tracing dependencies; set PRECIS_TELEMETRY_ENABLED=true separately. Extras can be comma-separated with warehouse drivers.
 #   bash scripts/deploy-mcp.sh --data-only          # provision + exit (no Keycloak/server)
 #   bash scripts/deploy-mcp.sh --auth-mode MODE     # identity mode (see below)
 #   bash scripts/deploy-mcp.sh --admin-id you@example.com  # bootstrap the first admin (mode B); prints a one-time temp password. Persists PRECIS_BOOTSTRAP_ADMIN_ID; idempotent.
@@ -52,6 +52,8 @@
 #                  Empty schema ready for your own ingestion.
 #   bundle-sample  bundled ClickHouse, populated with synthetic eval data
 #                  (python -m precis_mcp.sample_data). The trial / demo on-ramp.
+#   databricks     existing customer-managed warehouse; builds the native driver,
+#                  selects its overlay and performs no CH/warehouse provisioning.
 #
 # Schema provisioning runs the open `clickhouse_init` (the migrate.py analog for
 # ClickHouse) against the mounted instance/; the sample path runs the generator,
@@ -80,7 +82,7 @@ TEARDOWN=false
 DATA_MODE="${PRECIS_DATA_MODE:-}"           # byo | bundle-empty | bundle-sample | "" (none)
 AUTH_MODE="${PRECIS_AUTH_MODE:-keycloak}"   # keycloak (mode B) | oidc (mode C)
 INGRESS_MODE="${PRECIS_INGRESS_MODE:-bundled}"  # bundled (Caddy) | byo (own ingress)
-EXTRAS="${PRECIS_EXTRAS:-}"                  # comma-separated warehouse drivers baked into the image: bigquery,snowflake,mssql,databricks
+EXTRAS="${PRECIS_EXTRAS:-}"                  # comma-separated optional dependencies baked into the image
 MCP_TAG="${PRECIS_MCP_TAG:-}"               # published image tag to pull (--tag); empty = the compose default
 ADMIN_ID="${PRECIS_BOOTSTRAP_ADMIN_ID:-}"   # first admin to bootstrap (--admin-id); empty = skip + print the manual command
 
@@ -113,21 +115,31 @@ done
 
 # --data-only implied seeding before modes existed; preserve that default.
 if $DATA_ONLY && [ -z "$DATA_MODE" ]; then DATA_MODE="bundle-sample"; fi
+REQUESTED_EXTRAS="$EXTRAS"
+if [ "$DATA_MODE" = databricks ]; then
+    if $DATA_ONLY; then
+        echo "Databricks is customer-managed; --data-only cannot provision it" >&2; exit 1
+    fi
+    case ",$EXTRAS," in
+        *,databricks-primary,*) ;;
+        *) EXTRAS="${EXTRAS:+$EXTRAS,}databricks-primary" ;;
+    esac
+fi
 
-# Optional warehouse drivers (--extras / PRECIS_EXTRAS): comma-separated names,
+# Optional dependencies (--extras / PRECIS_EXTRAS): comma-separated names,
 # baked into the image at build via the PRECIS_EXTRAS build arg. Validate the
 # components against the supported set before we touch the remote.
 if [ -n "$EXTRAS" ]; then
     for _e in $(echo "$EXTRAS" | tr ',' ' '); do
         case "$_e" in
-            bigquery|snowflake|mssql|databricks) ;;
-            *) echo "Invalid --extras component: ${_e} (bigquery | snowflake | mssql | databricks)"; exit 1 ;;
+            bigquery|snowflake|mssql|databricks|databricks-primary|telemetry) ;;
+            *) echo "Invalid --extras component: ${_e}"; exit 1 ;;
         esac
     done
     # Extras bake into the image at build time; the published image is the core
     # build without them. So --extras forces the build path (it cannot be pulled).
     if ! $DO_BUILD; then
-        echo "  --extras (${EXTRAS}) requires building the image — enabling the build path (the published image ships without warehouse drivers)."
+        echo "  --extras (${EXTRAS}) requires building the image — enabling the build path (the published image ships without optional dependencies)."
         DO_BUILD=true
     fi
 fi
@@ -135,10 +147,11 @@ fi
 # Data axis → its COMPOSE profile. byo excludes the bundled ClickHouse service;
 # bundle-* (and the no-mode default) include it.
 case "$DATA_MODE" in
+    databricks)                 DATA_PROFILE=""; CHHOST_SEED="" ;;
     byo)                        DATA_PROFILE=""; CHHOST_SEED="" ;;
     bundle-empty|bundle-sample) DATA_PROFILE="bundled-clickhouse"; CHHOST_SEED="clickhouse" ;;
     "")                         DATA_PROFILE="bundled-clickhouse"; CHHOST_SEED="clickhouse" ;;  # deploy-only, bundled
-    *) echo "Invalid --data-mode: ${DATA_MODE} (byo | bundle-empty | bundle-sample)"; exit 1 ;;
+    *) echo "Invalid --data-mode: ${DATA_MODE} (byo | bundle-empty | bundle-sample | databricks)"; exit 1 ;;
 esac
 
 # Auth axis → its COMPOSE profile. keycloak (mode B) runs the bundled Keycloak;
@@ -168,6 +181,9 @@ PROFILES="$(IFS=,; echo "${_profiles[*]}")"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 COMPOSE="docker compose -f deploy/docker-compose.yml --env-file deploy/.env"
+if [ "$DATA_MODE" = databricks ]; then
+    COMPOSE="docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.databricks.yml --env-file deploy/.env"
+fi
 
 echo "╔══════════════════════════════════════════╗"
 echo "║  Précis Finance MCP Deploy               ║"
@@ -262,6 +278,7 @@ ssh "$SERVER" "
             echo \"CHDATABASE=precis\"
             echo \"KEYCLOAK_ADMIN_USERNAME=admin\"
             echo \"KEYCLOAK_ADMIN_PASSWORD=\$(openssl rand -hex 24)\"
+            echo \"KC_PROVISIONING_CLIENT_SECRET=\$(openssl rand -hex 32)\"
             echo \"KC_DB_PASSWORD=\$(openssl rand -hex 24)\"
             echo '# Shared artifact transfer — distinct from OAuth/DB credentials.'
             echo \"ARTIFACT_SIGNING_KEY=\$(openssl rand -hex 32)\"
@@ -305,10 +322,49 @@ ssh "$SERVER" "
         echo \"ARTIFACT_SIGNING_KEY=\$(openssl rand -hex 32)\" >> deploy/.env
         echo '  generated the missing artifact signing key'
     fi
+    if ! grep -q '^KC_PROVISIONING_CLIENT_SECRET=.\\+' deploy/.env; then
+        sed -i '/^KC_PROVISIONING_CLIENT_SECRET=/d' deploy/.env
+        echo \"KC_PROVISIONING_CLIENT_SECRET=\$(openssl rand -hex 32)\" >> deploy/.env
+        echo '  generated the missing realm-local provisioning credential'
+    fi
 "
 echo ""
 
-# Persist the warehouse-driver selection into deploy/.env (idempotent upsert) so
+# A configured Databricks deployment must not silently fall back to CH when a
+# later invocation omits its data-mode flag. Existing CH deployments are unchanged.
+ssh "$SERVER" "
+    set -euo pipefail
+    cd ${REMOTE_DIR}
+    if grep -qx 'PRECIS_ANALYTICAL_BACKEND=databricks' deploy/.env && [ '${DATA_MODE}' != databricks ]; then
+        echo 'This deployment uses Databricks; repeat --data-mode databricks' >&2
+        exit 1
+    fi
+    if [ '${DATA_MODE}' = databricks ]; then
+        sed -i '/^PRECIS_ANALYTICAL_BACKEND=/d; /^PRECIS_INGESTION_MODE=/d; /^COMPOSE_FILE=/d' deploy/.env
+        echo 'PRECIS_ANALYTICAL_BACKEND=databricks' >> deploy/.env
+        echo 'PRECIS_INGESTION_MODE=customer_managed' >> deploy/.env
+        echo 'COMPOSE_FILE=deploy/docker-compose.yml:deploy/docker-compose.databricks.yml' >> deploy/.env
+        sed -i 's/bundled-clickhouse,//g; s/,bundled-clickhouse//g; s/^COMPOSE_PROFILES=bundled-clickhouse$/COMPOSE_PROFILES=/' deploy/.env
+    fi
+"
+
+# Retain existing optional extras when the native backend preset is selected
+# without an explicit replacement --extras list.
+if [ "$DATA_MODE" = databricks ] && [ -z "$REQUESTED_EXTRAS" ]; then
+    EXTRAS="$(ssh "$SERVER" "cd ${REMOTE_DIR}; sed -n 's/^PRECIS_EXTRAS=//p' deploy/.env | tail -n 1")"
+    case ",$EXTRAS," in
+        *,databricks-primary,*) ;;
+        *) EXTRAS="${EXTRAS:+$EXTRAS,}databricks-primary" ;;
+    esac
+    for _e in $(echo "$EXTRAS" | tr ',' ' '); do
+        case "$_e" in
+            bigquery|snowflake|mssql|databricks|databricks-primary|telemetry) ;;
+            *) echo "Invalid configured PRECIS_EXTRAS component" >&2; exit 1 ;;
+        esac
+    done
+fi
+
+# Persist the optional-dependency selection into deploy/.env (idempotent upsert) so
 # every ${COMPOSE} call below — which reads --env-file deploy/.env — bakes it
 # into the image via the PRECIS_EXTRAS build arg, and survives later redeploys.
 if [ -n "$EXTRAS" ]; then
@@ -366,11 +422,13 @@ fi
 # DB and applies the platform migrations itself); byo / bundle-empty run the
 # open clickhouse_init schema provisioner against the mounted instance/. All
 # via `compose run --no-deps`, so data lands before auth.
-if [ -n "$DATA_MODE" ]; then
+if [ -n "$DATA_MODE" ] && [ "$DATA_MODE" != databricks ]; then
     echo "=== 3. Provision ClickHouse (mode=${DATA_MODE}) ==="
     ssh "$SERVER" "
         set -euo pipefail
         cd ${REMOTE_DIR}
+        # Refresh the APT-only PostgreSQL layer before provisioning can start it.
+        ${COMPOSE} build postgres
         # Get the app image the provisioning one-shots will run: pull the
         # published tag by default, or build from source on --build.
         $($DO_BUILD && echo "${COMPOSE} build precis-mcp" || echo "${COMPOSE} pull precis-mcp")
@@ -449,6 +507,8 @@ ssh "$SERVER" "
             exit 1
         }
     fi
+    # The PostgreSQL security layer is built even when the app is pulled.
+    ${COMPOSE} build postgres
     # Build from source on --build; otherwise pull the published tag explicitly
     # (so a stale locally-built image of the same tag can't shadow the release)
     # and bring the stack up without building.
@@ -481,10 +541,9 @@ echo ""
 # ── 6. First admin (idempotent; mode B auto-bootstrap) ────────────────
 # create-admin provisions BOTH the Keycloak user and the platform-DB row, so it
 # needs the platform-DB env (the precis-mcp service has it) AND the Keycloak
-# bootstrap-admin credential (it does NOT — only the keycloak one-shots carry
-# it). We run it in the precis-mcp service and inject KC_BOOTSTRAP_ADMIN_* for
-# this one call, so the long-running server never holds the Keycloak master
-# secret. Re-running is safe: an existing admin is reported and skipped.
+# scoped provisioning credential (it does NOT — only the reconcile carries it).
+# Inject it for this one call; the long-running server holds neither this nor
+# the Keycloak master secret. Existing admins are reported and skipped.
 echo "=== 6. First admin ==="
 ssh "$SERVER" "
     set -uo pipefail
@@ -493,7 +552,7 @@ ssh "$SERVER" "
     if [ -z \"\${ADMIN_ID:-}\" ]; then
         echo '  no PRECIS_BOOTSTRAP_ADMIN_ID set — skipping. Bootstrap the first admin with:'
         echo '    bash scripts/deploy-mcp.sh --admin-id you@example.com    (re-run this script), or directly:'
-        echo \"    ${COMPOSE} run --rm -e KC_BOOTSTRAP_ADMIN_PASSWORD precis-mcp python -m precis_mcp.admin_cli create-admin --id you@example.com\"
+        echo \"    ${COMPOSE} run --rm -e KC_PROVISIONING_CLIENT_SECRET precis-mcp python -m precis_mcp.admin_cli create-admin --id you@example.com\"
         exit 0
     fi
     if [ '${AUTH_MODE}' = 'oidc' ]; then
@@ -501,11 +560,10 @@ ssh "$SERVER" "
         echo \"    ${COMPOSE} run --rm precis-mcp python -m precis_mcp.admin_cli create-admin --id \${ADMIN_ID} --no-keycloak --external-id <idp-subject>\"
         exit 0
     fi
-    # Mode B: inject the bundled-Keycloak bootstrap-admin creds for this one call.
-    export KC_BOOTSTRAP_ADMIN_USERNAME=\$(grep '^KEYCLOAK_ADMIN_USERNAME=' deploy/.env | cut -d= -f2-)
-    export KC_BOOTSTRAP_ADMIN_PASSWORD=\$(grep '^KEYCLOAK_ADMIN_PASSWORD=' deploy/.env | cut -d= -f2-)
+    # Mode B: inject only the realm-local provisioning secret for this call.
+    export KC_PROVISIONING_CLIENT_SECRET=\$(grep '^KC_PROVISIONING_CLIENT_SECRET=' deploy/.env | tail -n 1 | cut -d= -f2-)
     out=\$(${COMPOSE} run --rm --no-deps \
-            -e KC_BOOTSTRAP_ADMIN_USERNAME -e KC_BOOTSTRAP_ADMIN_PASSWORD \
+            -e KC_PROVISIONING_CLIENT_SECRET \
             precis-mcp python -m precis_mcp.admin_cli create-admin --id \"\${ADMIN_ID}\" 2>&1) && rc=0 || rc=\$?
     echo \"\${out}\" | sed 's/^/    /'
     if [ \"\${rc}\" -ne 0 ]; then

@@ -18,7 +18,9 @@ from pathlib import Path
 from _thread import LockType
 
 from precis_mcp.auth_mode import IDENTITY_COLUMN_ALLOWLIST
-from precis_mcp.db import query_clickhouse, query_platform
+from precis_mcp.db import query_platform
+from precis_mcp.analytical import get_analytical_client
+from precis_mcp.engine.scenario_registry import get_scenario_registry
 
 
 class AuthError(Exception):
@@ -247,11 +249,8 @@ def _compute_tool_scopes(
 
 
 def _load_scenario_kinds() -> dict[str, str]:
-    """Fetch {scenario_id: kind} from semantic.scenarios (ClickHouse)."""
-    rows = query_clickhouse(
-        "SELECT scenario_id, kind FROM semantic.scenarios",
-    )
-    return {r["scenario_id"]: r["kind"] for r in rows if r.get("kind")}
+    """Reuse scenario metadata; user/profile grants are still read fresh."""
+    return get_scenario_registry(get_analytical_client).get_kind_map()
 
 
 def resolve_user_id(claims: dict) -> str | None:
@@ -337,7 +336,7 @@ def load_permissions(user_id: str) -> UserPermissions:
     )
     profile_def = profile_rows[0]["definition"] if profile_rows else None
 
-    # 3. Scenario kinds (from ClickHouse — source of truth for scenarios)
+    # 3. Scenario kinds (cached metadata from the selected analytical backend)
     scenario_kinds = _load_scenario_kinds() if profile_def else {}
 
     # 4. Per-scenario resolution
@@ -369,25 +368,6 @@ def _user_data_base() -> str:
     return os.getenv("USER_DATA_DIR", "/data/users")
 
 
-# Sandbox-runner uid — see Dockerfile.sandbox-runner (USER runner, uid 10001)
-# and docker/Dockerfile.sandbox (USER sandbox, uid 10001). The api container
-# runs as root; dirs it creates under USER_DATA_DIR are root-owned and
-# unwritable by the runner. Chown after mkdir so the runner can copy
-# outputs back. Best-effort: chown requires CAP_CHOWN; in dev the api may
-# run unprivileged, in which case we skip and rely on matching uids in
-# that environment.
-_SANDBOX_UID = int(os.getenv("SANDBOX_USER_UID", "10001"))
-
-
-def chown_sandbox(path: Path) -> None:
-    try:
-        os.chown(path, _SANDBOX_UID, _SANDBOX_UID)
-    except PermissionError:
-        pass
-    except OSError:
-        pass
-
-
 def ensure_user_directory(user_id: str) -> str:
     """Create the user file storage directories if they do not exist.
 
@@ -404,15 +384,13 @@ def ensure_user_directory(user_id: str) -> str:
     All metadata (credentials, permissions, profile, workstreams, memories,
     tasks, files registry) lives in PostgreSQL.
 
-    The chown ensures the sandbox runner (uid 10001) can read user-uploaded
-    blobs and write outputs into the staging dir on the shared user_data
-    volume.
+    Ownership stays with the creating service. The commercial sandbox handoff
+    separately provisions the access it needs; core storage has no runner UID.
     """
     base = Path(_user_data_base()) / user_id
     for subdir in ("", "blobs", "sandbox_outputs", "sandbox_staging"):
         p = base / subdir
-        p.mkdir(parents=True, exist_ok=True)
-        chown_sandbox(p)
+        p.mkdir(mode=0o700, parents=True, exist_ok=True)
     return str(base)
 
 

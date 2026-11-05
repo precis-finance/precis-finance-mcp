@@ -40,6 +40,8 @@ interface PrecisGlobal {
   // keyed by its anchor address, so the ribbon formatter can apply nf / alerts /
   // row roles positionally without re-fetching. Re-warmed on every recalc.
   blocks?: Record<string, FinancialTableBlock>;
+  preparedReads?: Record<string, { signature: string; envelope: unknown }>;
+  worksheetFormats?: Record<string, string[][]>;
   // Auth-change listener (the task pane's re-render). Kept on the shared global,
   // not in module scope, so a disconnect raised in the functions bundle reaches
   // the task-pane bundle — they're separate webpack entries sharing one runtime.
@@ -170,6 +172,8 @@ export function disconnect(): void {
   s.userLabel = undefined;
   clearOidcConfig(s);
   s.blocks = {};
+  s.preparedReads = {};
+  s.worksheetFormats = {};
   notifyAuth();
 }
 
@@ -197,4 +201,44 @@ export function getBlock(anchor: string): FinancialTableBlock | undefined {
 /** Cached block anchor keys — for diagnostics (cache-miss reporting). */
 export function blockKeys(): string[] {
   return Object.keys(store().blocks ?? {});
+}
+
+function anchorKey(anchor: string): string {
+  const split = anchor.lastIndexOf("!");
+  const sheet = anchor.slice(0, split).replace(/^'|'$/g, "").replace(/''/g, "'");
+  return `${sheet}!${anchor.slice(split + 1)}`.replace(/\$/g, "").toUpperCase();
+}
+
+export function readSignature(tool: string, args: Record<string, unknown>): string {
+  const canonical = (value: any): any => Array.isArray(value) ? value.map(canonical) :
+    value && typeof value === "object" ? Object.keys(value).sort().reduce((out, key) => ({ ...out, [key]: canonical(value[key]) }), {}) : value;
+  return JSON.stringify([tool, canonical(args)]);
+}
+
+export function prepareRead(anchor: string, signature: string, envelope: unknown): void {
+  const s = store();
+  if (!s.preparedReads) s.preparedReads = {};
+  s.preparedReads[anchorKey(anchor)] = { signature, envelope };
+}
+
+export function discardPreparedRead(anchor: string): void {
+  delete store().preparedReads?.[anchorKey(anchor)];
+}
+
+export function takePreparedRead(anchor: string, signature: string): unknown {
+  const key = anchorKey(anchor);
+  const entry = store().preparedReads?.[key];
+  if (entry) delete store().preparedReads[key];
+  return entry?.signature === signature ? entry.envelope : undefined;
+}
+
+export function setWorksheetFormats(anchor: string, formats?: string[][]): void {
+  const s = store();
+  if (!s.worksheetFormats) s.worksheetFormats = {};
+  if (formats) s.worksheetFormats[anchorKey(anchor)] = formats;
+  else delete s.worksheetFormats[anchorKey(anchor)];
+}
+
+export function getWorksheetFormats(anchor: string): string[][] | undefined {
+  return store().worksheetFormats?.[anchorKey(anchor)];
 }

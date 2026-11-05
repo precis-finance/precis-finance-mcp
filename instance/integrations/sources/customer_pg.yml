@@ -2,12 +2,10 @@
 # domains reference `backend: customer_pg`) AND ingestion (bindings declare
 # `source: customer_pg`).
 #
-# One Source object, one credential resolution path. The Ibis-backed
-# federated read engine (`precis_mcp/engine/ibis_registry.py`) and the
-# warehouse-direct ingestion driver (`precis_mcp/ingestion/drivers/
-# warehouse_postgres.py`) both look up this Source by id, resolve its
-# `secret_ref` to `CUSTOMER_PG_*` env vars, and build their respective
-# connections.
+# One Source object, one credential resolution path. Federated reads and
+# warehouse ingestion share the backend factory in
+# `precis_mcp/ingestion/ibis_backends.py`, which resolves this Source's
+# `secret_ref` to `CUSTOMER_PG_*` env vars and builds the connections.
 #
 # Credentials expected in env (resolved via precis_mcp.secrets at startup
 # for `*_FILE` indirection):

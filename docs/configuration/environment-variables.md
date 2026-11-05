@@ -20,7 +20,7 @@ process itself.
 | Variable | Default | Purpose |
 |---|---|---|
 | `COMPOSE_PROFILES` | `bundled-clickhouse,bundled-keycloak,bundled-proxy` | Which optional services the multi-user stack runs. Drop `bundled-clickhouse` to use your own ClickHouse; drop `bundled-keycloak` for a direct external IdP; drop `bundled-proxy` to terminate TLS at your own ingress; append `backup` to run the [backup scheduler sidecar](../operations/backups.md); append `ingestion` and/or `ingestion-watch` for the [ingestion daemons](ingestion.md#scheduling). |
-| `PRECIS_DATA_MODE` | unset | Provisioning preset for `deploy-mcp.sh --data-mode`: `byo` / `bundle-empty` / `bundle-sample`. See [ClickHouse data modes](../deployment/clickhouse-data-modes.md). |
+| `PRECIS_DATA_MODE` | unset | Deployment preset for `deploy-mcp.sh --data-mode`: `byo` / `bundle-empty` / `bundle-sample` / `databricks`. See [ClickHouse data modes](../deployment/clickhouse-data-modes.md) or [Databricks setup](analytical-client.md#docker-deployment-with-databricks). |
 | `PRECIS_AUTH_MODE` | `keycloak` (multi-user), `devkey` (dev server) | Identity mode selector: `devkey` / `keycloak` / `oidc`. See [Remote access — sign-in & identity modes](../deployment/oauth-keycloak.md). |
 | `PRECIS_INGRESS_MODE` | `bundled` | Ingress preset for `deploy-mcp.sh --ingress-mode`: `bundled` (the Caddy auto-HTTPS proxy) / `byo` (your own ingress fronts the `127.0.0.1`-published ports). |
 | `PRECIS_DOMAIN` | empty | Bare hostname (the host part of `PRECIS_BASE_URL`, no scheme) the bundled Caddy proxy serves and obtains its Let's Encrypt certificate for. Required when `bundled-proxy` is in `COMPOSE_PROFILES`; ignored otherwise. |
@@ -33,9 +33,22 @@ by the server process itself.
 | Variable | Default | Purpose |
 |---|---|---|
 | `PRECIS_MCP_TAG` | current release | Tag of `ghcr.io/precis-finance/precis-finance-mcp` the app services pull. Compose uses this image when present and falls back to building from source when it is absent (or on `up --build`). Pin a version or a `@sha256:` digest for an immutable re-pull — see [Upgrading](../operations/upgrades.md#dependency-and-image-pinning). |
-| `PRECIS_EXTRAS` | empty | Optional warehouse drivers baked into the image **at build time** (comma-separated: `bigquery,snowflake,mssql,databricks`). Only used on the build-from-source path; the published image is the core build without extras. |
+| `PRECIS_EXTRAS` | empty | Optional warehouse drivers baked into the image **at build time** (comma-separated: `bigquery,snowflake,mssql,databricks,databricks-primary`). Use `databricks-primary` for the native backend; `databricks` is for Ibis federation. Only used on the build-from-source path; the published image is the core build without extras. |
+
+## Analytical backend
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PRECIS_ANALYTICAL_BACKEND` | `clickhouse` | Primary analytical backend: `clickhouse` or `databricks`. |
+| `PRECIS_INGESTION_MODE` | `managed` (ClickHouse), `customer_managed` (Databricks) | Input ownership: `managed` or `customer_managed`. Databricks requires `customer_managed`. |
+
+For Databricks credentials, schema mappings and timeouts, see
+[Databricks settings](analytical-client.md#credentials-and-configuration).
+Docker deployments also require the [Databricks overlay and source build](analytical-client.md#docker-deployment-with-databricks).
 
 ## ClickHouse (the read layer)
+
+The `CH*` settings apply to the ClickHouse backend.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -48,7 +61,13 @@ by the server process itself.
 | `CHCACERT` | unset | CA certificate path to pin (with `CHSECURE`). |
 | `CHVERIFY` | unset | Set `false` to accept a self-signed dev certificate. |
 | `PRECIS_CLICKHOUSE_POOL_MAXSIZE` | `32` | Per-host size of the shared ClickHouse HTTP connection pool. Set it at or above `PRECIS_MAX_CONCURRENT_READS_GLOBAL` so the read-concurrency cap, not pool exhaustion, is what bounds a query burst. |
-| `PRECIS_SCENARIO_REGISTRY_TTL` | `5` | Seconds the in-process scenario-registry cache (backing the per-call permission gate) serves without re-reading `semantic.scenarios`. Scenario writes through the server invalidate immediately; the TTL only bounds staleness for writes made outside the process. |
+| `PRECIS_SCENARIO_REGISTRY_TTL` | `60` | Seconds shared scenario metadata can be reused within one process, for either analytical backend. Refresh is on demand after expiry; same-process scenario mutations and catalogue reload invalidate locally. Other processes and external updates rely on expiry. User/profile grants remain fresh PostgreSQL reads; write-governance and startup-validation reads bypass this cache. |
+
+The multi-user Compose bundle forwards the ClickHouse TLS variables above.
+Leaving `CHPORT` unset or empty preserves the HTTP/HTTPS default. `CHCACERT`
+must name a readable file inside each connecting container; add explicit
+read-only certificate mounts as described in the
+[BYO ClickHouse guide](../deployment/clickhouse-data-modes.md#bring-your-own-clickhouse-byo).
 
 ## Read concurrency (the `/mcp` read path)
 
@@ -63,10 +82,10 @@ retryable "busy" tool error.
 | `PRECIS_MAX_CONCURRENT_READS_GLOBAL` | `32` | Max in-flight read-tool calls across all users. A box guard; keep it at or below the ClickHouse pool size. |
 | `PRECIS_READ_SLOT_WAIT_SECONDS` | `3` | How long a call waits for a free slot before returning the retryable busy error. |
 
-## PostgreSQL (platform state — multi-user bundle only)
+## PostgreSQL (platform state)
 
-Users, profiles, and load history. The single-user trial runs without
-Postgres.
+Users, profiles, artifact state and load history. Both reference bundles,
+including the single-user local trial, require PostgreSQL.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -111,8 +130,10 @@ enable flag, a strong key, and a localhost bind.
 | `KC_MCP_AUDIENCE` | `${PRECIS_BASE_URL}/mcp` | RFC 8707 audience the `/mcp` resource requires. |
 | `KC_REDIRECT_URI` | `${PRECIS_BASE_URL}/api/auth/callback` | OAuth redirect URI. |
 | `KC_HOSTNAME_ADMIN` | `http://localhost:8080/auth` | URL the Keycloak admin console is served at. Defaults to localhost to match the reference ingress, which blocks `/auth/admin/` at the edge — reach the console from the host or an SSH tunnel. Set to the public URL only if your ingress allowlists the path. |
-| `KC_BOOTSTRAP_ADMIN_USERNAME` | `admin` | Keycloak admin (used by the realm-reconcile sidecar and the admin CLI). |
-| `KC_BOOTSTRAP_ADMIN_PASSWORD` | unset | Keycloak admin password. **Secret.** Required. |
+| `KC_BOOTSTRAP_ADMIN_USERNAME` | `admin` | Operator account for realm/client configuration only; never ordinary user CLI operations. |
+| `KC_BOOTSTRAP_ADMIN_PASSWORD` | unset | Operator-only Keycloak admin password. **Secret.** Bundle deployment variable: `KEYCLOAK_ADMIN_PASSWORD`. |
+| `KC_PROVISIONING_CLIENT_ID` | `precis-user-provisioner` | Realm-local service account for user lifecycle; same realm as `KC_REALM`. |
+| `KC_PROVISIONING_CLIENT_SECRET` / `_FILE` | unset | **Secret.** Required only for mode-B user provisioning; independent of bootstrap. Inject into one-off admin CLI processes after reconciliation; absent from serving MCP. |
 | `KC_DB_PASSWORD` | unset | Postgres role password for Keycloak's own schema. **Secret.** Required. |
 
 ## Identity — mode C: direct external OIDC IdP
@@ -157,6 +178,12 @@ token-shape knobs are independent; set them to match your IdP (see
 | `USER_DATA_DIR` | `/data/users` | Per-user file storage root. The Compose bundle mounts a persistent `user_data` named volume here; only advanced bind-mount deployments need to manage host-path ownership. |
 
 ## Ingestion
+
+For the shipped `customer_pg` source, the multi-user bundle also forwards
+`CUSTOMER_PG_SSLMODE` and `CUSTOMER_PG_SSLROOTCERT`. Remote PostgreSQL sources
+should use `verify-full`; custom CA paths must exist inside every connecting
+container. Additional source secret references require their own environment
+forwarding and certificate mounts.
 
 ### Per-source database credentials
 
@@ -235,8 +262,8 @@ Local-volume destinations need none of the credentials.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `PRECIS_TELEMETRY_ENABLED` | `false` | Master switch for OpenTelemetry instrumentation. |
-| `PRECIS_TELEMETRY_CAPTURE_CONTENT` | `false` | Also capture request/response content on spans. Privacy-sensitive — leave off unless your collector is trusted with data. |
+| `PRECIS_TELEMETRY_ENABLED` | `false` | Enables OpenTelemetry tracing at MCP server startup when the telemetry extra is installed. Does not configure metrics export. |
+| `PRECIS_TELEMETRY_CAPTURE_CONTENT` | `false` | Does not enable MCP tool-payload capture; the MCP tracing code does not attach raw arguments/results. |
 | `OTEL_SERVICE_NAME` | `precis-mcp` | Service name on emitted spans. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://otel-collector:4318` | OTLP HTTP receiver. |
 | `OTEL_PYTHON_EXCLUDED_URLS` | unset | URL patterns excluded from HTTP auto-instrumentation. |
@@ -247,9 +274,13 @@ Local-volume destinations need none of the credentials.
 **Single-user local trial** (`deploy/docker-compose.local.yml`):
 `ENABLE_MCP_DEV_SERVER=1`, `MCP_DEV_KEY`, the `CH*` and `PG*` connections, Redis/Valkey, `ARTIFACT_SIGNING_KEY`, `PRECIS_BASE_URL` and managed `USER_DATA_DIR` (the local bundle wires the services).
 
-**Multi-user bundle** (`deploy/docker-compose.yml`): the `CH*` and `PG*`
-connections, `PRECIS_BASE_URL`, and one identity mode — bundled Keycloak
-(`KC_BOOTSTRAP_ADMIN_PASSWORD`, `KC_DB_PASSWORD`) or external OIDC
+**Multi-user bundle** (`deploy/docker-compose.yml`): the `PG*` connection,
+`PRECIS_BASE_URL`, an analytical backend (`CH*` for ClickHouse or
+[Databricks settings](analytical-client.md#credentials-and-configuration)),
+and one identity mode — bundled Keycloak
+(`KEYCLOAK_ADMIN_PASSWORD`, `KC_DB_PASSWORD` for infrastructure, plus the
+independent `KC_PROVISIONING_CLIENT_SECRET` for realm-apply/one-off user CLI;
+none of these enters the serving MCP process) or external OIDC
 (`OIDC_ISSUER` + client registration).
 
 ## Datasets and artifacts

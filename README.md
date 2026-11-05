@@ -1,22 +1,25 @@
-# Précis Finance MCP
+# Précis Finance MCP — Financial reporting on Databricks and ClickHouse
 
 [![License: Elastic 2.0](https://img.shields.io/badge/license-Elastic%202.0-0D9488)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-server-0D9488)](https://modelcontextprotocol.io)
 [![CI](https://github.com/precis-finance/precis-finance-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/precis-finance/precis-finance-mcp/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-precis.finance-0D9488)](https://docs.precis.finance/)
 
-A read-only, self-hosted [MCP](https://modelcontextprotocol.io) server for FP&A
-and management reporting: governed metrics, financial statements, row-level
-drill-down, charts and snapshot file exports over a SQL semantic layer — **your own warehouse, not market data.**
-The open core of **Précis**, the agentic Finance Intelligence Platform.
+A read-only, self-hosted [Model Context Protocol (MCP)](https://modelcontextprotocol.io)
+server for **financial reporting on Databricks or ClickHouse**, built for
+Financial Planning & Analysis (FP&A) and management reporting.
+Give Claude, ChatGPT or another MCP-capable client
+access to governed metrics, financial statements, variance comparisons,
+row-level drill-down, charts and Excel exports from your own financial data.
+It is source-available under Elastic License 2.0 and forms the open core of
+**Précis**, the Finance Intelligence Platform.
 
 You describe your business metrics once — KPIs, hierarchies, and
 financial-statement layouts in a YAML catalogue over a semantic layer of plain
 SQL views, versioned in git — and any MCP-capable client gets consistent,
-defensible numbers. The semantic views are plain SQL in your ClickHouse, so your
-existing BI tools can query the same views directly. This repository is complete and
-self-hostable — the metric engine, semantic layer and catalogue, ingestion,
-identity, and the MCP transport — and depends on nothing outside it.
+defensible numbers. Use your existing
+Databricks data model or start a local self-contained service with the bundled ClickHouse engine.
+**Your own financials, not market data.**
 
 ## Use this if
 
@@ -40,9 +43,10 @@ identity, and the MCP transport — and depends on nothing outside it.
   analytical store), PostgreSQL (platform and artifact state), and Valkey
   (temporary snapshots). A
   local trial runs with nothing else and loads a sample finance model.
-- **Already run ClickHouse?** — optionally point the engine at your own instance
+- **Already run ClickHouse or Databricks?** — optionally point the engine at your own instance
   instead of the bundled one; see
-  [data modes](docs/deployment/clickhouse-data-modes.md).
+  [ClickHouse data modes](docs/deployment/clickhouse-data-modes.md) or
+  [Databricks setup](docs/configuration/analytical-client.md#docker-deployment-with-databricks).
 - **An MCP-capable client** — Claude (claude.ai and Desktop connectors, against
   a deployed instance), Claude Code, ChatGPT, or any MCP client.
 - **Optional Excel access** — the multi-user image also hosts the Précis Excel
@@ -109,11 +113,13 @@ against their own warehouse — [precis.finance](https://precis.finance) or
 ## Multi-user deployment
 
 `deploy/docker-compose.yml` runs the multi-user stack — the open server,
-PostgreSQL, ClickHouse, Valkey, artifact storage, and OAuth 2.1 + PKCE sign-in. Deployment is modular
-along independent axes:
+PostgreSQL, ClickHouse (if using the bundled deployment), Valkey, artifact
+storage, and OAuth 2.1 + PKCE sign-in. Deployment is modular along independent axes:
 
-- **Data** — bundled ClickHouse (empty or with sample data) or your own:
-  [docs/deployment/clickhouse-data-modes.md](docs/deployment/clickhouse-data-modes.md)
+- **Data** — bundled ClickHouse (empty or with sample data), your own ClickHouse
+  instance, or Databricks:
+  [ClickHouse data modes](docs/deployment/clickhouse-data-modes.md) ·
+  [Databricks setup](docs/configuration/analytical-client.md#docker-deployment-with-databricks)
 - **Identity** — local dev key, the bundled Keycloak (optionally federated to
   your IdP), or a direct external OIDC provider (Auth0 / Okta / Entra / Ping):
   [docs/deployment/oauth-keycloak.md](docs/deployment/oauth-keycloak.md),
@@ -143,7 +149,9 @@ views, ingestion bindings — and the bundled demo instance shows the shape.
 Start at [docs/configuration/catalogue-and-semantic.md](docs/configuration/catalogue-and-semantic.md),
 then [docs/configuration/ingestion.md](docs/configuration/ingestion.md) and
 [docs/operations/onboarding-ingestion.md](docs/operations/onboarding-ingestion.md)
-to load your data. The developer guide for adding server tools is
+to load your data. For Databricks, see the
+[Databricks schema contract](docs/configuration/databricks-schema-contract.md).
+The developer guide for adding server tools is
 [docs/development/adding-read-tools.md](docs/development/adding-read-tools.md).
 
 ## Security and read-only posture
@@ -152,10 +160,15 @@ Start with the mechanisms, not the promise.
 
 - **Read-only by construction** — the server retrieves; it never writes to or
   changes your source. There is no write path back.
-- **No figure is generated by the model** — tools return numbers aggregated from
-  source dimensions (account, cost centre, period, scenario), or report that the
-  data isn't there. The client composes the question and narrates the answer; it
-  never invents a figure.
+- **No figure is generated by the model** — the agent requests defined metrics;
+  Précis calculates and returns them using the agreed financial rules. Ask for
+  utilisation by department and you get each department’s utilisation, with a
+  total calculated using the same governed definition. Other agentic analytics
+  approaches rely on agents writing SQL. When an agent writes SQL
+  for each question, it must interpret how the measure should be calculated and
+  aggregated, introducing opportunities for errors. Précis defines that logic
+  once in the reporting engine and applies it consistently as the conversation
+  develops. The agent retrieves the figures and narrates the results.
 - **Traceable to source** — every number traces from response → semantic view →
   warehouse. The semantic views are plain SQL you can read; the catalogue is
   versioned in git.
@@ -167,6 +180,37 @@ Start with the mechanisms, not the promise.
   operations; you still deploy and operate it under your own security model.
   Disclosure policy: [SECURITY.md](SECURITY.md).
 
+## FP&A and financial reporting on Databricks
+
+Use your existing Databricks environment as the analytical backend for
+Précis Finance MCP. Keep your financial data and pipelines in place, without
+copying the inputs into another analytical database.
+
+Map your data to reporting views and agree
+the metric and statement definitions; finance can then request a monthly P&L,
+compare actuals with budget or drill into the drivers of a variance through
+a compatible MCP client.
+
+**What Précis adds alongside Databricks Genie:** consistent financial
+calculations and presentation. Your agreed aggregation rules, statement
+layouts, comparison columns and number formats carry through each report.
+The agent requests established financial operations from the reporting
+engine, reducing repeated query generation and the scope for calculation
+errors as the investigation develops.
+
+Our [FP&A case study: Précis and Databricks Genie](https://precis.finance/insights/precis-and-genie-mcp)
+compares five financial requests against the same Databricks data, showing
+the differences in calculation fidelity, financial presentation and waiting
+time. Précis completed responses in **16–35 seconds**, compared with
+**73–108 seconds for Genie** in that session. The study compares the full
+Précis workspace with the native Genie interface; Finance MCP uses the same
+reporting engine, while response times depend on the connected client and
+deployment.
+
+Read the [Databricks product update](https://precis.finance/news/precis-databricks)
+for the broader platform benefits, including approved planning writeback.
+**Précis Finance MCP remains read-only.**
+
 ## Documentation
 
 Full documentation: [docs.precis.finance](https://docs.precis.finance/).
@@ -174,7 +218,7 @@ Full documentation: [docs.precis.finance](https://docs.precis.finance/).
 | Area | Start here |
 |---|---|
 | Getting started | [quickstart](docs/getting-started/quickstart.md) |
-| Deployment | [ClickHouse data modes](docs/deployment/clickhouse-data-modes.md) · [OAuth / Keycloak](docs/deployment/oauth-keycloak.md) · [external IdP recipes](docs/deployment/external-idp-recipes.md) |
+| Deployment | [ClickHouse data modes](docs/deployment/clickhouse-data-modes.md) · [Databricks setup](docs/configuration/analytical-client.md#docker-deployment-with-databricks) · [OAuth / Keycloak](docs/deployment/oauth-keycloak.md) · [external IdP recipes](docs/deployment/external-idp-recipes.md) |
 | Excel | [Précis for Excel](docs/excel/index.md) · [function reference](docs/excel/functions.md) |
 | Configuration | [catalogue & semantic layer](docs/configuration/catalogue-and-semantic.md) · [ingestion](docs/configuration/ingestion.md) · [environment variables](docs/configuration/environment-variables.md) |
 | Operations | [onboarding & ingestion](docs/operations/onboarding-ingestion.md) · [backups](docs/operations/backups.md) |

@@ -73,6 +73,33 @@ def test_store_exists_handles_unknown():
     assert store.exists("missing") is False
 
 
+def test_stores_share_read_metadata_but_write_targets_and_locks_stay_fresh():
+    ch = _client()
+    first = ScenarioStore(ch)
+    assert first.get("budget").scenario_id == "BUD-2026"
+    assert ScenarioStore(ch).get("budget").scenario_id == "BUD-2026"
+    assert len(ch.queries) == 1
+    assert ch.close_calls == 0
+
+    # An external change is not visible to cached readers until invalidation,
+    # but resolving a write alias must see the current mapping immediately.
+    ch.set_response("FROM semantic.scenarios", FakeQueryResult(
+        column_names=["scenario_id", "alias", "name", "kind"],
+        result_rows=[("BUD-NEW", "budget", "New budget", "BUDGET")],
+    ))
+    assert first.resolve_writable_id("budget") == "BUD-NEW"
+    assert first.get("budget").scenario_id == "BUD-2026"
+    first.update_locks("BUD-NEW", [])
+    assert first.get("budget").scenario_id == "BUD-NEW"
+
+    ch.set_response("SELECT status", FakeQueryResult(result_rows=[("LOCKED",)]))
+    # Exact metadata reads intentionally ignore the shared registry snapshot.
+    ch.response_map.pop("FROM semantic.scenarios")
+    assert first.get_status_metadata("BUD-NEW") == "LOCKED"
+    ch.set_response("SELECT locks", FakeQueryResult(result_rows=[('[{"period_from": "2026-02"}]',)]))
+    assert first.get_locks_metadata("BUD-NEW") == [{"period_from": "2026-02"}]
+
+
 def test_store_resolves_writable_alias_and_id():
     store = ScenarioStore(_client())
 

@@ -21,6 +21,44 @@ from precis_mcp import admin_cli, admin_ops
 from tests.fakes.fake_platform_db import FakePlatformDB
 
 
+@pytest.mark.parametrize("backend", ["clickhouse", "databricks"])
+@pytest.mark.parametrize("provision", [False, True])
+def test_hierarchy_refresh_cli_uses_operator_connection_and_closes_it(catalogue, monkeypatch, capsys, backend, provision):
+    from tests.fakes.fake_clickhouse import FakeClickHouseClient
+    from tests.fakes.fake_analytical import FakeDatabricksConnection
+
+    monkeypatch.setenv("PRECIS_ANALYTICAL_BACKEND", backend)
+    monkeypatch.setenv("DATABRICKS_HOST", "https://example.cloud.databricks.com")
+    monkeypatch.setenv("DATABRICKS_HTTP_PATH", "/sql/1.0/warehouses/test")
+    monkeypatch.setenv("DATABRICKS_CATALOG", "customer")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "operator")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "test-operator-secret")
+    connection = FakeClickHouseClient() if backend == "clickhouse" else FakeDatabricksConnection()
+    target = "precis_mcp.db.get_clickhouse_client" if backend == "clickhouse" else "precis_mcp.analytical.databricks._connect"
+    with patch("precis_mcp.engine.load_and_validate", return_value=catalogue), patch(target, return_value=connection):
+        admin_cli.main(["hierarchy", "refresh"] + (["--provision"] if provision else []))
+    result = json.loads(capsys.readouterr().out)
+    assert result == {"status": "refreshed", "backend": backend, "hierarchies": 4}
+    statements = [sql for sql, _ in connection.commands] if backend == "clickhouse" else [sql for sql, _ in connection.calls]
+    assert len(statements) == (16 if provision else 4)
+    assert len([sql for sql in statements if sql.startswith("CREATE OR REPLACE TABLE")]) == 4
+    if not provision:
+        assert all(sql.startswith("CREATE OR REPLACE TABLE") for sql in statements)
+    assert connection.close_calls == 1 if backend == "clickhouse" else connection.closed
+
+
+def test_hierarchy_refresh_cli_does_not_expose_driver_error(catalogue, monkeypatch, capsys):
+    monkeypatch.setenv("PRECIS_ANALYTICAL_BACKEND", "clickhouse")
+    with patch("precis_mcp.engine.load_and_validate", return_value=catalogue), \
+         patch("precis_mcp.db.get_clickhouse_client", side_effect=RuntimeError("secret=do-not-print")):
+        with pytest.raises(SystemExit) as failed:
+            admin_cli.main(["hierarchy", "refresh"])
+    assert failed.value.code == 1
+    error = capsys.readouterr().err
+    assert "do-not-print" not in error
+    assert "earlier replacements may have completed" in error
+
+
 @contextlib.contextmanager
 def _patched(db, kc=None):
     kc = kc if kc is not None else MagicMock()
@@ -48,6 +86,51 @@ def test_create_admin_mode_b_provisions_keycloak(capsys):
     row = next(u for u in db.users if u["id"] == "boss")
     assert row["is_admin"] is True
     kc.create_user.assert_called_once()
+
+
+@pytest.mark.parametrize("command,is_admin", [("create-admin", True), ("create-user", False)])
+def test_cli_commissions_users_with_scoped_protocol(monkeypatch, command, is_admin):
+    from precis_mcp.keycloak_admin import KeycloakAdmin
+    from tests.fakes.fake_keycloak import FakeKeycloak
+    fake = FakeKeycloak()
+    http = fake.client()
+    monkeypatch.setenv("KC_PROVISIONING_CLIENT_SECRET", "test-scoped-secret")
+    monkeypatch.setenv("KC_BOOTSTRAP_ADMIN_PASSWORD", "unused-operator-secret")
+    monkeypatch.setattr("precis_mcp.keycloak_admin.httpx.Client", lambda **kw: http)
+    kc = KeycloakAdmin()
+    db = FakePlatformDB()
+    try:
+        with _patched(db, kc):
+            admin_cli.main([command, "--id", "commissioned", "--password", "longpassword123"])
+    finally:
+        http.close()
+    assert db.users[0]["is_admin"] is is_admin
+    assert fake.tokens[0]["grant_type"] == ["client_credentials"]
+    assert "password" not in fake.tokens[0]
+    assert fake.users["commissioned"]["groups"] == ["/precis-application-users"]
+    assert db.security_audit_log[0]["details"]["is_admin"] is is_admin
+
+
+def test_cli_missing_scoped_secret_aborts_without_operator_fallback(monkeypatch, capsys):
+    from precis_mcp.keycloak_admin import KeycloakAdmin
+    from tests.fakes.fake_keycloak import FakeKeycloak
+    fake = FakeKeycloak()
+    http = fake.client()
+    monkeypatch.delenv("KC_PROVISIONING_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("KC_PROVISIONING_CLIENT_SECRET_FILE", raising=False)
+    monkeypatch.setenv("KC_BOOTSTRAP_ADMIN_PASSWORD", "unused-operator-secret")
+    monkeypatch.setattr("precis_mcp.keycloak_admin.httpx.Client", lambda **kw: http)
+    kc = KeycloakAdmin()
+    db = FakePlatformDB()
+    try:
+        with _patched(db, kc), pytest.raises(SystemExit) as exc:
+            admin_cli.main(["create-user", "--id", "u", "--password", "longpassword123"])
+    finally:
+        http.close()
+    assert exc.value.code == admin_ops.ADMIN_EXIT_CODE[admin_ops.ProvisioningError]
+    assert "KC_PROVISIONING_CLIENT_SECRET" in capsys.readouterr().err
+    assert fake.requests == []
+    assert db.users == []
 
 
 def test_create_admin_mode_c_skips_keycloak(capsys):

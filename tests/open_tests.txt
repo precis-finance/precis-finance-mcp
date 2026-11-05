@@ -1,35 +1,24 @@
-# Open-core test manifest — the test files that exercise ONLY the open
-# `precis_mcp` package and therefore travel to the open `precis-finance-mcp` repo at the
-# R4 cut. Source of truth for two consumers:
+# Open-package test manifest for `precis-finance-mcp`.
+# Source of truth for two consumers:
 #
 #   1. The collection-time boundary guard in conftest.py
 #      (`pytest_collection_modifyitems`) — fails the run if any file listed here
-#      imports the commercial `precis` package. This is the "extraction check"
-#      from precis_mcp_package_spec.md §6 / R3.
-#   2. The R4 repo cut — the list of test files to copy into the open repo.
+#      imports the commercial `precis` package.
+#   2. Package publication — the list of test files included in the open repo.
 #
-# Membership rule: a test is open iff it imports nothing from `precis.`, does
-# not use the `client` fixture (which boots `precis.agui`), and imports nothing
-# outside the open export tree. The second clause excludes the 4 agui route
-# tests (admin/scenarios/tasks/workstreams) and test_oauth_proxy.py (all 8
-# tests drive the proxy through that fixture); the third excludes the
-# monorepo-tooling test test_eval_auth.py (scripts/eval/).
-# test_open_core_assembly.py is open with
-# one monorepo-only test skipif'd when `precis` is absent. Verified by running
-# the manifest against the assembled export tree: scripts/publish_open.py
-# gates every publish on it (spec §7).
+# Tests depend only on the public package and declared public support.
+# The same public fixtures are used in development and in this distribution.
 #
 # Paths are relative to tests/. Blank lines and `#` comments are ignored.
 # Keep sorted within each section. When you add an open test, add it here.
 #
-# Open infrastructure carried alongside these (NOT listed here because they are
-# not collected as tests): tests/fakes/{fake_clickhouse,fake_platform_db,
-# fake_redis,ingestion,mock_mcp}.py and tests/factories/{auth,ingestion}.py.
-# tests/fakes/fake_llm.py is NOT carried — no open test uses it (it is the
-# LangGraph chat-model fake, purely commercial).
+# Reusable fixtures, fakes and factories are listed in tests/open_support.txt.
 
-# --- unit (44) ---
+# --- unit ---
 unit/test_admin_ops.py
+unit/test_analytical_config.py
+unit/test_analytical_sql.py
+unit/test_analytical_runtime.py
 unit/test_auth.py
 unit/test_auth_mode.py
 unit/test_backup_ch_render.py
@@ -42,6 +31,7 @@ unit/test_cell_format.py
 unit/test_clickhouse_init.py
 unit/test_context_validation.py
 unit/test_engine_catalogue.py
+unit/test_fake_platform_db.py
 unit/test_file_readers.py
 unit/test_formatter.py
 unit/test_ibis_backends.py
@@ -74,7 +64,7 @@ unit/test_table_builder.py
 unit/test_transformer.py
 unit/test_validate.py
 
-# --- component (25) ---
+# --- component ---
 component/test_admin_cli.py
 component/test_app_open_lifespan.py
 component/test_auth.py
@@ -82,6 +72,7 @@ component/test_backup_cli.py
 component/test_backup_restore.py
 component/test_backup_runner.py
 component/test_connection_tls.py
+component/test_analytical_client.py
 component/test_engine_pipeline.py
 component/test_filter_resolver.py
 component/test_identity_resolution.py
@@ -89,7 +80,9 @@ component/test_ingestion_checks.py
 component/test_ingestion_read_tools.py
 component/test_ingestion_scheduler.py
 component/test_inspect.py
+component/test_keycloak_admin.py
 component/test_load_history_writer.py
+component/test_observability.py
 component/test_open_core_assembly.py
 component/test_orchestrator.py
 component/test_orchestrator_logging.py
@@ -101,7 +94,7 @@ component/test_synthetic_data_crm.py
 component/test_upload_endpoint.py
 component/test_watcher.py
 
-# --- e2e (6) ---
+# --- e2e ---
 e2e/test_artifact_registry.py
 e2e/test_ingestion_e2e.py
 e2e/test_landing_ddl_integration.py
@@ -120,3 +113,4 @@ unit/test_extract_emit.py
 unit/test_meta.py
 unit/test_target_append.py
 unit/test_host_attachments.py
+unit/test_release_security.py

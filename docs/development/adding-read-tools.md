@@ -8,9 +8,10 @@ guide is the contract for adding a tool of your own: where the function
 lives, how it gets registered and advertised, what the permission gate does
 for you, and what your tool must still do itself.
 
-Everything here stays inside the `precis_mcp` package. Précis Finance MCP is read-only
-by design — a new tool may query ClickHouse, the catalogue, or the platform
-database, but it must not write to or mutate any of them.
+Everything here stays inside the `precis_mcp` package. Financial access is
+read-only: new financial tools query the analytical backend, catalogue or
+platform database. Artifact tools follow the separate owned-file contract
+described under [Extension seams](#extension-seams); they cannot mutate finance data.
 
 ## Architecture sketch of this slice
 
@@ -33,9 +34,15 @@ tools/list                          tools/call
 
 - **Tool functions** live in `precis_mcp/tools/` (`read_tools.py`,
   `ingestion_tools.py`). Each module exposes a `register_*_tools(mcp, ref)`
-  factory that registers its functions with the `@mcp.tool()` decorator — or
-  `@register_mcp_tool(mcp)` from `precis_mcp/tools/_mcp_register.py` when the
-  function takes a `_scope` parameter (see [Traps](#failure-modes-and-traps)).
+  factory that registers its functions with plain `@mcp.tool()`, including
+  functions with injected `_scope` parameters. Preserve their full signatures
+  for the production registry (see [Traps](#failure-modes-and-traps)).
+  Financial reads acquire the selected analytical client and use the existing
+  catalogue reference. Build SQL through that client's dialect; do not construct
+  raw CH clients or edit published
+  catalogue objects in place. Stored financial definitions replay through
+  `get_financial_read_dispatch()` and the same permission/scope gate. See
+  [Analytical client](../configuration/analytical-client.md).
 - **`precis_mcp/dispatch.py`** is the single source of truth for tool
   metadata. `_load_open_tools()` calls the factories; `TOOL_CATALOGUE` holds
   one declarative entry per tool; `build_descriptors()` joins the two into a
@@ -46,13 +53,14 @@ tools/list                          tools/call
 - **`precis_mcp/mcp_external/server.py`** is the authenticated `/mcp`
   JSON-RPC transport (OIDC bearer tokens — see
   [Remote access](../deployment/oauth-keycloak.md)). It advertises the
-  `mcp_read`-flagged subset of the catalogue, resolves variant names, runs the
+  opted-in read and artifact tools, resolves variant names, runs the
   gate, executes the tool, and frames the result.
 - **`precis_mcp/server.py`** is the single-user dev server (FastMCP over
   Streamable HTTP behind `MCP_DEV_KEY` — see the
   [quickstart](../getting-started/quickstart.md)).
-  It calls the same `register_*_tools` factories directly, so a new module
-  must be registered there too if you want it reachable on the dev server.
+  It calls the same factories through `DevMcpRegistrar` from
+  `precis_mcp/tools/_dev_mcp.py`, which hides injected parameters from FastMCP.
+  Register new modules there too if they should be reachable on the dev server.
 
 There is exactly one execution path. The catalogue, the gate, and the framing
 are the three places a new tool touches.
@@ -88,11 +96,11 @@ are the three places a new tool touches.
 - **Never leak internals in error messages.** Driver exceptions can embed SQL
   or filesystem paths. Log the detail, return a generic message — the
   `_safe_execute` helper in `read_tools.py` is the pattern.
-- **`mcp_read` is opt-in.** A tool is advertised and callable over `/mcp` only
-  if its catalogue entry sets `mcp_read: True` *and* its `access` is `read` or
-  `general` (checked again at call time as defense-in-depth). The default
-  `False` keeps the `access="read"` default from silently publishing every
-  tool.
+- **Remote publication is opt-in.** Reads require `mcp_read: True` and
+  `access` of `read` or `general`. Artifact mutations require
+  `mcp_artifact: True`, `access="general"` and the explicit artifact-tool
+  allow-list. These conditions are checked at call time; access class alone
+  never publishes a tool.
 
 ## The catalogue entry
 
@@ -101,8 +109,9 @@ The fields, with their `ToolDescriptor` defaults:
 
 | Field | Default | Purpose |
 |---|---|---|
-| `access` | `"read"` | Gate class. For this package the meaningful values are `read` (scenario-scoped, analyst+), `general` (no role/scope check at all — for tools with no per-scenario data; no open tool currently uses it), and `admin` (requires the `is_admin` user flag; e.g. `reload_integrations`). `write` / `plan_manager` exist in the model but no tool here uses them, and the `/mcp` transport refuses to execute anything that isn't `read` or `general`. |
-| `mcp_read` | `False` | Publishes the tool over `/mcp` (`tools/list` and `tools/call`). Opt-in, independent of `access`. |
+| `access` | `"read"` | Gate class: `read` (scenario-scoped, analyst+), `general` (no scenario-role gate; used by chart and file tools), or `admin` (requires `is_admin`; e.g. `reload_integrations`). General tools still enforce their owner, quota and current-grant checks. The external `/mcp` transport accepts only `read` or `general`, with a separate publication flag. |
+| `mcp_read` | `False` | Opts a read tool into `/mcp`; callable only with `read` or `general` access. |
+| `mcp_artifact` | `False` | Opts an artifact mutation into `/mcp`; callable only with `general` access and membership in `tools/artifact_tools.py::ARTIFACT_MUTATING_TOOLS`. External receives also require upload opt-in; see [Extension seams](#extension-seams). |
 | `scenario_params` | `()` | Names of parameters that carry scenario references. Each referenced scenario is checked against the caller's per-scenario permissions, and the per-scenario `ScopeSpec` map is injected as `_scope`. Handles string params (`"scenario_id"`) and list-of-dict params (`"scenarios"` with `[{"scenario": "..."}]`). |
 | `report_context` | `()` | Session-default injection keys (`filters`, `scenarios`, `scale`, …). Each key must name a real parameter on your signature — the schema is `extra='forbid'`, so injecting a key the function doesn't accept rejects the call. Unknown keys raise at startup. |
 | `dimension_map_args` | `{}` | Maps a dict-shaped arg to a catalogue resolver (e.g. `{"filters": "report_domains"}`) for validation in `process_tool_call`. |
@@ -190,8 +199,8 @@ from precis_mcp.tools.coverage_tools import register_coverage_tools
 register_coverage_tools(reg, catalogue_ref)
 ```
 
-And, if the tool should also be reachable on the single-user dev server, add
-the same registration to `precis_mcp/server.py`.
+For the single-user dev server, add the registration to `precis_mcp/server.py`,
+passing `DevMcpRegistrar(mcp)` instead of the raw FastMCP instance.
 
 **3. Catalogue entry.** In `TOOL_CATALOGUE`:
 
@@ -221,12 +230,10 @@ advertised as a single plain data tool (`out='agent'`): the model gets the raw
 dict in both `content` and `structuredContent`. Nothing else to wire.
 
 A **scenario-scoped** tool differs in two ways. The signature carries the
-injected params and uses the registration shim:
+injected params, still using the same decorator inside its factory:
 
 ```python
-from precis_mcp.tools._mcp_register import register_mcp_tool
-
-@register_mcp_tool(mcp)   # NOT @mcp.tool() — FastMCP rejects `_`-prefixed params
+@mcp.tool()
 def my_scoped_tool(
     scenario_id: str,
     user_id: str = "",            # injected from AuthContext — hidden from clients
@@ -298,7 +305,7 @@ The downstream agent loader (`dispatch.register_tool_loader`) adds workflow tool
 
 - `precis_mcp/datasets.py` — bounded owner/grant-bound snapshots. Cache the result before consumer rounding or preview truncation. A failed cache must leave a successful finance read usable.
 - `precis_mcp/tools/chart_tools.py` and `precis_mcp/chart_builder.py` — shared chart computation and render-block derivation.
-- `precis_mcp/artifacts/` and `tools/artifact_tools.py` — shared owned file storage, transfer and snapshot exports. Artifact mutation requires `mcp_artifact=True`, `access="artifact"`, and the explicit transport allow-list; this is not permission to expose financial writes. External receives additionally require `PRECIS_MCP_UPLOADS_ENABLED=true`; keep new receiving tools in `artifacts/policy.py::EXTERNAL_UPLOAD_TOOLS` so both discovery and direct dispatch honor the default-off policy. Attachment import also needs its hostname allow-list. Exports and downloads bypass the receiving policy.
+- `precis_mcp/artifacts/` and `tools/artifact_tools.py` — shared owned file storage, transfer and snapshot exports. Artifact mutation requires `mcp_artifact=True`, `access="general"`, and the explicit transport allow-list; this is not permission to expose financial writes. There is no separate artifact access class, and general access alone does not publish a tool. Owner, quota and grant-stamp checks remain mandatory. External receives additionally require `PRECIS_MCP_UPLOADS_ENABLED=true`; keep new receiving tools in `artifacts/policy.py::EXTERNAL_UPLOAD_TOOLS` so both discovery and direct dispatch honor the default-off policy. Attachment import also needs its hostname allow-list. Exports and downloads bypass the receiving policy.
 
 Remote descriptors always assemble the core tool set. Do not install output-mode, chart-builder or instruction overrides from a downstream product. Keep workflow persistence outside core computation.
 
@@ -324,8 +331,8 @@ Remote descriptors always assemble the core tool set. Do not install output-mode
   Do not retain a separate copy of its scenario map: replacement of that map
   makes the copy stale. A failed reload clears cached grants and raises;
   absent auth context is the explicit dev path and returns `None`.
-- Use `@register_mcp_tool(mcp)` for any function with a `_`-prefixed
-  parameter.
+- Use plain `@mcp.tool()` in shared factories; pass `DevMcpRegistrar(mcp)`
+  when registering them with the dev server's FastMCP instance.
 
 **Must not:**
 
@@ -368,19 +375,19 @@ passed as `_scope` actually constrains the result.
 
 ## Failure modes and traps
 
-- **`@mcp.tool()` on a `_scope`-bearing function crashes the server at
-  startup.** FastMCP raises `InvalidSignature` for `_`-prefixed parameters at
-  decoration time. `MockMCP`-based tests will *not* catch this — they
-  duck-type the decorator. Use `@register_mcp_tool(mcp)`, which strips hidden
-  params from the FastMCP-exposed signature, and smoke-test registration
-  against a real `FastMCP` instance if in doubt.
+- **Passing raw FastMCP to a scoped factory crashes dev-server registration.**
+  FastMCP rejects `_`-prefixed parameters. Use `DevMcpRegistrar(mcp)` at that
+  boundary; keep plain `@mcp.tool()` and full signatures in shared factories
+  so production can detect and inject scope. `MockMCP`-based tests do not catch
+  the raw-FastMCP failure.
 - **Missing catalogue entry → startup failure.** Deliberate
   (`build_descriptors` fails closed). The error message names the tool.
-- **Forgotten `mcp_read: True` → tool invisible on `/mcp`.** It loads, the
+- **Forgotten `mcp_read: True` → read tool invisible on `/mcp`.** It loads, the
   dev server serves it, but the external transport answers
   "Tool not exposed over MCP". Conversely, flagging `mcp_read` on an `admin`
   tool gets it advertised but every call rejected — the call-time gate
-  requires read-class access.
+  requires `read` or `general` access. Artifact mutations instead use the
+  separate `mcp_artifact` contract.
 - **`report_context` keys that aren't real parameters reject every call.**
   The advertised schema is `extra='forbid'`; an injected key the function
   doesn't accept fails validation. Unknown key *names* are caught earlier, at
@@ -411,23 +418,23 @@ passed as `_scope` actually constrains the result.
 | Add one `TOOL_CATALOGUE` entry per tool (empty dict is valid) | Scatter metadata, or skip the entry (startup fails) |
 | Declare `user_id` / `_scope` params and let the wrapper inject them | Read the auth contextvars for identity decisions inside the tool |
 | Pass `scope=_scope` into `execute_report`, or enforce it on your own query | Treat the gate's scenario check as full enforcement |
-| Use `@register_mcp_tool(mcp)` for `_`-prefixed params | Use `@mcp.tool()` and find out at server startup |
+| Use plain `@mcp.tool()` factories and `DevMcpRegistrar` at the dev-server boundary | Strip injected params before production registration or pass raw FastMCP to scoped factories |
 | Convert datetimes/Decimal/NaN at the tool boundary | Trust the backend's types to be JSON-clean |
-| Set `mcp_read: True` deliberately, per tool | Assume `access="read"` publishes the tool |
+| Select `mcp_read` or `mcp_artifact` under its transport contract | Assume an access class publishes the tool |
 | Keep error messages generic; log the detail | Echo driver exceptions to the client |
 
 ## Pre-flight checklist
 
 - [ ] Tool function in `precis_mcp/tools/<domain>_tools.py`, registered by a
       `register_*_tools(mcp, ref)` factory
-- [ ] Correct decorator: `@mcp.tool()`, or `@register_mcp_tool(mcp)` if the
-      signature has `_`-prefixed params
+- [ ] Plain `@mcp.tool()` in the factory; dev-server registration uses
+      `DevMcpRegistrar(mcp)` to hide injected parameters from FastMCP
 - [ ] Returns a dict; error path returns `{"error", "error_type"}`; output is
       JSON-clean
 - [ ] Factory wired into `_load_open_tools()` in `precis_mcp/dispatch.py`
       (and `precis_mcp/server.py` if the dev server should serve it)
 - [ ] `TOOL_CATALOGUE` entry with the right `access`, `scenario_params`, and
-      `mcp_read`
+      publication flag (`mcp_read`, or `mcp_artifact` under its separate contract)
 - [ ] Scoped tools: `_scope` declared **and** enforced against the query
 - [ ] Description added to `_MCP_TOOL_DESCRIPTIONS` in
       `mcp_external/framing.py` (or the docstring's first line is good enough)
@@ -443,5 +450,5 @@ passed as `_scope` actually constrains the result.
 - **Standing up the transports** — [quickstart](../getting-started/quickstart.md)
   for the dev server, [remote access](../deployment/oauth-keycloak.md) for the
   authenticated `/mcp` endpoint.
-- **Anything that writes.** Précis Finance MCP is the read surface; there is no
-  supported path for a write tool in this package.
+- **Financial writes.** There is no supported path for a financial write tool
+  in this package. Owned artifact writes follow the separate contract above.

@@ -42,6 +42,20 @@ class TestRollupSql:
     def cat(self):
         return load_catalogue(str(CATALOGUE_DIR))
 
+    def test_native_views_keep_one_closure_algorithm_and_qualified_sources(self, cat):
+        from precis_mcp.analytical.sql import SqlDialect
+        native = SqlDialect("databricks", "customer")
+        views = dict(build_ragged_views(cat, native))
+        rollup = views["dim_cost_centre_org_structure_rollup"]
+        assert "ARRAY(CAST(cost_centre AS STRING)) AS _path" in rollup
+        assert "array_append(r._path, e.parent_node_id)" in rollup
+        assert "WHERE NOT array_contains(r._path, e.parent_node_id)" in rollup
+        assert "SELECT DISTINCT" in rollup
+        assert "`customer`.`semantic`.`dim_cost_centre_org_structure_edges`" in rollup
+        for sql in views.values():
+            assert "toString(" not in sql and "arrayPushBack(" not in sql
+            assert "`customer`." in sql
+
     def test_rollup_is_recursive_over_edges_view(self, cat):
         dim = cat.dimensions["org_structure"]
         sql = build_rollup_sql(dim, cat)

@@ -32,6 +32,11 @@ from precis_mcp.observability import get_logger
 _logger = get_logger("ingestion.wiring")
 
 
+def _managed_ingestion() -> bool:
+    from precis_mcp.analytical.runtime import ingestion_mode
+    return ingestion_mode() == "managed"
+
+
 # ---------------------------------------------------------------------------
 # Env-var contracts
 # ---------------------------------------------------------------------------
@@ -113,13 +118,11 @@ class IntegrationRegistryRef:
 
 def _default_ch_client() -> Any:
     """Construct a clickhouse-connect client from env vars."""
-    import clickhouse_connect
+    from precis_mcp.db import get_clickhouse_client
+    if not _managed_ingestion():
+        raise IntegrationConfigError("Précis ingestion is disabled in customer-managed mode.")
 
-    return clickhouse_connect.get_client(
-        host=os.getenv("CHHOST", "localhost"),
-        port=int(os.getenv("CHPORT", "8123")),
-        username=os.getenv("CHUSER", "default"),
-        password=os.getenv("CHPASSWORD", ""),
+    return get_clickhouse_client(
         database=os.getenv("CHDATABASE", "default"),
     )
 
@@ -225,9 +228,19 @@ def build_default_context(
     platform DB that also backs the advisory lock,
     `<SECRET_REF_UPPER>_*` for Ibis backend credentials).
     """
+    if not _managed_ingestion():
+        raise IntegrationConfigError("Précis ingestion is disabled in customer-managed mode.")
     ch = ch_client or _default_ch_client()
     ibis_resolver = ibis_backend_for_source or _make_ibis_resolver(registry)
     path_resolver = source_path_resolver or _make_source_path_resolver(registry)
+
+    def refresh_hierarchies():
+        from precis_mcp.engine import load_and_validate
+        from precis_mcp.analytical.provisioning import refresh_hierarchies as refresh
+        from precis_mcp.analytical.sql import CLICKHOUSE_SQL
+
+        catalogue_root = os.getenv("PRECIS_CATALOGUE_ROOT", str(registry.root.parent / "catalogue"))
+        refresh(load_and_validate(catalogue_root), ch.command, CLICKHOUSE_SQL)
 
     return OrchestratorContext(
         registry=registry,
@@ -236,6 +249,7 @@ def build_default_context(
         ch_client=ch,
         ibis_backend_for_source=ibis_resolver,
         source_path_resolver=path_resolver,
+        refresh_hierarchies=refresh_hierarchies,
     )
 
 
@@ -283,6 +297,8 @@ def attach_ingestion_to_app(
     `PRECIS_INGEST_UPLOAD_DIR` is set — keeps dev imports of the API
     app from requiring privileged filesystem paths.
     """
+    if not _managed_ingestion():
+        return False
     from precis_mcp.ingestion.object_store import LocalFsObjectStore
     from precis_mcp.ingestion.upload_routes import build_upload_router
 
@@ -443,6 +459,8 @@ def build_default_ingestion_context_from_env(
     (the push-endpoint attachment) treat None as "skip wiring, log
     only."
     """
+    if not _managed_ingestion():
+        return None
     root = integrations_root or _default_integrations_root()
     try:
         registry = IntegrationRegistry.load(root)
@@ -484,6 +502,8 @@ def attach_admin_routes_to_app(
     `attach_ingestion_to_app` constructed. `orchestrator_ctx` makes the
     trigger endpoint functional; when None it returns 503.
     """
+    if not _managed_ingestion():
+        return False
     from precis_mcp.ingestion.admin_routes import build_admin_router
 
     if registry_ref is None:
@@ -513,6 +533,8 @@ def attach_run_endpoint_to_app(
 ) -> bool:
     """Mount `POST /api/ingest/run` on a FastAPI app. Returns True when
     mounted. `ctx` required — None → log+skip."""
+    if not _managed_ingestion():
+        return False
     from precis_mcp.ingestion.run_routes import build_run_router
 
     if ctx is None:

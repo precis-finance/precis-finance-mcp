@@ -12,3 +12,7 @@ operative one being that you may not provide it to third parties as a hosted or
 managed service.
 
 SPDX-License-Identifier: Elastic-2.0
+
+Third-party components retain their respective licenses. Microsoft-derived
+Excel add-in template portions are covered by the MIT notice in
+excel-addin/THIRD_PARTY_NOTICES.txt, which also ships with the built add-in.

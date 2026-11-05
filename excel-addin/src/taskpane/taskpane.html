@@ -28,46 +28,78 @@
     </section>
 
     <main id="app-body" class="px-main" style="display: none;">
-        <!-- Disconnected: connection parameters + sign-in -->
-        <section id="disconnected">
-            <p class="px-lead">Sign in to your Précis instance, then use
-                <code>=PRECIS.STATEMENT(…)</code> in any cell.</p>
+        <div id="connection-bar" class="px-connection-bar" data-connected="false">
+            <span class="px-dot" aria-hidden="true"></span>
+            <span id="connection-state" role="status">Not connected</span>
+        </div>
+        <div class="px-tabs" role="tablist" aria-label="Précis tools">
+            <button id="tab-connection" class="px-tab" type="button" role="tab" aria-selected="true" aria-controls="panel-connection" tabindex="0">Connection</button>
+            <button id="tab-members" class="px-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-members" tabindex="-1">Members</button>
+            <button id="tab-convert" class="px-tab" type="button" role="tab" aria-selected="false" aria-controls="panel-convert" tabindex="-1">Convert</button>
+        </div>
 
-            <button id="signin" class="px-btn px-btn--primary" type="button">Sign in</button>
+        <section id="panel-connection" class="px-panel" role="tabpanel" aria-labelledby="tab-connection" tabindex="0">
+            <h1 class="px-title">Your Précis connection</h1>
+            <div id="disconnected">
+                <p class="px-lead">Sign in to use live financial formulas, member drop-downs and report conversion.</p>
+                <button id="signin" class="px-btn px-btn--primary" type="button">Sign in</button>
+            </div>
+            <div id="connected" style="display: none;">
+                <div id="connected-user" class="px-instance"></div>
+                <div id="connected-url" class="px-instance px-mono"></div>
+                <p class="px-lead">Use <code>=PRECIS.STATEMENT(…)</code> or <code>=PRECIS.METRIC(…)</code> in a cell to bring live figures into your workbook.</p>
+                <button id="refresh" class="px-btn px-btn--primary" type="button">Refresh workbook data</button>
+                <p class="px-help">Refreshes all Précis formulas and member lists in this workbook.</p>
+                <p class="px-help">To format a live report, select its spill and choose <strong>Apply Précis formatting</strong> on the Home ribbon.</p>
+                <button id="disconnect" class="px-btn px-btn--ghost" type="button">Disconnect</button>
+            </div>
+            <p id="connection-feedback" class="px-status" role="status" aria-live="polite" aria-atomic="true"></p>
+            <p class="px-docs"><a target="_blank" rel="noreferrer" href="https://docs.precis.finance/excel/functions/">Function documentation ↗</a></p>
         </section>
 
-        <!-- Connected: status + disconnect -->
-        <section id="connected" style="display: none;">
-            <div class="px-connected">
-                <span class="px-dot"></span>
-                <span>Connected</span>
+        <section id="panel-members" class="px-panel" role="tabpanel" aria-labelledby="tab-members" tabindex="0" hidden>
+            <h1 class="px-title">Member drop-downs</h1>
+            <p class="px-lead">Add a drop-down of departments, accounts or other members to selected cells. Reference those cells in your Précis formulas to choose what the report shows.</p>
+            <p class="px-example">For example, choose a department in a cell and use it as a report filter.</p>
+            <div id="members-signin" class="px-signin-note">
+                <p>Sign in to load the available dimensions.</p>
+                <button id="members-connect" class="px-btn px-btn--ghost" type="button">Go to Connection</button>
             </div>
-            <div id="connected-user" class="px-instance"></div>
-            <div id="connected-url" class="px-instance px-mono"></div>
-
-            <p class="px-lead">Use <code>=PRECIS.STATEMENT(…)</code> and <code>=PRECIS.METRIC(…)</code>
-                in any cell. To style a spilled table, select it and click
-                <strong>Apply Précis formatting</strong> on the Home ribbon.</p>
-
-            <button id="refresh" class="px-btn px-btn--primary" type="button">Refresh data</button>
-            <button id="disconnect" class="px-btn px-btn--ghost" type="button">Disconnect</button>
-
-            <div class="px-section">
-                <label class="px-label" for="dropdown-dim">Insert member drop-down</label>
-                <select id="dropdown-dim" class="px-input"></select>
+            <div id="members-controls" hidden>
+                <label class="px-label" for="dropdown-dim">Dimension</label>
+                <select id="dropdown-dim" class="px-input" aria-describedby="members-feedback"></select>
+                <label class="px-label" for="dropdown-mode">Show in the drop-down</label>
                 <select id="dropdown-mode" class="px-input">
                     <option value="code">Codes</option>
                     <option value="label">Code + name</option>
                 </select>
-                <button id="insert-dropdown" class="px-btn px-btn--ghost" type="button">Insert on selected
-                    cells</button>
+                <button id="insert-dropdown" class="px-btn px-btn--primary" type="button">Add to selected cells</button>
+                <p class="px-help">Select the cells in Excel first. For a single column, the empty column to its right receives the matching name or code.</p>
             </div>
+            <p id="members-feedback" class="px-status" role="status" aria-live="polite" aria-atomic="true"></p>
         </section>
 
-        <p id="status" class="px-status"></p>
-
-        <p class="px-docs"><a target="_blank" rel="noreferrer"
-                href="https://docs.precis.finance/excel/functions/">Précis function documentation ↗</a></p>
+        <section id="panel-convert" class="px-panel" role="tabpanel" aria-labelledby="tab-convert" tabindex="0" hidden>
+            <h1 class="px-title">Export → live formula</h1>
+            <p class="px-lead">Select a cell inside a Précis-generated report or extract. Convert just that region into a formula that reads fresh data from Précis.</p>
+            <p class="px-notice">Fresh data replaces static edits. Captions above the report stay in place; column headers and data become live.</p>
+            <div id="convert-signin" class="px-signin-note">
+                <p>Sign in to the Précis instance that generated the export.</p>
+                <button id="convert-connect" class="px-btn px-btn--ghost" type="button">Go to Connection</button>
+            </div>
+            <div id="convert-controls" hidden>
+                <button id="convert-live" class="px-btn px-btn--primary" type="button" aria-describedby="conversion-support conversion-feedback">Convert selected export</button>
+                <p id="conversion-support" class="px-help">Other Précis regions are not converted.</p>
+            </div>
+            <p id="conversion-feedback" class="px-status px-conversion-status" role="status" aria-live="polite" aria-atomic="true"></p>
+            <details class="px-details">
+                <summary>What changes?</summary>
+                <p>The column headers, report and context footer become live, starting at the existing column-header row. Your title stays above the report and remains unchanged. Column headers are unmerged. Fresh results may add, remove or reorder data rows, so fixed-cell references may point to different lines.</p>
+                <p>For extract layout, Excel removes the Table and turns structured references into fixed cell references. Generated value-column names follow the spill.</p>
+                <p>Custom totals, calculated columns and slicers are unsupported.</p>
+            </details>
+        </section>
+        <p id="status" class="px-status" role="status" aria-live="polite" aria-atomic="true"></p>
     </main>
 </body>
 

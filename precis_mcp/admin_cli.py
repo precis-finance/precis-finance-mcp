@@ -346,7 +346,8 @@ def cmd_backup_init(args: argparse.Namespace) -> None:
         render_to=Path(args.out) if args.out else None,
         check_clickhouse=not args.no_clickhouse_check,
     )
-    print(f"rendered ClickHouse backup-disk config: {report.xml_path}")
+    if report.xml_path is not None:
+        print(f"rendered ClickHouse backup-disk config: {report.xml_path}")
     for notice in report.notices:
         print(f"  notice: {notice}")
     for warning in report.warnings:
@@ -417,6 +418,43 @@ def cmd_backup_restore(args: argparse.Namespace) -> None:
         raise SystemExit(6)
 
 
+def cmd_hierarchy_refresh(args: argparse.Namespace) -> None:
+    """Explicit host-side maintenance, outside the reporting identity/tool surface."""
+    from contextlib import closing
+    import os
+
+    from precis_mcp import secrets as _secrets  # noqa: F401 — existing *_FILE convention
+    from precis_mcp.analytical import selected_backend
+    from precis_mcp.analytical.provisioning import refresh_hierarchies
+    from precis_mcp.analytical.sql import CLICKHOUSE_SQL, SqlDialect
+    from precis_mcp.engine import load_and_validate
+    from precis_mcp.clickhouse_init import default_instance_dir
+
+    backend = selected_backend()
+    root = args.catalogue or os.getenv("PRECIS_CATALOGUE_ROOT") or default_instance_dir() / "catalogue"
+    catalogue = load_and_validate(root)
+    try:
+        if backend == "clickhouse":
+            from precis_mcp.db import get_clickhouse_client
+            with closing(get_clickhouse_client()) as client:
+                count = refresh_hierarchies(catalogue, client.command, CLICKHOUSE_SQL, provision=args.provision)
+        else:
+            from precis_mcp.analytical.config import DatabricksConfig
+            from precis_mcp.analytical.databricks import _connect
+            config = DatabricksConfig.from_env()
+            dialect = SqlDialect("databricks", config.catalog, (
+                ("semantic", config.semantic_schema), ("live", config.actuals_schema),
+                ("actuals", config.actuals_schema), ("planning", config.planning_schema)))
+            with closing(_connect(config)) as connection, closing(connection.cursor()) as cursor:
+                count = refresh_hierarchies(catalogue, cursor.execute, dialect, provision=args.provision)
+    except Exception as exc:
+        # Driver messages may contain SQL or credentials. Never print them.
+        print(f"Hierarchy refresh failed ({type(exc).__name__}); earlier replacements may have completed. "
+              "Keep affected reporting unavailable until reconciled. No automatic replay was performed.", file=sys.stderr)
+        raise SystemExit(1) from None
+    _print_json({"status": "refreshed", "backend": backend, "hierarchies": count})
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
@@ -428,6 +466,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Host-side administration for precis-finance-mcp.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    hp = sub.add_parser("hierarchy", help="Maintain materialized hierarchy mappings with operator credentials.")
+    hsub = hp.add_subparsers(dest="hierarchy_cmd", required=True)
+    hr = hsub.add_parser("refresh", help="Rebuild existing hierarchy mappings on the selected backend.")
+    hr.add_argument("--catalogue", help="Catalogue directory (default: PRECIS_CATALOGUE_ROOT or instance/catalogue).")
+    hr.add_argument("--provision", action="store_true",
+                    help="Also install/update hierarchy view definitions; required initially and after catalogue hierarchy changes.")
+    hr.set_defaults(func=cmd_hierarchy_refresh)
 
     def _kc_flag(sp: argparse.ArgumentParser) -> None:
         sp.add_argument(

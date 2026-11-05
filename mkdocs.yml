@@ -75,9 +75,11 @@ nav:
       - ClickHouse data modes: deployment/clickhouse-data-modes.md
       - Security model: deployment/security-model.md
   - Configuration:
+      - Analytical backends — ClickHouse & Databricks: configuration/analytical-client.md
       - Catalogue & semantic model: configuration/catalogue-and-semantic.md
       - Adding metrics & dimensions: configuration/adding-metrics-and-dimensions.md
       - ClickHouse schema contract: configuration/clickhouse-schema-contract.md
+      - Databricks schema contract: configuration/databricks-schema-contract.md
       - Ingestion & data sources: configuration/ingestion.md
       - User profiles & permissions: configuration/user-profiles.md
       - Environment variable reference: configuration/environment-variables.md

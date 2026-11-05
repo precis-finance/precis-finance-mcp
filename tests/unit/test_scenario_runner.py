@@ -196,3 +196,22 @@ def test_apply_idempotent_when_all_present(tmp_path: Path):
     assert report.skipped == ["ACTUALS", "BUD-2026", "FC-2026-Q1"]
     # Nothing to insert — no destructive re-write of existing governance state.
     assert ch.inserts == []
+
+
+def test_native_scenario_provisioning_is_bound_and_preserves_existing_rows(tmp_path):
+    from precis_mcp.analytical.provisioning import scenario_provisioning
+    from precis_mcp.analytical.sql import SqlDialect, CLICKHOUSE_SQL
+    from precis_mcp.analytical.contracts import ConfigurationError
+    from precis_mcp.ingestion.scenario_runner import parse_scenarios, COLUMNS
+    path = tmp_path / "scenarios.yml"
+    path.write_text("scenarios:\n - {scenario_id: ACTUALS, alias: actuals, name: \"O'Brien\", kind: ACTUAL}\n")
+    seeds = parse_scenarios(path)
+    ddl, seed = scenario_provisioning(SqlDialect("databricks", "customer"), seeds)
+    assert "`customer`.`semantic`.`scenarios`" in ddl.sql
+    assert "USING DELTA" in ddl.sql and "`locked_at` TIMESTAMP," in ddl.sql
+    assert "`scenario_id` STRING NOT NULL" in ddl.sql
+    assert "O'Brien" not in seed.sql and seed.parameters["seed_0_name"] == "O'Brien"
+    assert "WHEN NOT MATCHED THEN INSERT" in seed.sql and "WHEN MATCHED" not in seed.sql
+    assert seed.parameters["seed_0_created_at"].utcoffset().total_seconds() == 0
+    with pytest.raises(ConfigurationError):
+        scenario_provisioning(CLICKHOUSE_SQL, seeds)

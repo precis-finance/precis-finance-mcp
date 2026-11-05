@@ -3,4 +3,14 @@
 {% block extrahead %}
   {{ super() }}
   <link rel="preload" href="{{ 'assets/fonts/cormorant-garamond-latin-600-normal.woff2' | url }}" as="font" type="font/woff2" crossorigin="anonymous">
+  <script>
+    // Only the published docs report to the shared marketing dashboard.
+    if (window.location.hostname === "docs.precis.finance") {
+      const tracker = document.createElement("script");
+      tracker.defer = true;
+      tracker.dataset.domain = "precis.finance";
+      tracker.src = "https://analytics.precis.finance/js/script.outbound-links.file-downloads.tagged-events.js";
+      document.head.appendChild(tracker);
+    }
+  </script>
 {% endblock %}

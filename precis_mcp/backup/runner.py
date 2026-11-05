@@ -16,12 +16,13 @@ import os
 import subprocess
 import tarfile
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from precis_mcp.backup import BackupExecutionError
+from precis_mcp.analytical import selected_backend
 from precis_mcp.backup.ch_render import BACKUP_DISK_NAME, CH_PREFIX
 from precis_mcp.backup.config import BackupConfig
 from precis_mcp.backup.destination import BackupDestination, LocalDestination, build_destination
@@ -39,6 +40,7 @@ from precis_mcp.backup.prune import prune_bundles
 
 logger = logging.getLogger(__name__)
 
+# Required legacy/open databases; planning is detected once per managed backup.
 CH_DATABASES = ("live", "staging", "semantic")
 
 
@@ -71,6 +73,8 @@ class BackupResult:
 def backup_ch_client():
     """A ClickHouse client for BACKUP/RESTORE — env-derived settings plus a
     long send/receive timeout (a full backup can exceed the HTTP default)."""
+    if selected_backend() != "clickhouse":
+        raise BackupExecutionError("ClickHouse backup/restore is unavailable for the selected backend")
     from precis_mcp.db import get_clickhouse_client
 
     timeout = int(os.getenv("PRECIS_BACKUP_CH_TIMEOUT", "3600"))
@@ -133,7 +137,8 @@ def _backup_postgres(
 
 
 def _backup_clickhouse(
-    cfg: BackupConfig, dest: BackupDestination, run_id: str, ch_client
+    cfg: BackupConfig, dest: BackupDestination, run_id: str, ch_client,
+    *, databases: list[str],
 ) -> StoreResult:
     if cfg.scope.get("clickhouse") == "external":
         return StoreResult(
@@ -142,9 +147,9 @@ def _backup_clickhouse(
         )
     artifact = f"{run_id}.zip"
     key = f"{CH_PREFIX}/{artifact}"
-    databases = ", ".join(f"DATABASE {db}" for db in CH_DATABASES)
+    database_sql = ", ".join(f"DATABASE {db}" for db in databases)
     try:
-        ch_client.command(f"BACKUP {databases} TO Disk('{BACKUP_DISK_NAME}', '{artifact}')")
+        ch_client.command(f"BACKUP {database_sql} TO Disk('{BACKUP_DISK_NAME}', '{artifact}')")
         size = dest.size_of(key)
         sha = None
         if isinstance(dest, LocalDestination):
@@ -192,7 +197,7 @@ def _backup_files(cfg: BackupConfig, dest: BackupDestination, run_id: str, workd
         return StoreResult(store="files", outcome="failed", detail=str(exc))
 
 
-def _collect_row_counts(cfg: BackupConfig, ch_client) -> dict[str, int]:
+def _collect_row_counts(cfg: BackupConfig, ch_client, databases: list[str] | None) -> dict[str, int]:
     """The drill-verification baseline. Best-effort: a failure here degrades
     the drill's depth, never the backup."""
     counts: dict[str, int] = {}
@@ -210,9 +215,9 @@ def _collect_row_counts(cfg: BackupConfig, ch_client) -> dict[str, int]:
                 counts[f"pg.{name}"] = int(got[0]["n"]) if got else 0
         except Exception:
             logger.warning("backup: postgres row-count baseline failed", exc_info=True)
-    if cfg.scope.get("clickhouse") == "managed" and ch_client is not None:
+    if cfg.scope.get("clickhouse") == "managed" and ch_client is not None and databases:
         try:
-            dbs = ", ".join(f"'{db}'" for db in CH_DATABASES)
+            dbs = ", ".join(f"'{db}'" for db in databases)
             result = ch_client.query(
                 "SELECT database, name, total_rows FROM system.tables "
                 f"WHERE database IN ({dbs}) AND engine NOT LIKE '%View%'"
@@ -234,6 +239,9 @@ def run_backup(
     pg_dump_runner: Callable[[Path], None] | None = None,
     now: datetime | None = None,
 ) -> BackupResult:
+    backend = selected_backend()
+    if backend == "databricks":
+        cfg = replace(cfg, scope={**cfg.scope, "clickhouse": "external", "databricks": "external"})
     started = now or datetime.now(timezone.utc)
     run_id = started.strftime("%Y%m%dT%H%M%SZ")
     logger.info("backup: run start (run_id=%s trigger=%s)", run_id, trigger)
@@ -252,14 +260,29 @@ def run_backup(
         except Exception:
             logger.exception("backup: clickhouse client unavailable (run_id=%s)", run_id)
 
+    databases: list[str] | None = None
     stores: list[StoreResult] = []
     with tempfile.TemporaryDirectory(prefix="precis-backup-") as tmp:
         workdir = Path(tmp)
         stores.append(
             _backup_postgres(cfg, dest, run_id, workdir, pg_dump_runner or _run_pg_dump)
         )
-        if ch_client is not None:
-            stores.append(_backup_clickhouse(cfg, dest, run_id, ch_client))
+        if backend == "databricks":
+            stores.append(StoreResult(
+                store="databricks", outcome="skipped",
+                detail="Customer/operator owns warehouse recovery, including Précis scenario and planning tables; no warehouse data is in this bundle",
+            ))
+        elif ch_client is not None:
+            try:
+                has_planning = ch_client.query(
+                    "SELECT name FROM system.databases WHERE name = 'planning'"
+                ).result_rows
+                databases = [*CH_DATABASES, *(["planning"] if has_planning else [])]
+                stores.append(_backup_clickhouse(cfg, dest, run_id, ch_client, databases=databases))
+            except Exception:
+                logger.exception("backup: ClickHouse database inventory failed (run_id=%s)", run_id)
+                stores.append(StoreResult(store="clickhouse", outcome="failed",
+                                          detail="ClickHouse database inventory could not be determined; no warehouse backup was attempted"))
         else:
             stores.append(
                 StoreResult(
@@ -296,8 +319,10 @@ def run_backup(
                 )
                 for s in stores
             ],
-            row_counts=_collect_row_counts(cfg, ch_client),
+            row_counts=_collect_row_counts(cfg, ch_client, databases),
             outcome=outcome,
+            analytical_backend=backend,
+            clickhouse_databases=databases,
         )
         mkey = manifest_key(run_id)
         dest.put_bytes(manifest.to_json().encode("utf-8"), mkey)

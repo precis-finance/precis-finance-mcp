@@ -437,7 +437,7 @@ def validate_filters_for_report(
         except FilterResolutionError:
             errors.append(
                 f"Unknown filter key '{dim_key}'. "
-                f"Use search_hierarchy() to find valid filter keys."
+                f"Use precis_orientation() or list_kpis() to find valid dimension keys."
             )
             del cleaned[dim_key]
             continue
@@ -690,7 +690,7 @@ def validate_dimension_map(
         except FilterResolutionError:
             errors.append(
                 f"Unknown dimension key '{dim_key}'. "
-                f"Use search_hierarchy() to find valid keys."
+                f"Use precis_orientation() or list_kpis() to find valid dimension keys."
             )
             del cleaned[dim_key]
             continue

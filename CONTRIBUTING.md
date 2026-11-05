@@ -10,6 +10,8 @@ participating, you are expected to uphold it.
 `precis-mcp` is licensed under the **Elastic License 2.0 (ELv2)** — see
 [`LICENSE`](./LICENSE). By submitting a contribution, you agree that it is
 licensed under ELv2 on the same terms as the rest of the project.
+Third-party portions retain their existing terms; the Excel add-in's Microsoft
+template attribution is in [`excel-addin/THIRD_PARTY_NOTICES.txt`](excel-addin/THIRD_PARTY_NOTICES.txt).
 
 ## Sign your work — the Developer Certificate of Origin (DCO)
 
@@ -46,3 +48,30 @@ email. By signing off you certify the DCO (full text at the link above):
 
 Pull requests whose commits are not signed off will be asked to amend them
 (`git commit --amend -s`, or `git rebase --signoff` for a series).
+
+## Tests and reusable helpers
+
+`tests/open_tests.txt` lists the public test files. `tests/open_support.txt`
+lists their reusable fixtures, fakes and factories; an optional second column
+maps a source path to its published path. Paths are relative to `tests/`.
+Declare new helpers in this manifest so import-boundary checks include them.
+Shared pytest fixtures live in `tests/support/open_pytest.py`; the `db` fixture
+uses the public `FakePlatformDB` in `tests/fakes/fake_platform_db.py`.
+
+Run `make test-pre-push` for unit and component checks. The same tests and
+helpers must work from the published repository without additional application
+packages.
+
+The core `.[dev]` installation skips checks that require optional Databricks or
+telemetry dependencies. To include those checks, install
+`pip install -c constraints-extras.txt ".[dev,databricks-primary,telemetry]"`
+before running the suite.
+
+## Dependency locks
+
+Use Python 3.12 with `pip-tools` installed. `make lock` regenerates the hashed
+core dependency lock, `requirements.lock`. After updating that lock, run
+`make lock-extras` to regenerate `constraints-extras.txt` for the optional
+warehouse drivers against the same core versions. Review and commit both
+outputs together. Optional driver constraints are version-pinned; the core
+lock is hashed. These commands do not install the resolved dependencies.

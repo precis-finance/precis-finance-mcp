@@ -8,9 +8,10 @@ docs/excel_agent_research_2026.md). The YAML captures:
 
 * Who/what/when generated it (``generated_at``, ``generated_by``,
   ``catalogue_version``).
-* Which tool produced each sheet (``sheets.<name>.source``).
-* Shape hints and refresh policy (populated by the Extract emitter in
-  slice 4; omitted for standalone reports).
+* Which tool produced each financial region (``sheets.<name>.regions[].source``).
+  Non-financial exports may carry sheet-level provenance.
+* Layout-specific shape hints: generated report regions record header/data
+  offsets; extract regions also carry row identities and refresh policy.
 
 The hidden-sheet form is deliberate: it round-trips through openpyxl,
 LibreOffice, Excel desktop, and Excel Online with no special handling.
@@ -118,13 +119,17 @@ def _normalise_region(region: Mapping[str, Any]) -> dict[str, Any]:
     source = region.get("source")
     if not isinstance(source, Mapping) or not source.get("tool"):
         raise MetaError(f"region {range_name!r}.source requires at least a tool")
-    return {
+    normalised = {
         "range_name": range_name,
         "source": {
             "tool": source["tool"],
             "params": dict(source.get("params", {})),
         },
     }
+    for key in ("state", "layout", "origin", "table_name", "named_ranges", "shape", "presentation", "placement", "refresh"):
+        if key in region:
+            normalised[key] = region[key]
+    return normalised
 
 
 def build_regions_meta(
@@ -144,14 +149,12 @@ def build_regions_meta(
     anchored to a **named range** (a defined name / Excel Table, *not* a literal
     address, so the link survives row / column inserts and moves) and carrying
     its own ``{tool, params}`` source. This is the STATIC-state encoding of the
-    add-in's region state machine: one entry per ``=PRECISSTATEMENT`` /
-    ``=PRECISMETRIC`` region that has been resolved to values. See
-    docs/precis-excel-addin-spec.md §2.3–§2.4.
+    add-in's region state machine: one entry per ``=PRECIS.STATEMENT`` /
+    ``=PRECIS.METRIC`` region that has been resolved to values. See
+    docs/excel_region_transitions_spec.md.
 
-    Additive within schema version 1 — ``regions`` coexists with the legacy
-    per-sheet ``source``; a reader uses ``regions`` when present, else ``source``.
-    No back-compat migration is required (there are no existing region-bearing
-    workbooks).
+    Financial refresh and activation require the region source; no sheet-source
+    fallback or migration of pre-region workbooks is supported.
     """
     meta = build_minimal_meta(
         workbook_kind=workbook_kind,
@@ -211,6 +214,8 @@ def write_meta(wb: Workbook, meta: Mapping[str, Any]) -> None:
         allow_unicode=True,
         default_flow_style=False,
     )
+    if len(yaml_text.encode("utf-16-le")) // 2 > 32767:
+        raise MetaError("Workbook provenance exceeds Excel's cell limit; reduce the extract size")
     if META_SHEET_NAME in wb.sheetnames:
         del wb[META_SHEET_NAME]
     ws = wb.create_sheet(title=META_SHEET_NAME)

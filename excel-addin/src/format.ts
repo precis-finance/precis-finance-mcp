@@ -21,10 +21,25 @@ const TOTAL_SURFACE = "#DDE7E8";
 const GREEN = "#16A34A"; // favourable variance
 const RED = "#DC2626"; // unfavourable variance
 
+/** The final context row is part of the spill; never merge spill cells. */
+export function applyFooterFormat(spill: Excel.Range, fitRow = false): void {
+  const footer = spill.getRow(spill.rowCount - 1);
+  footer.format.wrapText = false;
+  footer.format.horizontalAlignment = "Left";
+  footer.format.verticalAlignment = "Top";
+  footer.format.font.color = "#667580";
+  footer.format.font.size = 9;
+  footer.format.font.name = "Calibri";
+  footer.format.font.bold = false;
+  // Explicit Format considers the entire row, including adjacent user notes.
+  // Conversion manages recoverable heights separately before committing.
+  if (fitRow) footer.getEntireRow().format.autofitRows();
+}
+
 /** Queue the Précis formatting of `spill` from `block`. No context.sync(). */
-export function applyBlockFormat(spill: Excel.Range, block: FinancialTableBlock): void {
+export function applyBlockFormat(spill: Excel.Range, block: FinancialTableBlock, fitFooterRow = false): void {
   const cols = block.columns ?? [];
-  // Mirror blockToGrid: separators are dropped, so data rows align 1:1 with the
+  // Mirror the server worksheet projection: separators are dropped, so data rows align with the
   // spilled rows beneath the single header row.
   const dataRows = (block.rows ?? []).filter((r) => r.row_type !== "separator");
   const nCols = cols.length;
@@ -32,15 +47,13 @@ export function applyBlockFormat(spill: Excel.Range, block: FinancialTableBlock)
     return;
   }
   // Grouped (multi-metric × multi-scenario) blocks spill a two-row header
-  // (metric group labels above scenario labels) — mirror blockToGrid so the
+  // (metric group labels above scenario labels) — mirror the shared projection so the
   // format ops land on the right rows.
   const grouped = cols.some((c) => c.group);
-  // Derive the header-row count from the ACTUAL spill height (total rows − data
-  // rows) so the number-format array always matches the range — robust to a
-  // spill produced by an older bundle version. Fall back to the block's own
-  // expectation (grouped → 2) if the spill height looks off.
-  const derived = spill.rowCount - dataRows.length;
-  const headerRows = derived === 1 || derived === 2 ? derived : grouped ? 2 : 1;
+  const headerRows = grouped ? 2 : 1;
+  if (spill.rowCount !== dataRows.length + headerRows + 1 || spill.columnCount !== nCols) {
+    throw new Error("The spill does not match the current report layout. Recalculate it before formatting.");
+  }
 
   // 0. Reset prior formatting first. Applying is additive, so a re-run with
   //    changed columns (e.g. a variance column that's now a plain scenario)
@@ -60,10 +73,11 @@ export function applyBlockFormat(spill: Excel.Range, block: FinancialTableBlock)
       // A statement row carries its own format (currency vs percent vs ratio);
       // it wins over the scenario column's default. Breakdown rows have no nf,
       // so the column nf applies.
-      line.push(row.nf ?? cols[c].nf ?? "General");
+      line.push(row.cell_nf?.[cols[c].key] ?? (cols[c].format === "percent" ? cols[c].nf : row.nf ?? cols[c].nf) ?? "General");
     }
     nf.push(line);
   }
+  nf.push(cols.map(() => "General"));
   // The anchor cell [0][0] holds the =PRECIS.* formula. Text format ("@") makes
   // Excel treat an edited formula as a literal string (it stops executing), so
   // keep the anchor General — the rest of the label column stays text.
@@ -125,4 +139,5 @@ export function applyBlockFormat(spill: Excel.Range, block: FinancialTableBlock)
       }
     }
   }
+  applyFooterFormat(spill, fitFooterRow);
 }

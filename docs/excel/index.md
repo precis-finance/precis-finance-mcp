@@ -24,9 +24,32 @@ When the add-in is enabled and the built bundle is present, your Précis server
 hosts the add-in at `/excel` and serves a manifest already templated for your
 origin:
 
-1. In Excel on the web: **Home → Add-ins → More Add-ins → My Add-ins →
-   Upload My Add-in**, and give it `https://<your-instance>/excel/manifest.xml`.
-2. The **Précis** group appears on the Home ribbon.
+1. Download `https://<your-instance>/excel/manifest.xml` from your Précis
+   instance. Use this hosted manifest, which contains your instance's URLs.
+2. In Excel on the web, open a workbook and use **Home → Add-ins → More
+   Settings → Upload My Add-in**, then select the downloaded XML file. Menu
+   labels vary by Excel version; the upload dialog takes a file.
+3. The **Précis** group appears on the Home ribbon.
+
+If your organisation has already deployed **Précis for Excel**, use the
+organisation-managed add-in instead. If uploading is unavailable or prohibited,
+ask your Microsoft 365/IT admin for the approved installation route. Share the
+hosted manifest URL, your Excel platform/version and the users/group that need
+access. Admins can assess custom Office add-in deployment through Microsoft 365
+**Settings → Integrated apps**, using an XML manifest file or URL where the
+tenant supports it. Central deployment needs validation in your organisation;
+Précis's current installation acceptance covers manual sideloading.
+
+See Microsoft's [web sideloading guide](https://learn.microsoft.com/en-us/office/dev/add-ins/testing/sideload-office-add-ins-for-testing)
+and [admin deployment guide](https://learn.microsoft.com/en-us/microsoft-365/admin/manage/manage-deployment-of-add-ins).
+For desktop Excel, ask IT for the approved Windows/Mac route; web upload menus
+are not a universal desktop installation procedure.
+
+When deploying an add-in update, sync both `excel-addin/dist/` and
+`excel-addin/manifest.xml`. The hosted manifest uses that source XML template;
+updating only `dist/` can leave Microsoft 365 seeing an older version. For an
+admin-managed installation, upload the updated hosted manifest through your
+organisation's approved route.
 
 Because the bundle is served from the same origin as `/mcp`, **no `/mcp`
 `CORS_ORIGINS` entry is needed**. The OAuth issuer is also inserted into the
@@ -35,7 +58,7 @@ manifest's `<AppDomains>` by the server.
 ## Connect
 
 1. Open the **Panel** button on the Précis ribbon group.
-2. Click **Sign in**. The add-in already knows its instance — the `/mcp` URL is
+2. In **Connection**, click **Sign in**. The add-in already knows its instance — the `/mcp` URL is
    the same origin that served the add-in — so it discovers the OAuth issuer from
    that host's protected-resource metadata, opens the sign-in dialog, and stores
    the token for the session.
@@ -48,6 +71,14 @@ needs `profile email` in
 [`EXCEL_ADDIN_SCOPE`](../configuration/environment-variables.md); without them
 the pane falls back to the token's subject id.
 
+The pane has three tabs. **Connection** contains sign-in, account/instance
+details, **Refresh workbook data**, disconnect and the function documentation
+link. Refresh updates all Précis formulas and member lists in this workbook.
+**Members** adds cell drop-downs for report filters. **Convert** converts the
+selected export region to a live formula. Connection status stays visible
+whichever tab is open. Use arrow keys
+or Home/End to move between tabs; changing tabs preserves choices and feedback.
+
 !!! tip "Sessions"
     Access tokens are short-lived but refresh silently in the background. When a
     session genuinely ends, the pane returns to **Disconnected** — just sign in
@@ -59,11 +90,12 @@ The **Précis** group on the Home tab has three buttons:
 
 | Button | Does |
 |---|---|
-| **Panel** | Opens the task pane (connect, refresh, member drop-downs, sign out, function docs). |
+| **Panel** | Opens the Connection, Members and Convert tabs. |
 | **Format** | Styles the selected spill — header band, subtotals, totals, variance colours, number formats. |
 | **Refresh** | Re-fetches every `PRECIS.*` cell in the workbook (a full recalculation). |
 
-**Format** and **Refresh** are also reachable from the task pane.
+**Refresh workbook data** is also available on the Connection tab. Formatting
+is on the Home ribbon.
 
 ## Apply Précis formatting
 
@@ -80,7 +112,77 @@ uses light headers, quiet subtotal fills and slightly stronger total fills,
 while retaining workbook fonts, number formats and green/red variance meanings.
 Existing ranges keep their formatting until you apply **Format** again.
 
+## Convert a selected export to a live formula
+
+Select a cell, or a contiguous selection wholly inside one Précis-generated
+region with **report** or **extract** layout. In the task pane open **Convert**
+and choose **Convert selected export**. The action queries fresh data and replaces
+only that region at the same position and layout; static edits are replaced.
+Statement/metric downloads from open `export_dataset(format="xlsx")` are eligible
+when generated with the new provenance metadata. The action needs no commercial
+workbook tools.
+
+Save the workbook after a successful spill if it will be processed outside Excel.
+Live-region markers retain the originating instance and generated-name identities;
+the saved array range, rather than a cached marker size, establishes spill bounds.
+The shared core includes bounded workbook discovery/placement procedures for file
+adapters. Agent file conversion and refresh tools belong to the commercial agent
+workflow and are not advertised by the open MCP server. This adds no reverse
+conversion button to the add-in.
+
+For report layout, a normal formula starts at the original column-header row.
+Headers, data and a single context footer become live. The standalone title stays
+outside the converted region and remains yours to maintain. Context follows the
+report in one unmerged row, with unwrapped text in its first cell; its period,
+filters, scenarios, units and timestamp come from the same query as the values.
+Conversion leaves the footer unwrapped and restores standard height on unshared
+footer rows, preserving adjacent notes.
+Apply Précis formatting autofits the whole footer row.
+Headers are unmerged for the spill, preserving the first data row's offset.
+Static exports and live formulas omit the same decorative separator rows while
+retaining hierarchy, subtotals and totals. Fresh data can add, remove or reorder
+body rows, so fixed-cell references can point to different lines. Conversion
+refuses obstructed growth, changed headers and unsupported merges. It does not
+insert/delete worksheet rows or change column widths/frozen panes.
+
+For extract layout, Excel removes the Table container and rewrites structured references to fixed
+cell references. Generated value-column names instead follow the live spill's
+size, excluding the final context footer (`ROWS(spill)-1`). The static Table and
+value-column names also exclude that row. Custom totals, calculated columns, slicers, protected sheets, obstructed
+destinations and unsupported source arguments are refused with a reason.
+Conversion requires ExcelApi 1.13 or later and is limited to 100,000 cells.
+The export must record explicit source settings and the same originating Précis
+instance and the current single-footer layout. This is a breaking layout change;
+older exports or live markers without that footer contract must be regenerated.
+Conversion displays progress and errors directly beneath its button. An
+unsupported Excel version shows a reason beside the disabled action. Ordinary
+shared YAML references in generated metadata are supported; they do not require
+regenerating an otherwise valid export. Files without named region metadata do
+require regeneration; Table-only legacy metadata is no longer inferred.
+
+The live marker written by add-in version 1.0.0.6 retains the originating
+instance and generated-name identities. Older live markers without origin require
+a fresh export and conversion with the current add-in. Shared Python workbook
+utilities recognize Excel-saved `_xldudf_PRECIS_STATEMENT` and
+`_xldudf_PRECIS_METRIC` names alongside normal `PRECIS.*` calls. Saved array bounds
+establish spill ownership; a marker's numeric snapshot alone is insufficient.
+
+The initial number formats come from the shared server contract for that layout. After a
+recalculation changes row order or spill size, choose **Apply Précis formatting**
+to apply the latest per-metric formats. Failed operations restore the original
+export when safe; if competing edits prevent this, the status identifies a
+visible recovery sheet containing the saved original replacement-area cells
+and formats, including the original column-header merges. Retained report
+captions are outside that area and are never overwritten during restoration. Excel's Table-reference
+rewrites may remain even after recovery.
+If removing the recovery copy fails after conversion or restoration succeeds,
+the completed result is kept and the status identifies the retained sheet.
+An incomplete restoration reports both the conversion and recovery errors.
+
 ## Member drop-downs
+
+Open the **Members** tab for an explanation, dimension/display choices and
+**Add to selected cells**. Select the destination cells in Excel first.
 
 The task pane can turn any selected cells into a native Excel drop-down of a
 dimension's members — cost centres, projects, hierarchy nodes — for building
@@ -221,6 +323,15 @@ OpenID configuration). One add-in works across deployments:
 
 Interactive sign-in is the only auth path — there is no developer "paste a token"
 fallback.
+
+## License and community
+
+Précis-authored add-in code uses the repository's
+[Elastic License 2.0](https://github.com/precis-finance/precis-finance-mcp/blob/main/LICENSE).
+Original Microsoft template portions retain their MIT license, documented in
+the [third-party notices](https://github.com/precis-finance/precis-finance-mcp/blob/main/excel-addin/THIRD_PARTY_NOTICES.txt).
+The built bundle includes both license texts. Conduct concerns follow the
+[Précis Code of Conduct](https://github.com/precis-finance/precis-finance-mcp/blob/main/CODE_OF_CONDUCT.md).
 
 ## Next
 

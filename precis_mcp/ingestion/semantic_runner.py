@@ -85,6 +85,8 @@ def apply_all(
     _apply_sql_dir(instance_semantic_dir / "dims", ch_client, schema, report)
 
     if catalogue is not None:
+        from precis_mcp.analytical.provisioning import hierarchy_provisioning
+        from precis_mcp.analytical.sql import CLICKHOUSE_SQL
         from precis_mcp.engine.passthrough_views import build_passthrough_views
         from precis_mcp.engine.ragged_views import build_ragged_views
 
@@ -103,15 +105,9 @@ def apply_all(
                 view=name,
             )
 
-        for name, body in build_ragged_views(catalogue):
-            stmt = f"CREATE OR REPLACE VIEW {schema}.{name} AS\n{_clean_body(body)}"
-            ch_client.command(stmt)
-            report.views_applied.append(name)
-            _logger.info(
-                "ingestion.semantic.ragged_view_applied",
-                schema=schema,
-                view=name,
-            )
+        for statement in hierarchy_provisioning(catalogue, CLICKHOUSE_SQL, schema=schema):
+            ch_client.command(statement.sql)
+        report.views_applied.extend(name for name, _ in build_ragged_views(catalogue))
 
     _apply_sql_dir(instance_semantic_dir / "views", ch_client, schema, report)
 

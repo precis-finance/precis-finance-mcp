@@ -7,7 +7,7 @@ description: Self-host Précis Finance MCP to serve governed FP&A metrics, state
 **Précis Finance MCP lets an AI assistant query your financial model — safely and
 read-only — over the [Model Context Protocol](https://modelcontextprotocol.io).**
 
-You point it at your financial data (in ClickHouse), describe your model in a
+You point it at your financial data (in ClickHouse or Databricks), describe your model in a
 catalogue, and any MCP-capable client — Claude or another agent — can ask
 questions and get back consistent, defensible numbers: metrics, financial
 statements, and row-level detail.
@@ -20,6 +20,8 @@ statements, and row-level detail.
 - **Discover the model** — list the scenarios (the datasets you compare:
   actuals, budgets, forecasts), metrics, and dimensions available before
   composing a query.
+- **Charts, exports and Excel** — [create charts and export JSON/XLSX snapshots](reference/mcp-tools.md#charts-and-artifacts),
+  or use [live Excel functions](excel/index.md).
 
 Numbers come from one place: a catalogue you define on top of a semantic
 layer — SQL views that state what your data means. The same definition serves
@@ -27,15 +29,14 @@ every client, so two people asking the same question get the same answer.
 
 ## What it doesn't do
 
-Précis Finance MCP is **read-only**. It never writes to or changes your data. It does
-not render charts, export Excel files, or execute code — it returns data and
-tables. If your client supports rich widgets, it renders the finance-table and
-inspection views; otherwise it gets the same data as structured content.
+Précis Finance MCP provides **read-only financial access**. Planning writeback,
+Python execution and saved report workflows are outside this package.
+Compatible clients render tables, inspection grids and charts; other clients
+receive structured results.
 
 It is the open core of the **Précis** platform, which adds the agentic
 finance workspace on top of this same engine: a conversational agent and UI,
-planning with write-back, and an extended finance toolset (reports, routines,
-charts, Excel). Nothing here depends on it.
+planning with write-back, reports and routines. Nothing here depends on it.
 
 ## Is this for me?
 
@@ -56,8 +57,10 @@ model; it serves the queries.
 | Connect Auth0 / Okta / Entra / Ping directly | [External IdP recipes](deployment/external-idp-recipes.md) |
 | Use live read-only functions in Excel | [Précis for Excel](excel/index.md) |
 | Run against bundled or your own ClickHouse (and provision it) | [ClickHouse data modes](deployment/clickhouse-data-modes.md) |
+| Use Databricks as the analytical backend | [Databricks setup](configuration/analytical-client.md#docker-deployment-with-databricks) |
 | Describe your own metrics and statements | [Catalogue & semantic model](configuration/catalogue-and-semantic.md) |
 | Know what your ClickHouse must contain | [ClickHouse schema contract](configuration/clickhouse-schema-contract.md) |
+| Know what your Databricks warehouse must contain | [Databricks schema contract](configuration/databricks-schema-contract.md) |
 | Load your own data | [Ingestion & data sources](configuration/ingestion.md) |
 | Control what each user may read | [User profiles & permissions](configuration/user-profiles.md) |
 | Wire a new data source, end to end | [Onboarding a data source](operations/onboarding-ingestion.md) |

@@ -110,7 +110,7 @@ metrics:
 
   - key: federated_utilisation
     label: "Federated utilisation"
-    formula: federated_billable_hours / federated_hours_worked
+    formula: federated_billable_hours / federated_hours_worked * 100
     format: percent
     fs_group: Operations
     style: ratio

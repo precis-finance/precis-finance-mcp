@@ -90,7 +90,7 @@ class TestBaseMetricParsing:
         assert revenue.source_column == "amount"
         assert revenue.aggregation == "sum"
         assert revenue.rollup_method == "sum"
-        assert revenue.sign == "abs"
+        assert revenue.sign == "negate"
         assert revenue.format == "currency"
         assert revenue.style == "header"
         assert revenue.indent == 0
@@ -436,7 +436,7 @@ class TestDuplicateMetricKey:
                 source_column: amount
                 aggregation: sum
                 rollup_method: sum
-                sign: abs
+                sign: negate
                 format: currency
                 fs_group: Revenue
               - key: revenue
@@ -500,7 +500,7 @@ class TestMissingFormulaReference:
                 source_column: amount
                 aggregation: sum
                 rollup_method: sum
-                sign: abs
+                sign: negate
                 format: currency
                 fs_group: Revenue
               - key: bad_derived
@@ -528,7 +528,7 @@ class TestInvalidRollupMethod:
                 source_column: amount
                 aggregation: sum
                 rollup_method: invalid
-                sign: abs
+                sign: negate
                 format: currency
                 fs_group: Revenue
         """)
@@ -551,7 +551,7 @@ class TestStatementBothLinesAndConcat:
                 source_column: amount
                 aggregation: sum
                 rollup_method: sum
-                sign: abs
+                sign: negate
                 format: currency
                 fs_group: Revenue
         """)
@@ -583,7 +583,7 @@ class TestCircularStatementConcat:
                 source_column: amount
                 aggregation: sum
                 rollup_method: sum
-                sign: abs
+                sign: negate
                 format: currency
                 fs_group: Revenue
         """)
@@ -1026,7 +1026,7 @@ class TestDimensionValidation:
                 source_column: amount
                 aggregation: sum
                 rollup_method: sum
-                sign: abs
+                sign: negate
                 format: currency
                 fs_group: Revenue
         """)
