@@ -33,6 +33,11 @@ PostgreSQL APT patch layer embedded in the release Compose file; this preserves
 PostgreSQL 16 and its data volume. Preserve your `instance/`, secrets and volumes.
 See `CHANGELOG.md` for the full release requirements.
 
+When reusing a PostgreSQL volume across an image OS, glibc or ICU change, apply
+the [collation compatibility check](#postgresql-collation-compatibility) before
+accepting the upgrade. A fresh volume initialized by the current image does
+not need this repair.
+
 - **Hierarchies:** to adopt materialized mappings, run
   `precis-finance-mcp-admin hierarchy refresh --provision` with operator
   credentials. Customer-managed pipelines must refresh after hierarchy changes.
@@ -338,6 +343,75 @@ the new manifest updates bundled Keycloak and switches ClickHouse to the
 official 26.3 Alpine variant. A tag bump alone leaves both old images running.
 Back up the ClickHouse volume before recreating that container and verify the
 data and health check after it starts.
+
+## PostgreSQL collation compatibility
+
+Keeping PostgreSQL's major version unchanged does not guarantee compatible
+text ordering. Reusing a data volume across a Debian release, glibc or ICU
+change can leave indexes ordered under different rules from the running
+server. This applies to library downgrades as well as upgrades. Retain explicit
+OS and image digest pins, and check compatibility when changing them. The
+small APT-only patch layer does not itself replace libc or ICU.
+For native PostgreSQL installations, apply the same check after OS or
+collation-library updates.
+
+A fresh installation with an empty volume initializes its collation versions
+from the current image, so it needs no historical repair. Starting a new
+container with an old volume is an upgrade, not a fresh installation.
+
+After starting the selected PostgreSQL image, connect as the database operator
+and check database defaults, including `template1`:
+
+```sql
+SELECT datname, datcollversion AS recorded,
+       pg_database_collation_actual_version(oid) AS actual
+FROM pg_database
+WHERE datallowconn
+  AND datcollversion IS NOT NULL
+  AND datcollversion IS DISTINCT FROM pg_database_collation_actual_version(oid);
+```
+
+Also run this query in each connectable database; named-collation catalogues
+are local to each database:
+
+```sql
+SELECT n.nspname, c.collname, c.collversion AS recorded,
+       pg_collation_actual_version(c.oid) AS actual
+FROM pg_collation c
+JOIN pg_namespace n ON n.oid = c.collnamespace
+WHERE c.collversion IS NOT NULL
+  AND c.collversion IS DISTINCT FROM pg_collation_actual_version(c.oid);
+```
+
+Both queries should return no rows. A null actual version needs investigation,
+not an automatic metadata refresh. These are operator checks; the deployment
+helper does not repair collations automatically.
+
+If versions mismatch, hold upgrade acceptance and schedule maintenance:
+
+1. Pause every writer to the affected cluster, including the application,
+   bundled Keycloak and any ingestion workers. Verify that no unexpected
+   client sessions remain, then take the final fresh database backup.
+2. Inventory objects using the database default and mismatched named collations.
+   Rebuild affected indexes using `REINDEX` in each affected database. Review
+   other stored dependencies, such as partition boundaries, materialized views
+   and generated values; reindexing alone does not rebuild these.
+3. Verify rebuilt indexes, for example with PostgreSQL's `amcheck`, and verify
+   preserved table contents. Only then run `ALTER COLLATION ... REFRESH VERSION`
+   for repaired named-collation dependencies, or unused stale collations, and
+   `ALTER DATABASE ... REFRESH COLLATION VERSION` for each repaired database
+   default. Recheck versions and invalid indexes before resuming writers and
+   verifying readiness and sign-in.
+
+Do not refresh versions merely to silence warnings: refresh changes metadata
+without repairing or validating indexes. `REINDEX DATABASE` excludes system
+catalogues, so inspect their dependencies too. Repair `template1` where needed
+because its mismatch can block new database creation; leave `template0`
+unchanged. Repair is a bounded maintenance action after relevant library
+changes, not a step on every deployment. See PostgreSQL's
+[collation guidance](https://www.postgresql.org/docs/16/sql-altercollation.html),
+[REINDEX](https://www.postgresql.org/docs/16/sql-reindex.html) and
+[amcheck](https://www.postgresql.org/docs/16/amcheck.html).
 
 ## Rolling back
 
